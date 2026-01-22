@@ -26,6 +26,8 @@
 
 
 
+
+
 ## Todo:
 
 - Compute shaders (technically present but currently unfinished and untested)
@@ -67,3 +69,9 @@ To start, clone the repo, then install the following development-time cli depend
 | Nvidia Texture Tools 3   |   copy path to nvtt_export.exe and supply to EngineSettings.cs/EngineSettings/NVTT3Path   |
 
 Then open some of the demo projects to get a fundamental grasp of the engine, or create your own and simply import EntryProps via something like ``` <Import Project="..\EntryProps.props" /> ``` in your .csproj's Project body.
+
+
+
+# Further info/troubleshooting
+
+- Debug/release builds are categorized by a respective presence of DEBUG/RELEASE compilation symbol, NOT the name of the project configuration. This is so that 

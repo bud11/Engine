@@ -17,9 +17,6 @@ public static class Logic
 
 
 
-    public static bool Paused;
-
-
 
 
 
@@ -76,19 +73,23 @@ public static class Logic
     public static ValueTask WaitLogicFrame() => LogicFrameAwaiter.Wait();
 
 
-    public static async ValueTask WaitSeconds(float seconds, bool pausable = true, CancellationToken? tk = null)
+    public static async ValueTask WaitSeconds(float seconds, CancellationToken? tk = null)
     {
         float timesofar = 0f;
 
         while (timesofar < seconds)
         {
-            if (!Paused || !pausable) timesofar += Delta;
+            timesofar += Delta;
 
             if (tk != null && tk.Value.IsCancellationRequested) return;
 
             await LogicFrameAwaiter.Wait();
         }
     }
+
+
+
+
 
 
 
@@ -144,44 +145,78 @@ public static class Logic
 
 
 
+    private static int _active;
+    private static int _open = 1;
 
+    private static readonly ManualResetEventSlim _gateOpen = new(true);
+    private static readonly ManualResetEventSlim _drained = new(true);
 
-
-
-    private static Dictionary<Thread, bool> ThreadsWorking = new();
 
 
     /// <summary>
-    /// Waits for the main thread logic frame to have started, and prevents it from ending while any thread has this (per thread) flag set. 
-    /// <br /> As a general rule of thumb, set to true while doing anything engine related on any other thread.
-    /// <br /> Also see <seealso cref="SetCurrentThreadAsNotWorking"/>
+    /// Blocks until a frame is processing, and indicates that you don't want the frame to be allowed to end until <see cref="ExitFrameGate"/> is called.
+    /// <br/> Thread affinity/identity of callers don't matter, so long as each call is matched with some eventual <see cref="ExitFrameGate"/> call.
     /// </summary>
-    /// 
-    public static void SetCurrentThreadAsWorking()
+    public static void EnterFrameGate()
     {
-        var thread = Thread.CurrentThread;
-
-
-        if (thread != Kernel.LogicThread)
+        while (true)
         {
-            while (true)
-                lock (ThreadsWorking)
-                    if (ThreadsWorking[Kernel.LogicThread]) break;
+            // 1. Wait until the gate is open *at least once*
+            _gateOpen.Wait();
+
+            // 2. Speculatively claim activity
+            Interlocked.Increment(ref _active);
+
+            // 3. If the gate stayed open, we're good
+            if (Volatile.Read(ref _open) != 0)
+            {
+                _drained.Reset();
+                return;
+            }
+
+            // 4. Gate closed during entry → rollback claim
+            ExitFrameGate();
+            // loop and try again
         }
-
-
-        lock (ThreadsWorking)
-            ThreadsWorking[thread] = true;
     }
 
+
+
+
+
     /// <summary>
-    /// Sets the thread as not working. See <see cref="SetCurrentThreadAsWorking"/>
+    /// See <see cref="EnterFrameGate"/>
     /// </summary>
-    public static void SetCurrentThreadAsNotWorking()
+    /// <exception cref="InvalidOperationException"></exception>
+    public static void ExitFrameGate()
     {
-        var thread = Thread.CurrentThread;
-        lock (ThreadsWorking)
-            ThreadsWorking[thread] = false;
+
+
+#if DEBUG
+        if (Volatile.Read(ref _active) <= 0)
+            throw new InvalidOperationException();
+#endif
+
+
+        if (Interlocked.Decrement(ref _active) == 0)
+            _drained.Set();
+    }
+
+
+
+    public readonly ref struct FrameGateUsingScope : IDisposable
+    {
+        public readonly void Dispose() => ExitFrameGate();
+    }
+
+    /// <summary>
+    /// An <see cref="IDisposable"/> wrapper around <see cref="EnterFrameGate"/> and <see cref="ExitFrameGate"/>
+    /// </summary>
+    public static FrameGateUsingScope AcquireFrameUsingScope()
+    {
+        EnterFrameGate();
+
+        return new();
     }
 
 
@@ -190,23 +225,47 @@ public static class Logic
 
 
 
-/*
-    private static readonly DynamicUnmanagedHAllocator LogicContentAllocator = new();
+    private static void CloseFrameGateAndWait()
+    {
+        if (Interlocked.Exchange(ref _open, 0) == 0)
+            return;
 
-    /// <summary>
-    /// Allocates temporary unmanaged heap memory that will be valid until the end of the logic frame.
-    /// </summary>
-    public static unsafe byte* AllocateLogicTemporaryUnmanaged(int bytes) => LogicContentAllocator.Alloc(bytes);
-
-*/
-
+        _gateOpen.Reset();   // block new entrants
+        _drained.Wait();    // wait for all active to exit
+    }
 
 
+    private static void OpenFrameGate()
+    {
+        Volatile.Write(ref _open, 1);
+        _gateOpen.Set();
+    }
 
-    public static float Delta;
 
-    public static float TimeActive;
-    public static ulong TimeActiveMsec;
+
+
+
+
+    /*
+        private static readonly DynamicUnmanagedHAllocator LogicContentAllocator = new();
+
+        /// <summary>
+        /// Allocates temporary unmanaged heap memory that will be valid until the end of the logic frame.
+        /// </summary>
+        public static unsafe byte* AllocateLogicTemporaryUnmanaged(int bytes) => LogicContentAllocator.Alloc(bytes);
+
+    */
+
+
+
+
+
+    public static float Delta { get; private set; }
+
+    public static float TimeActive { get; private set; }
+    public static ulong TimeActiveMsec { get; private set; }
+
+
 
 
 
@@ -222,35 +281,15 @@ public static class Logic
         LogicStopWatch.Start();
 
 
-        //set this thread as working (forces other threads to wait for this)
-        SetCurrentThreadAsWorking();
 
+        OpenFrameGate();
 
         LogicFrameAwaiter.NextFrame();
 
-
-
         Entry.Loop();
 
+        CloseFrameGateAndWait();
 
-
-
-
-
-        //set thread as not working
-        SetCurrentThreadAsNotWorking();
-
-
-
-
-        //wait for all threads operating on engine logic to not be working
-        while (true)
-        {
-            lock (ThreadsWorking)
-                if (!ThreadsWorking.ContainsValue(true)) 
-                    break;
-
-        }
 
 
 
@@ -291,7 +330,7 @@ public static class Logic
         Rendering.TryPushRenderCommands();
 
 
-        Delta = float.Min((float)LogicStopWatch.Elapsed.TotalSeconds, 1f/60f);
+        Delta = (float)LogicStopWatch.Elapsed.TotalSeconds;
 
         TimeActive += Delta;
         TimeActiveMsec += (ulong)LogicStopWatch.Elapsed.Milliseconds;
