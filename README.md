@@ -66,4 +66,4 @@ To start, clone the repo, then install the following development-time cli depend
 | spirv-cross              |   PATH variable                                                                           |
 | Nvidia Texture Tools 3   |   copy path to nvtt_export.exe and supply to EngineSettings.cs/EngineSettings/NVTT3Path   |
 
-Then open some of the demo projects to get a fundamental grasp of the engine, or create your own and simply add ``` <Import Project="..\EntryProps.props" /> ``` to your .csproj's Project body.
+Then open some of the demo projects to get a fundamental grasp of the engine, or create your own and simply import EntryProps via something like ``` <Import Project="..\EntryProps.props" /> ``` in your .csproj's Project body.
