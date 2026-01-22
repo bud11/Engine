@@ -1,9 +1,0 @@
-﻿<Project Sdk="Microsoft.NET.Sdk">
-	
-	<Import Project="..\EntryProps.props" />
-	
-	<ItemGroup>
-	  <PackageReference Include="System.Runtime" Version="4.3.1" />
-	</ItemGroup>
-	
-</Project>
