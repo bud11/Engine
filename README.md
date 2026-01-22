@@ -74,4 +74,9 @@ Then open some of the demo projects to get a fundamental grasp of the engine, or
 
 # Further info/troubleshooting
 
-- Debug/release builds are categorized by a respective presence of DEBUG/RELEASE compilation symbol, NOT the name of the project configuration. This is so that 
+- Debug/release builds are categorized by presence of a DEBUG or RELEASE compilation symbol, NOT the name of the project configuration. This is so that other configurations like editor/tooling layouts also count as "debug builds".
+
+- Async support is totally included.
+
+
+Most if not all of this info should be explained through demos in future.
