@@ -86,7 +86,7 @@
 
 	
 	<!-- DEBUG PACKAGES -->
-	<ItemGroup Condition="'$(Configuration)'=='Debug'">
+	<ItemGroup Condition="$(DefineConstants.Contains('DEBUG'))">
 		<PackageReference Include="ImGui.NET" Version="1.91.6.1"/>
 		<PackageReference Include="ByteSize" Version="2.1.2" />
 		<PackageReference Include="DdsKtxSharp" Version="1.1.0.1" />
@@ -123,9 +123,9 @@
 
 
 
-	<!-- AOT IN RELEASE (PUBLISH ONLY!!!!!) -->
+	<!-- COMPILER OPTIMIZATION/STRIPPING IN RELEASE + PUBLISH AOT -->
 
-	<PropertyGroup Condition="'$(Configuration)'=='Release'">
+	<PropertyGroup Condition="$(DefineConstants.Contains('RELEASE'))">
 		
 		<PublishAot>true</PublishAot>
 		<SelfContained>true</SelfContained>
@@ -148,12 +148,9 @@
 	</PropertyGroup>
 
 
-
-
-
-	<!-- STRIPPING IN RELEASE -->
+	<!-- FURTHER RELEASE STRIPPING -->
 	
-	<ItemGroup Condition="'$(Configuration)'=='Release'">
+	<ItemGroup Condition="$(DefineConstants.Contains('RELEASE'))">
 		<Compile Remove="$(MSBuildThisFileDirectory)\Engine\Stripped\**\*.cs" />
 
 		<TrimmerRootAssembly Include="$(TargetName)" />
@@ -179,7 +176,7 @@
 	</PropertyGroup>
 
 
-	<Target Name="RunEngineBuild" BeforeTargets="CoreCompile" Condition="'$(Configuration)' == 'Release' AND '$(EngineBuildPass)' != 'true' AND '$(DesignTimeBuild)' != 'true'">
+	<Target Name="RunEngineBuild" BeforeTargets="CoreCompile" Condition="$(DefineConstants.Contains('RELEASE')) AND '$(EngineBuildPass)' != 'true' AND '$(DesignTimeBuild)' != 'true'">
 
 
 		<!-- build in debug engine build pass mode -->
@@ -198,13 +195,13 @@
 		<Delete Files="$(ProjectDir)obj\project.assets.json" />
 		<Delete Files="$(ProjectDir)obj\project.assets.lock.json" />
 		
-		<Exec Command='dotnet restore &quot;$(ProjectPath)&quot; /p:Configuration=Release ' />
+		<Exec Command='dotnet restore &quot;$(ProjectPath)&quot; /p:Configuration=$(Configuration) ' />
 
 	</Target>
 
 
 
-	<ItemGroup Condition="'$(Configuration)' == 'Release'">
+	<ItemGroup Condition="$(DefineConstants.Contains('RELEASE'))">
 		<Compile Include="obj/Generated/EngineBuildProcessGenerated.g.cs">
 			<Link>_Generated/EngineBuildProcessGenerated.g.cs</Link> 
 		</Compile>
@@ -217,7 +214,7 @@
 
 	
 	<!-- ASSET ARCHIVE CORRECTION FOR NON-PUBLISHED RELEASE BUILDS -->
-	<PropertyGroup Condition = " '$(Configuration)' == 'Release' AND '$(PublishDir)' != '' ">
+	<PropertyGroup Condition = "$(DefineConstants.Contains('RELEASE')) AND '$(PublishDir)' != '' ">
 		<DefineConstants>$(DefineConstants);IS_AOT_PUBLISH</DefineConstants>
 	</PropertyGroup>
 
