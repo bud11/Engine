@@ -74,5 +74,5 @@ Then open some of the demo projects to get a fundamental grasp of the engine, or
 
 # Further info/troubleshooting
 
-- Debug/release builds are categorized by presence of a DEBUG or RELEASE compilation symbol, NOT the name of the project configuration. This is so that other configurations like editor/tooling layouts also count as "debug builds".
+- Debug/release builds are categorized by presence of a DEBUG or RELEASE compilation symbol, NOT the name of the project configuration. This is so that other configurations like editor/tooling layouts can also be allowed to count as "debug builds".
 
