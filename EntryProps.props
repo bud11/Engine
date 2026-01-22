@@ -1,0 +1,229 @@
+<Project>
+
+
+
+	<!-- COMPILATION SYMBOLS -->
+	<PropertyGroup>
+		<DefineConstants>IncludeVulkanBackend</DefineConstants>
+	</PropertyGroup>
+
+
+
+
+
+
+
+
+	<!-- BASIC PROPERTIES -->
+	<PropertyGroup>
+		
+		<OutputType>WinExe</OutputType>
+
+		<TargetFramework>net9.0</TargetFramework>
+		<RuntimeIdentifier>win-x64</RuntimeIdentifier>
+
+		
+		<ImplicitUsings>enable</ImplicitUsings>
+		<Nullable>enable</Nullable>
+		<AllowUnsafeBlocks>True</AllowUnsafeBlocks>
+		
+		<StartupObject>Engine.Core.Kernel</StartupObject>
+
+		
+		
+	</PropertyGroup>
+
+	
+
+
+
+	<!-- INCLUDE ENGINE SOURCE FILES -->
+	<ItemGroup>
+		<Compile Include="..\Engine\**\*.cs">
+			<Link>Engine\%(RecursiveDir)%(Filename)%(Extension)</Link>
+		</Compile>
+
+		<None Include="..\EntryProps.props" Link="Engine\EntryProps.props" />
+	</ItemGroup>
+
+	
+
+	
+	
+	<!-- EXCLUDE MISC FILES, DISPLAY ASSETS -->
+	<PropertyGroup>
+		<EnableDefaultItems>false</EnableDefaultItems>
+	</PropertyGroup>
+	
+	<ItemGroup>
+		<None Include="Assets\**\*" CopyToOutputDirectory="Never"  />
+
+		<Compile Include="**/*.cs" Exclude="bin/**;obj/**" />
+	</ItemGroup>
+
+
+	
+	
+
+
+
+
+	<!-- PACKAGES -->
+	<ItemGroup>
+		<PackageReference Include="SDL3-CS" Version="3.3.6"  />
+		<PackageReference Include="SDL3-CS.Native" Version="3.3.6" />
+		
+		<PackageReference Include="Silk.NET.Vulkan" Version="2.22.0" />
+		<PackageReference Include="Silk.NET.Vulkan.Extensions.EXT" Version="2.22.0" />
+		<PackageReference Include="Silk.NET.Vulkan.Extensions.KHR" Version="2.22.0" />
+		
+		<PackageReference Include="ZstdSharp.Port" Version="0.8.6" />
+
+		
+	</ItemGroup>
+
+
+
+	
+	<!-- DEBUG PACKAGES -->
+	<ItemGroup Condition="'$(Configuration)'=='Debug'">
+		<PackageReference Include="ImGui.NET" Version="1.91.6.1"/>
+		<PackageReference Include="ByteSize" Version="2.1.2" />
+		<PackageReference Include="DdsKtxSharp" Version="1.1.0.1" />
+		<PackageReference Include="StbImageSharp" Version="2.30.15"/>
+		<PackageReference Include="TinyEXR.NET" Version="0.3.11" />
+	</ItemGroup>
+
+
+
+
+
+
+
+
+
+	<!-- GENERAL SOURCE GEN -->
+	<ItemGroup>
+		<ProjectReference Include="..\SourceGen\_SourceGen.csproj" OutputItemType="Analyzer" ReferenceOutputAssembly="false" />
+	</ItemGroup>
+	<PropertyGroup>
+		<EmitCompilerGeneratedFiles>true</EmitCompilerGeneratedFiles>
+		<CompilerGeneratedFilesOutputPath>$(BaseIntermediateOutputPath)Generated</CompilerGeneratedFilesOutputPath>
+	</PropertyGroup>
+
+	<ItemGroup>
+		<Compile Include="..\SourceGen\SourceGenAttributes.cs">
+			<Link>Engine/Core/SourceGenAttributes.cs</Link>
+		</Compile>
+	</ItemGroup>
+
+
+	
+	
+
+
+
+	<!-- AOT IN RELEASE (PUBLISH ONLY!!!!!) -->
+
+	<PropertyGroup Condition="'$(Configuration)'=='Release'">
+		
+		<PublishAot>true</PublishAot>
+		<SelfContained>true</SelfContained>
+		
+		<InvariantGlobalization>true</InvariantGlobalization>
+		
+		<Optimize>true</Optimize>
+
+
+		<DebugType>none</DebugType>
+		<DebugSymbols>false</DebugSymbols>
+		<StripSymbols>true</StripSymbols>
+
+		<EnableCompressionInSingleFile>true</EnableCompressionInSingleFile>
+		<PublishSingleFile>true</PublishSingleFile>
+
+		<IsAotCompatible>true</IsAotCompatible>
+		<AnalysisMode>Recommended</AnalysisMode>
+		
+	</PropertyGroup>
+
+
+
+
+
+	<!-- STRIPPING IN RELEASE -->
+	
+	<ItemGroup Condition="'$(Configuration)'=='Release'">
+		<Compile Remove="..\Engine\Stripped\**\*.cs" />
+
+		<TrimmerRootAssembly Include="$(TargetName)" />
+	</ItemGroup>
+
+
+
+
+	
+
+
+	
+	
+
+
+
+	<!-- BUILD PROCESS / SOURCE GEN FOR RELEASE -->
+
+
+	<PropertyGroup Condition="'$(EngineBuildPass)' == 'true'">
+		<StartupObject>Engine.Stripped.EngineBuildProcess</StartupObject>
+		<DefineConstants>$(DefineConstants);ENGINE_BUILD_PASS</DefineConstants>
+	</PropertyGroup>
+
+
+	<Target Name="RunEngineBuild" BeforeTargets="CoreCompile" Condition="'$(Configuration)' == 'Release' AND '$(EngineBuildPass)' != 'true' AND '$(DesignTimeBuild)' != 'true'">
+
+
+		<!-- build in debug engine build pass mode -->
+		<Exec Command='dotnet build "$(ProjectPath)" -c Debug /p:EngineBuildPass=True' />
+
+		
+		<!-- execute debug -->
+		<Exec
+		  Command="&quot;$(ProjectDir)bin\Debug\net9.0\win-x64\$(AssemblyName).exe&quot;"
+		  WorkingDirectory="$(TargetDir)"
+		  IgnoreExitCode="false"
+		  ConsoleToMSBuild="true" />
+
+
+		<!-- delete dep graph created by debug and restore fresh for release so debug deps dont leak into release -->
+		<Delete Files="$(ProjectDir)obj\project.assets.json" />
+		<Delete Files="$(ProjectDir)obj\project.assets.lock.json" />
+		
+		<Exec Command='dotnet restore &quot;$(ProjectPath)&quot; /p:Configuration=Release ' />
+
+	</Target>
+
+
+
+	<ItemGroup Condition="'$(Configuration)' == 'Release'">
+		<Compile Include="obj/Generated/EngineBuildProcessGenerated.g.cs">
+			<Link>_Generated/EngineBuildProcessGenerated.g.cs</Link> 
+		</Compile>
+	</ItemGroup>
+
+
+	
+
+	
+
+	
+	<!-- ASSET ARCHIVE CORRECTION FOR NON-PUBLISHED RELEASE BUILDS -->
+	<PropertyGroup Condition = " '$(Configuration)' == 'Release' AND '$(PublishDir)' != '' ">
+		<DefineConstants>$(DefineConstants);IS_AOT_PUBLISH</DefineConstants>
+	</PropertyGroup>
+
+
+
+
+
+
+</Project>
