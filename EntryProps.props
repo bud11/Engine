@@ -39,11 +39,11 @@
 
 	<!-- INCLUDE ENGINE SOURCE FILES -->
 	<ItemGroup>
-		<Compile Include="..\Engine\**\*.cs">
+		<Compile Include="$(MSBuildThisFileDirectory)\Engine\**\*.cs">
 			<Link>Engine\%(RecursiveDir)%(Filename)%(Extension)</Link>
 		</Compile>
 
-		<None Include="..\EntryProps.props" Link="Engine\EntryProps.props" />
+		<None Include="$(MSBuildThisFileDirectory)\EntryProps.props" Link="Engine\EntryProps.props" />
 	</ItemGroup>
 
 	
@@ -104,7 +104,7 @@
 
 	<!-- GENERAL SOURCE GEN -->
 	<ItemGroup>
-		<ProjectReference Include="..\SourceGen\_SourceGen.csproj" OutputItemType="Analyzer" ReferenceOutputAssembly="false" />
+		<ProjectReference Include="$(MSBuildThisFileDirectory)\SourceGen\_SourceGen.csproj" OutputItemType="Analyzer" ReferenceOutputAssembly="false" />
 	</ItemGroup>
 	<PropertyGroup>
 		<EmitCompilerGeneratedFiles>true</EmitCompilerGeneratedFiles>
@@ -112,7 +112,7 @@
 	</PropertyGroup>
 
 	<ItemGroup>
-		<Compile Include="..\SourceGen\SourceGenAttributes.cs">
+		<Compile Include="$(MSBuildThisFileDirectory)\SourceGen\SourceGenAttributes.cs">
 			<Link>Engine/Core/SourceGenAttributes.cs</Link>
 		</Compile>
 	</ItemGroup>
@@ -154,7 +154,7 @@
 	<!-- STRIPPING IN RELEASE -->
 	
 	<ItemGroup Condition="'$(Configuration)'=='Release'">
-		<Compile Remove="..\Engine\Stripped\**\*.cs" />
+		<Compile Remove="$(MSBuildThisFileDirectory)\Engine\Stripped\**\*.cs" />
 
 		<TrimmerRootAssembly Include="$(TargetName)" />
 	</ItemGroup>
