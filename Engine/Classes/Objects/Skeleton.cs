@@ -30,7 +30,7 @@ public partial class Skeleton : GameObject
 
 
     [GameObjectInitMethod]
-    public new void Init(GameObject[] Bones)
+    public new void Init(GameObject[] Bones, string Name = default, Matrix4x4 Transform = default)
     {
 
         var arr = new Bone[Bones.Length];
@@ -65,8 +65,9 @@ public partial class Skeleton : GameObject
         BonesByIndex = ImmutableArray.Create(arr);
         this.Bones = ImmutableDictionary.ToImmutableDictionary(dict);
 
-        Init();
+        base.Init(Name, Transform);
     }
+
 
 
     private bool NeedsSkeletonRecalc;

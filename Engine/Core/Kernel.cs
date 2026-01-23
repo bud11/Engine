@@ -132,8 +132,10 @@ public static class Kernel
 #if DEBUG
                         ImGUIController.Shutdown();
 #endif
-
                         Window.CloseWindow();
+
+                        Loading.UnloadAllResources();
+
                         return;
                     }
 

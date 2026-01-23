@@ -92,6 +92,7 @@
 		<PackageReference Include="DdsKtxSharp" Version="1.1.0.1" />
 		<PackageReference Include="StbImageSharp" Version="2.30.15"/>
 		<PackageReference Include="TinyEXR.NET" Version="0.3.11" />
+		<PackageReference Include="System.IO.Hashing" Version="10.0.2" />
 	</ItemGroup>
 
 

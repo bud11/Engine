@@ -8,6 +8,7 @@ using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
+using System.IO.Hashing;
 using System.Linq;
 using System.Reflection;
 using System.Threading;
@@ -302,52 +303,56 @@ public static partial class Loading
 
         if (convertcheck != null && convertcheck.GetCustomAttribute<StaticVirtualOverrideAttribute>() != null)
         {
-            byte[] hash = null;
-
+           
 
 
             var cachedFileDir = Path.GetFullPath(Path.Combine(EngineSettings.AssetCachePath, Path.GetRelativePath(Path.GetFullPath(EngineSettings.AssetFolderPath), loadpath + ".cached")));
             Directory.CreateDirectory(Directory.GetParent(cachedFileDir).FullName);
 
 
+
+            var load = await LoadAssetBytes(loadpath);
+
+
+            uint crc = 0;
+
             if (FileExistsCaseSensitive(cachedFileDir))
             {
-                using (var stream = File.OpenRead(Path.Combine(EngineSettings.AssetFolderPath, loadpath)))
-                    hash = System.Security.Cryptography.MD5.HashData(stream);
+                crc = Crc32.HashToUInt32(load);
 
-                using (var filestream = new FileStream(cachedFileDir, FileMode.Open))
+
+                using (var filestream = new FileStream(cachedFileDir, FileMode.Open, FileAccess.Read))
                 {
-                    byte[] hashread = new byte[hash.Length];
-                    await filestream.ReadExactlyAsync(hashread);
+                    byte[] stored = new byte[sizeof(uint)];
+                    
+                    await filestream.ReadExactlyAsync(stored);
 
-                    if (hashread.SequenceEqual(hash))
+                    uint storedCrc = BitConverter.ToUInt32(stored);
+
+
+                    if (storedCrc == crc)
                     {
                         int remaining = (int)(filestream.Length - filestream.Position);
                         finalBytes = new byte[remaining];
                         await filestream.ReadExactlyAsync(finalBytes);
                     }
-                    else hash = null;
+                    else
+                    {
+                        crc = 0; 
+                    }
                 }
             }
 
 
-
-
             //cached file wasnt found or doesn't match
-            if (hash == null)
+            if (crc == 0)
             {
             
-               
-
-                var load = await LoadAssetBytes(loadpath);
-
                 finalBytes = await StaticVirtuals.Engine_Core_GameResource_ConvertToFinalAssetBytes<T>(load, loadpath);
-
-
 
                 using (var filestream = new FileStream(cachedFileDir, FileMode.Create))
                 {
-                    await filestream.WriteAsync(System.Security.Cryptography.MD5.HashData(load));
+                    await filestream.WriteAsync(Crc32.Hash(load));
                     await filestream.WriteAsync(finalBytes);
                 }
 

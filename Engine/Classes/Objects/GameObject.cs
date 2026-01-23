@@ -95,7 +95,7 @@ public partial class GameObject : Freeable
         {
             if (TopLevel) return Transform;
 
-            //if (!GlobalTransformDirty) return GlobalTransformCached;
+            if (!GlobalTransformDirty) return GlobalTransformCached;
 
             Transform global = Transform;
             var p = Parent;
@@ -231,11 +231,11 @@ public partial class GameObject : Freeable
     }
 
 
-
-
-
+    public bool IsSceneInstanceRoot;
 
     public bool Visible = true;
+
+
 
     /// <summary>
     /// Whether this object and all of its ancestors have <see cref="Visible"/> enabled.
@@ -473,13 +473,12 @@ public partial class GameObject : Freeable
     public void Init(string Name = default, Matrix4x4 Transform = default)
     {
         this.Name = Name;
-        this.Transform = EngineMath.Transform.Identity;
+        this.Transform = Transform == default ? EngineMath.Transform.Identity : Transform;
 
         AllGameObjects.Add(this);
 
         if (Name != null)
             NamedGameObjects.TryAdd(Name, this);
-
 
 
         FinalInit();

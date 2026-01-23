@@ -10,6 +10,7 @@ using static Engine.Core.EngineMath;
 using static Engine.Core.Rendering;
 using static Engine.Core.RenderingBackend;
 using Engine.GameResources;
+using System.Numerics;
 
 
 
@@ -51,7 +52,7 @@ public partial class ModelInstance : DrawObject
 
 
     [GameObjectInitMethod]
-    public void Init(ModelResource Model, GameResource[] Materials = null, Dictionary<string, VertexAttributeDefinitionPlusBufferStruct> extraAttributeBuffers = null)
+    public void Init(ModelResource Model, GameResource[] Materials = null, Dictionary<string, VertexAttributeDefinitionPlusBufferStruct> extraAttributeBuffers = null, string Name = default, Matrix4x4 Transform = default)
     {
 
         this.Model = Model;
@@ -75,7 +76,7 @@ public partial class ModelInstance : DrawObject
                 VertexAttributeBuffers[kv.Key] = new VertexAttributeDefinitionPlusBufferClass(kv.Value.Buffer.Target, kv.Value.Definition);
 
 
-        base.Init();
+        base.Init(Name, Transform);
         AllDrawableObjects.Add(this);
     }
 

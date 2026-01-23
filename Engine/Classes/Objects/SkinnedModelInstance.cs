@@ -10,8 +10,7 @@ using static Engine.Core.EngineMath;
 using static Engine.Core.RenderingBackend;
 using Engine.Core;
 using Engine.GameResources;
-
-
+using System.Numerics;
 
 public partial class SkinnedModelInstance : ModelInstance
 {
@@ -29,11 +28,11 @@ public partial class SkinnedModelInstance : ModelInstance
 
 
     [GameObjectInitMethod]
-    public new void Init(Skeleton Skeleton, ModelResource Model, GameResource[] Materials = null, Dictionary<string, VertexAttributeDefinitionPlusBufferStruct> extraAttributeBuffers = null)
+    public new void Init(Skeleton Skeleton, ModelResource Model, GameResource[] Materials = null, Dictionary<string, VertexAttributeDefinitionPlusBufferStruct> extraAttributeBuffers = null, string Name = default, Matrix4x4 Transform = default)
     {
 
         this.Skeleton = Skeleton;
-        base.Init(Model, Materials, extraAttributeBuffers);
+        base.Init(Model, Materials, extraAttributeBuffers, Name, Transform);
     }
 
 

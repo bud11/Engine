@@ -310,6 +310,8 @@ public partial class SceneResource : GameResource
         var rootObj = CreateInstanceTree(SceneRootObject, args);
 
 
+        rootObj.IsSceneInstanceRoot = true;
+
 
         if (callReadies)
             InitAll(rootObj);
@@ -366,14 +368,8 @@ public partial class SceneResource : GameResource
 
         Dictionary<string, object> ResolveArgs(SceneObjectGenData gendata, Dictionary<string, object> parentArgs)
         {
-            // Base args
+            // Start with this object's args
             var args = gendata.Args ?? new Dictionary<string, object>();
-
-
-            // Root override
-            if (gendata == SceneRootObject && parentArgs != null)
-                return Union(args, parentArgs);
-
 
             // Walk up through scene instance ancestry
             var gather = gendata;
@@ -383,8 +379,13 @@ public partial class SceneResource : GameResource
                 gather = gather.OriginalGenData;
             }
 
+            // Apply root override LAST
+            if (gendata == SceneRootObject && parentArgs != null)
+                args = Union(args, parentArgs);
+
             return args;
         }
+
 
 
 

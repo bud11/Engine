@@ -1103,7 +1103,7 @@ public static partial class RenderingBackend
 
 
 
-        private unsafe void CreateStagingBuffer(ulong size, out Silk.NET.Vulkan.Buffer buffer, out DeviceMemory memory)
+        private unsafe void CreateStagingBuffer(ulong size, out Buffer buffer, out DeviceMemory memory)
         {
             BufferCreateInfo bufferInfo = new BufferCreateInfo
             {
@@ -3709,6 +3709,17 @@ public static partial class RenderingBackend
             VK.CmdSetViewport(RenderThreadCommandBuffer, 0, 1, &viewport);
 
 
+            Rect2D scissor = new()
+            {
+                Offset = new Offset2D { X = (int)ScissorOffset.X, Y = (int)ScissorOffset.Y },
+                Extent = new Extent2D { Width = ScissorSize.X, Height = ScissorSize.Y }
+            };
+
+            VK.CmdSetScissor(RenderThreadCommandBuffer, 0, 1, &scissor);
+
+
+
+
             // Issue the draw
             if (indexBuffer != null)
             {
@@ -3746,18 +3757,16 @@ public static partial class RenderingBackend
 
 
 
+        private static Vector2<uint> ScissorOffset, ScissorSize;
 
 
         public void SetScissor(Vector2<uint> offset, Vector2<uint> size)
         { 
-            Rect2D scissor = new()
-            {
-                Offset = new Offset2D { X = (int)offset.X, Y = (int)offset.Y },
-                Extent = new Extent2D { Width = size.X, Height = size.Y }
-            };
-
-            VK.CmdSetScissor(RenderThreadCommandBuffer, 0, 1, &scissor);
+            ScissorOffset = offset;
+            ScissorSize = size;
         }
+
+
 
 
 
