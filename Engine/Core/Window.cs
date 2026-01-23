@@ -3,6 +3,7 @@ namespace Engine.Core;
 
 using Engine.Core;
 using SDL3;
+using System.Diagnostics;
 using System.Runtime.InteropServices;
 using System.Text;
 using static Engine.Core.EngineMath;
@@ -56,6 +57,11 @@ public static class Window
     public static void WindowPoll()
     {
 
+        lock (windowValidLock)
+            windowValid = true;
+
+
+
         MouseScrollWheelDelta = 0;
 
         while (SDL.PollEvent(out var @ev))
@@ -69,14 +75,19 @@ public static class Window
 
                     break;
 
+
                 case SDL.EventType.WindowResized:
-                    RenderingBackend.ConfigureSwapchain(true);
+                case SDL.EventType.WindowEnterFullscreen:
+                case SDL.EventType.WindowLeaveFullscreen:
+                    ReconfigureWindow(GetWindowClientArea(), false, true, false, 0, true, string.Empty);
                     break;
+
 
                 case SDL.EventType.MouseWheel:
                     MouseScrollWheelDelta = ev.Wheel.Y;
 
                     break;
+
             }
 
 
@@ -171,16 +182,15 @@ public static class Window
 
 
 
-
-
-    public static void SetWindowSize(Vector2<uint> size) 
-        => SDL.SetWindowSize(SDLWindowHandle, (int)size.X, (int)size.Y);
-
     public static void SetWindowPosition(Vector2<uint> position) =>
         SDL.SetWindowPosition(SDLWindowHandle, (int)position.X, (int)position.Y);
 
+
+
     public static void ReconfigureWindow(
-        
+
+        Vector2<uint> Size,
+
         bool Fullscreen,
         bool Resizeable,
         bool AlwaysOnTop,
@@ -192,14 +202,40 @@ public static class Window
 
         )
     {
-        SDL.SetWindowSurfaceVSync(SDLWindowHandle, VSync);
-        SDL.SetWindowResizable(SDLWindowHandle, Resizeable);
-        SDL.SetWindowFullscreen(SDLWindowHandle, Fullscreen);
-        SDL.SetWindowAlwaysOnTop(SDLWindowHandle, AlwaysOnTop);
 
-        RenderingBackend.ConfigureSwapchain(UseHDR);
+        lock (windowValidLock)
+        {
+            SDL.SetWindowSize(SDLWindowHandle, (int)Size.X, (int)Size.Y);
 
-        SDL.SyncWindow(SDLWindowHandle);
+            SDL.SetWindowSurfaceVSync(SDLWindowHandle, VSync);
+            SDL.SetWindowResizable(SDLWindowHandle, Resizeable);
+            SDL.SetWindowFullscreen(SDLWindowHandle, Fullscreen);
+            SDL.SetWindowAlwaysOnTop(SDLWindowHandle, AlwaysOnTop);
+
+            RenderingBackend.ConfigureSwapchain(UseHDR);
+
+            SDL.SyncWindow(SDLWindowHandle);
+
+            windowValid = false;
+        }
+    }
+
+
+    private static object windowValidLock = new();
+    private static bool windowValid;
+
+
+    /// <summary>
+    /// Returns false if the frame's command buffer is no longer valid due to mid-frame window reconfiguration. Reset at the beginning of each frame.
+    /// </summary>
+    /// <returns></returns>
+    public static bool GetRenderCommandsValid()
+    {
+        lock (windowValidLock)
+        {
+            if (!windowValid) Debug.Print("invalid, cleared");
+            return windowValid;
+        }
     }
 
 

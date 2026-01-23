@@ -4,7 +4,7 @@
 
 	<!-- COMPILATION SYMBOLS -->
 	<PropertyGroup>
-		<DefineConstants>IncludeVulkanBackend</DefineConstants>
+		<DefineConstants>$(DefineConstants);IncludeVulkanBackend</DefineConstants>
 	</PropertyGroup>
 
 
@@ -215,7 +215,7 @@
 	
 	<!-- ASSET ARCHIVE CORRECTION FOR NON-PUBLISHED RELEASE BUILDS -->
 	<PropertyGroup Condition = "$(DefineConstants.Contains('RELEASE')) AND '$(PublishDir)' != '' ">
-		<DefineConstants>$(DefineConstants);IS_AOT_PUBLISH</DefineConstants>
+		<DefineConstants>$(DefineConstants);IS_AOT_PUBLISH;</DefineConstants>
 	</PropertyGroup>
 
 

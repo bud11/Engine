@@ -17,6 +17,7 @@ using Silk.NET.Core.Native;
 using Silk.NET.Vulkan;
 using Silk.NET.Vulkan.Extensions.EXT;
 using Silk.NET.Vulkan.Extensions.KHR;
+using System.Diagnostics;
 using System.Numerics;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
@@ -1399,7 +1400,7 @@ public static partial class RenderingBackend
         private class VulkanBufferAndMemory : DeferredWriteBase
         {
 
-            public readonly Silk.NET.Vulkan.Buffer Buffer;
+            public readonly Buffer Buffer;
             public readonly uint Size;
 
             public readonly DeviceMemory Memory;
@@ -1410,7 +1411,7 @@ public static partial class RenderingBackend
 
 
 
-            public VulkanBufferAndMemory(Silk.NET.Vulkan.Buffer buffer, DeviceMemory memory, BufferUsageFlags usageFlags, uint size, void* mappedPtr = default) : base()
+            public VulkanBufferAndMemory(Buffer buffer, DeviceMemory memory, BufferUsageFlags usageFlags, uint size, void* mappedPtr = default) : base()
             {
                 Buffer=buffer;
                 Memory=memory;
@@ -2938,7 +2939,6 @@ public static partial class RenderingBackend
 
 
 
-
                 retArray[neededPassIdx] = new VulkanPipelineAndLayout(pipeline, layout);
 
             }
@@ -3603,7 +3603,7 @@ public static partial class RenderingBackend
 
 
             // Bind vertex buffers
-            var bufferHandles = stackalloc Silk.NET.Vulkan.Buffer[AttributeBuffers.Length];
+            var bufferHandles = stackalloc Buffer[AttributeBuffers.Length];
             var bufferOffsets = stackalloc ulong[AttributeBuffers.Length];
 
 
@@ -3788,7 +3788,14 @@ public static partial class RenderingBackend
 
         public void DestroyTexture(BackendTextureReference texture)
         {
-            throw new NotImplementedException();
+            var tex = ((VulkanTexture)texture.BackendRef);
+
+            VK.DestroyImageView(device, tex.View, null);
+            VK.DestroyImage(device, tex.Image, null);
+            VK.FreeMemory(device, tex.Memory, null);
+
+            if (tex.FramebufferCompatibleView.Handle != 0)
+                VK.DestroyImageView(device, tex.FramebufferCompatibleView, null);
         }
 
 
@@ -3820,7 +3827,10 @@ public static partial class RenderingBackend
 
             var pipelines = (VulkanPipelineAndLayout[])pipeline.BackendRef;
             for (int i = 0; i<pipelines.Length; i++)
+            {
+
                 VK.DestroyPipeline(device, pipelines[i].Pipeline, null);
+            }
         }
 
 

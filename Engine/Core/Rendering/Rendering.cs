@@ -108,9 +108,11 @@ public static partial class Rendering
 
     public static void TryPushRenderCommands()
     {
+
+
         lock (RenderThreadLock)
         {
-            if (State == RenderThreadState.Idle && RenderStopWatch.Elapsed.TotalSeconds <= (1d / EngineSettings.RenderRateTarget))
+            if (State == RenderThreadState.Idle && RenderStopWatch.Elapsed.TotalSeconds <= (1d / EngineSettings.RenderRateTarget) && Window.GetRenderCommandsValid())
             {
                 RenderStopWatch.Start();
 
@@ -124,9 +126,11 @@ public static partial class Rendering
 
     public static void FlushCommandsAndWait()
     {
+
+
         lock (RenderThreadLock)
         {
-            if (State == RenderThreadState.Idle)
+            if (State == RenderThreadState.Idle && Window.GetRenderCommandsValid())
             {
                 PushState = CommandPushState.Flush;
                 SwapBuffers();
@@ -388,7 +392,7 @@ public static partial class Rendering
     public static Task<object> PushRenderThreadAction(Func<object> func)
     {
 
-        if (Thread.CurrentThread == Kernel.RenderThread) return Task.FromResult(func.Invoke());
+        if (Thread.CurrentThread == Kernel.RenderThread) throw new Exception();
 
 
         var task = new TaskCompletionSource<object>();

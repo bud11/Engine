@@ -833,7 +833,7 @@ public static partial class RenderingBackend
     {
         protected override void OnFree()
         {
-            DestroyTextureSampler(this);
+            PushRenderThreadAction(() => { DestroyTextureSampler(this); return null; });
         }
 
 
@@ -850,8 +850,16 @@ public static partial class RenderingBackend
                 if (!SamplerCache.TryGetValue(spec, out var get))
                 {
                     //creation
-                    get = new(CreateTextureSampler(spec));
+                    get = new BackendSamplerReference(CreateTextureSampler(spec));
                     SamplerCache.Add(spec, get);
+
+
+                    get.OnFreeEvent.Add(() =>
+                    {
+                        lock (SamplerCache)
+                            SamplerCache.Remove(spec);
+                    });
+
                 }
 
                 return get;
@@ -998,8 +1006,10 @@ public static partial class RenderingBackend
 
         public readonly ImmutableArray<BackendResourceSetReference> DefaultResourceSets = CreateDefaultResourceSets(metadata.ResourceSets);
 
-        protected override void OnFree() 
-            => DestroyShader(this);
+        protected override void OnFree()
+        {
+            PushRenderThreadAction(() => { DestroyShader(this); return null; });
+        }
     }
 
 
@@ -1009,8 +1019,10 @@ public static partial class RenderingBackend
 
         public readonly ImmutableArray<BackendResourceSetReference> DefaultResourceSets = CreateDefaultResourceSets(metadata.ResourceSets);
 
-        protected override void OnFree() 
-            => DestroyComputeShader(this);
+        protected override void OnFree()
+        {
+            PushRenderThreadAction(() => { DestroyComputeShader(this); return null; });
+        }
     }
 
 
@@ -1608,8 +1620,8 @@ public static partial class RenderingBackend
         public readonly FrameBufferPipelineDetails Details = details;
 
         protected override void OnFree()
-        {
-            DestroyFrameBufferPipeline(this);
+        {   
+            PushRenderThreadAction(() => { DestroyFrameBufferPipeline(this); return null; });
         }
     }
 
@@ -1623,7 +1635,7 @@ public static partial class RenderingBackend
     {
         protected override void OnFree()
         {
-            DestroyFrameBufferObject(this);
+            PushRenderThreadAction(() => { DestroyFrameBufferObject(this); return null; });
         }
     }
 
@@ -1694,9 +1706,16 @@ public static partial class RenderingBackend
         {
             foreach (var kv in Framebuffers)
             {
-                kv.Key.RemoveUser();
-                kv.Value.RemoveUser();
+                kv.Key.Free();
+                kv.Value.Free();
             }
+
+            for (int i = 0; i < ColorAttachments.Length; i++)
+                ColorAttachments[i]?.Free();
+
+
+            DepthStencil?.Free();
+
         }
 
 
@@ -2535,7 +2554,7 @@ public static partial class RenderingBackend
 
 #if DEBUG
                 //if (val.Definition.Stride % 4 != 0) 
-                //    throw new Exception("Strides must be power of 4");
+                //    throw new Exception("Strides must be power of 4");       some kind of checking needs to happen here for compatibility, but Im not sure what to enforce yet.
 #endif
 
 
@@ -2619,7 +2638,14 @@ public static partial class RenderingBackend
 
                 //destroys this pipeline if the shader or render pass it relies on are destroyed
                 Shader.OnFreeEvent.Add(get.Free);
-                
+
+
+                get.OnFreeEvent.Add(() => 
+                { 
+                    lock (DrawPipelineCache) 
+                        DrawPipelineCache.Remove(pipelinerequest); 
+                });
+
 
                 if (CurrentBackendRenderProgress != BackendRenderProgress.DrawingToScreen) 
                     ActiveFramebufferPipeline.OnFreeEvent.Add(get.Free);

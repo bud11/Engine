@@ -95,7 +95,7 @@ public partial class GameObject : Freeable
         {
             if (TopLevel) return Transform;
 
-            if (!GlobalTransformDirty) return GlobalTransformCached;
+            //if (!GlobalTransformDirty) return GlobalTransformCached;
 
             Transform global = Transform;
             var p = Parent;
