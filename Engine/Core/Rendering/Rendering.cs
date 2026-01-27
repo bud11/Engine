@@ -53,7 +53,7 @@ public static partial class Rendering
         RenderingBackend.CreateShaders();
 #endif
 
-        RenderingBackend.ConfigureSwapchain(EngineSettings.HDR);
+        RenderingBackend.ConfigureSwapchain(Window.GetWindowClientArea(), EngineSettings.HDR);
 
     }
 

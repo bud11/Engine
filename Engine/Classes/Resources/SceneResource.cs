@@ -17,11 +17,22 @@ using System.Text.Json;
 
 
 /// <summary>
-/// An index reference to a <see cref="GameObject"/>.
+/// An index reference to a <see cref="GameObject"/> within the context of scene-instantiated objects.
 /// </summary>
 /// <param name="Reference"></param>
 [StructLayout(LayoutKind.Sequential, Pack = 1, Size = sizeof(uint))]
 public readonly record struct ObjectReference(uint Reference);
+
+
+
+/// <summary>
+/// An string path to a <see cref="GameObject"/> relative to the scene root.
+/// </summary>
+/// <param name="Reference"></param>
+[StructLayout(LayoutKind.Sequential, Pack = 1, Size = sizeof(uint))]
+public readonly record struct ObjectPath(string Reference);
+
+
 
 
 
@@ -414,11 +425,24 @@ public partial class SceneResource : GameResource
         {
             foreach (var entry in args)
             {
+                //object index references
+
                 if (entry.Value is ObjectReference singleRef)
                     args[entry.Key] = ResolveRef(obj, singleRef);
 
                 else if (entry.Value is ObjectReference[] arr)
                     args[entry.Key] = arr.Select(r => ResolveRef(obj, r)).ToArray();
+
+
+
+                //object path references
+
+                else if (entry.Value is ObjectPath @ref)
+                    args[entry.Key] = obj.GetObject<GameObject>(@ref.Reference);
+
+                else if (entry.Value is ObjectPath[] arr2)
+                    args[entry.Key] = arr2.Select(r => obj.GetObject<GameObject>(r.Reference)).ToArray();
+
             }
         }
 

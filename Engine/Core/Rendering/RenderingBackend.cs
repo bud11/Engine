@@ -1847,7 +1847,7 @@ public static partial class RenderingBackend
 
 
     /// <summary>
-    /// <br/><b> WARNING: This method touches existing backend resources or state, and should be called outside of active frame rendering, from any thread. See <see cref="PushImmediateRenderThreadCommand{T}"/> or <see cref="PushDeferredPreRenderThreadCommand{T}"/>. </b>
+    /// <br/><b> WARNING: This method touches existing backend resources or state, and should be called outside of active frame rendering, from any thread. See <see cref="PushRenderThreadAction(Func{object})"/> or <see cref="PushDeferredPreRenderThreadCommand{T}"/>. </b>
     /// </summary>
     private struct _callonanythreadoutsideofrendering;
 
@@ -2347,11 +2347,11 @@ public static partial class RenderingBackend
     /// <inheritdoc cref="_callonanythreadoutsideofrendering"/>
     /// </summary>
     /// <param name="UseHDR"></param>
-    public static void ConfigureSwapchain(bool UseHDR)
+    public static void ConfigureSwapchain(Vector2<uint> Size, bool UseHDR)
     {
         CheckOutsideOfRendering();
 
-        var ret = Backend.ConfigureSwapchain(UseHDR);
+        var ret = Backend.ConfigureSwapchain(Size, UseHDR);
 
         CurrentSwapchainDetails = ret;
     }
@@ -2769,7 +2769,7 @@ public static partial class RenderingBackend
 
         public void Destroy();
 
-        public SwapchainDetails ConfigureSwapchain(bool UseHDR);
+        public SwapchainDetails ConfigureSwapchain(Vector2<uint> Size, bool UseHDR);
 
 
 

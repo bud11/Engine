@@ -54,6 +54,7 @@ public static class Window
 
 
 
+
     public static void WindowPoll()
     {
 
@@ -63,6 +64,8 @@ public static class Window
 
 
         MouseScrollWheelDelta = 0;
+
+
 
         while (SDL.PollEvent(out var @ev))
         {
@@ -110,7 +113,11 @@ public static class Window
 
 
         }
+
+
     }
+
+
 
 
     public static float MouseScrollWheelDelta { get; private set; }
@@ -131,7 +138,7 @@ public static class Window
     /// <returns></returns>
     public static Vector2<uint> GetWindowClientArea()
     {
-        var g = SDL.GetWindowSizeInPixels(SDLWindowHandle, out var x, out var y);
+        SDL.GetWindowSizeInPixels(SDLWindowHandle, out var x, out var y);
         return new((uint)x, (uint)y);
     }
 
@@ -212,9 +219,9 @@ public static class Window
             SDL.SetWindowFullscreen(SDLWindowHandle, Fullscreen);
             SDL.SetWindowAlwaysOnTop(SDLWindowHandle, AlwaysOnTop);
 
-            RenderingBackend.ConfigureSwapchain(UseHDR);
-
             SDL.SyncWindow(SDLWindowHandle);
+
+            Rendering.PushRenderThreadAction(() => { RenderingBackend.ConfigureSwapchain(Size, UseHDR); return null; });
 
             windowValid = false;
         }

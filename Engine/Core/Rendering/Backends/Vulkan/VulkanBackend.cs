@@ -589,7 +589,7 @@ public static partial class RenderingBackend
 
 
 
-        public SwapchainDetails ConfigureSwapchain(bool UseHDR)
+        public SwapchainDetails ConfigureSwapchain(Vector2<uint> Size, bool UseHDR)
         {
 
 
@@ -614,7 +614,7 @@ public static partial class RenderingBackend
 
             var presentMode = swapChainSupport.PresentModes.Contains(PresentModeKHR.MailboxKhr) ? PresentModeKHR.MailboxKhr : PresentModeKHR.FifoKhr;
 
-            var extent = ChooseSwapExtent(swapChainSupport.Capabilities);
+            var extent = ChooseSwapExtent(swapChainSupport.Capabilities, Size);
 
 
 
@@ -805,9 +805,9 @@ public static partial class RenderingBackend
         }
 
 
-        private Extent2D ChooseSwapExtent(SurfaceCapabilitiesKHR capabilities)
+        private Extent2D ChooseSwapExtent(SurfaceCapabilitiesKHR capabilities, Vector2<uint> Size)
         {
-            var framebufferSize = Window.GetWindowClientArea();
+            var framebufferSize = Size;
 
             return new()
             {
@@ -815,6 +815,7 @@ public static partial class RenderingBackend
                 Height = Math.Clamp(framebufferSize.Y, capabilities.MinImageExtent.Height, capabilities.MaxImageExtent.Height)
             };
         }
+
 
         private (SurfaceFormatKHR format, bool hdr) ChooseSwapSurfaceFormat(IReadOnlyList<SurfaceFormatKHR> availableFormats, bool HDR)
         {

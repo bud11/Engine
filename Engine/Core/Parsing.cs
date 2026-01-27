@@ -332,6 +332,7 @@ public static class Parsing
 
 
                 case "string":
+                case "objectpath":
                     if (!isArray)
                     {
                         final.AddRange(BitConverter.GetBytes(uint.MaxValue));
@@ -509,6 +510,11 @@ public static class Parsing
         ObjectReference,
 
         /// <summary>
+        /// Represents a reference to an object via a <see cref="string"/> path relative to the scene root.
+        /// </summary>
+        ObjectPath,
+
+        /// <summary>
         /// Represents a reference to a resource via a <see cref="uint"/> index.
         /// </summary>
         ResourceReference
@@ -642,10 +648,23 @@ public static class Parsing
                     break;
 
 
+                case SerializedArgumentTypes.ObjectPath:
+                    if (!isArray) argument = new ObjectPath(reader.ReadUintLengthPrefixedUTF8String());
+                    else
+                    {
+                        ObjectPath[] arr = new ObjectPath[count];
+                        for (int s = 0; s < arr.Length; s++)
+                            arr[s] = new ObjectPath(reader.ReadUintLengthPrefixedUTF8String());
+                        argument = arr;
+                    }
+                    break;
+
+
 
                 case SerializedArgumentTypes.ObjectReference:
                     readUnmanaged<ObjectReference>();
                     break;
+
 
 
                 case SerializedArgumentTypes.ResourceReference:

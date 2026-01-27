@@ -402,12 +402,12 @@ public partial class GameObject : Freeable
 
 
     /// <summary>
-    /// Gets a child via unix-like path.
+    /// Gets another object via unix-like path.
     /// </summary>
     /// <typeparam name="T"></typeparam>
     /// <param name="path"></param>
     /// <returns></returns>
-    public T GetChild<T>(string path) where T : GameObject
+    public T GetObject<T>(string path) where T : GameObject
     {
         var slash = path.IndexOf('/');
 
@@ -420,7 +420,7 @@ public partial class GameObject : Freeable
         if (slash == -1) return (T)get;
 
 
-        return get.GetChild<T>(path[slash..]);
+        return get.GetObject<T>(path[slash..]);
 
 
         T GetDirectChild(string name)
