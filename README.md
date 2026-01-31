@@ -1,5 +1,5 @@
 # A 3D game engine/framework written entirely in and around C#/NET 9.0.
-
+# 🚧 In active development, around 85% complete within the context of an initial public release 🚧
 
 
 ## Features:
@@ -16,45 +16,31 @@
 
 - A ton of helpful source generation
 
-- Full single-codebase source to modify and extend freely
+- Fully unified single-language source to modify and extend freely
 
 <br/>
 
 - Debug builds come with hot-reloadable code/shaders/assets and ImGUI integration 
 
-- Release builds come with shader precompilation, zstd asset compression, and target NativeAOT when published 
-
-
+- Release builds come with shader precompilation, zstd asset compression, and can target NativeAOT when published 
 
 
 
 ## Todo:
 
-- Compute shaders (technically present but currently unfinished and untested)
+- Compute shaders (technically present in some capacity but unfinished)
 
-<br/>
+- Moderate further testing, bugfixing and cleanup
 
-- Moderate further testing and bugfixing
-
-- Semi-moderate codebase-wide cleanup
-
-- More extensive annotation and documentation so that no part of the engine feels too deep or convoluted to casually understand
-
-- Potentially a slightly less opaque customizable/extensible csproj basis (EntryProps.props)
-
-<br/>
-
-- Potentially some sort of easily-separable support for audio and physics
+- More extensive annotation so that no part of the engine feels too deep or convoluted to casually understand
 
 
 
 ## Not included:
 
-Any shader types outside of vertex/fragment/compute
+- Any shader types outside of vertex/fragment/compute
 
-Any kind of default editor or specifically imposed creation workflow
-
-
+- Any kind of default editor or specifically imposed creation workflow
 
 
 
@@ -72,7 +58,10 @@ Then open some of the demo projects to get a fundamental grasp of the engine, or
 
 
 
-# Further info/troubleshooting
+# Demo images
 
-- Debug/release builds are categorized by presence of a DEBUG or RELEASE compilation symbol, NOT the name of the project configuration. This is so that other configurations like editor/tooling layouts can also be allowed to count as "debug builds".
+This section will be further populated with more advanced demos as they become avaliable within the demos folder.
+
+<img width="1282" height="752" alt="triangle" src="https://github.com/user-attachments/assets/de1aa505-3bd5-4ab0-9043-cce0854c0464" />
+<img width="1282" height="752" alt="cube" src="https://github.com/user-attachments/assets/146a1909-15ca-4b09-998c-f6e44d822c65" />
 

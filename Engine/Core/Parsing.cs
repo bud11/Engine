@@ -410,6 +410,46 @@ public static class Parsing
 
 
 
+    /// <summary>
+    /// Reads any unmanaged type. Platform agnostic. Also see <seealso cref="ReadTypeArray{T}(FileStream, uint)"/>
+    /// </summary>
+    /// <typeparam name="T"></typeparam>
+    /// <param name="reader"></param>
+    /// <returns></returns>
+    public static unsafe T ReadType<T>(this FileStream reader) where T : unmanaged
+    {
+        Span<byte> buf = stackalloc byte[sizeof(T)];
+        reader.ReadExactly(buf);
+
+        fixed (byte* p = buf)
+            return *(T*)p;
+    }
+
+
+
+    /// <summary>
+    /// Reads an array of any unmanaged type. Platform agnostic. Also see <seealso cref="ReadType{T}(FileStream)"/>
+    /// </summary>
+    /// <typeparam name="T"></typeparam>
+    /// <param name="reader"></param>
+    /// <param name="count"></param>
+    /// <returns></returns>
+    public static unsafe T[] ReadTypeArray<T>(this FileStream reader, uint count) where T : unmanaged
+    {
+        T[] result = new T[count];
+
+        Span<byte> span = MemoryMarshal.AsBytes(result.AsSpan());
+        reader.ReadExactly(span); 
+
+        return result;
+    }
+
+
+
+
+
+
+
 
 
 
@@ -436,17 +476,16 @@ public static class Parsing
     /// <returns></returns>
     public static unsafe T[] ReadTypeArray<T>(this BinaryReader reader, uint count) where T : unmanaged
     {
-        uint totalSize = (uint)(sizeof(T) * count);
-        byte[] buffer = reader.ReadBytes((int)totalSize);
-
         T[] result = new T[count];
 
-        fixed (byte* src = buffer)
-        fixed (T* dst = result)
-            Unsafe.CopyBlockUnaligned(dst, src, totalSize);
+        // Create a span over the underlying T[] memory
+        Span<byte> span = MemoryMarshal.AsBytes(result.AsSpan());
+
+        int read = reader.Read(span);
 
         return result;
     }
+
 
 
 
@@ -457,6 +496,10 @@ public static class Parsing
     /// <returns></returns>
     public static byte[] GetUintLengthPrefixedUTF8StringAsBytes(string str)
     {
+        if (str == string.Empty) 
+            return BitConverter.GetBytes(0u);
+
+
         var utf8 = Encoding.UTF8.GetBytes(str);
         return [
             .. BitConverter.GetBytes((uint)utf8.Length),
@@ -465,8 +508,22 @@ public static class Parsing
     }
 
 
-    public static unsafe string ReadUintLengthPrefixedUTF8String(this BinaryReader reader)
-        => Encoding.UTF8.GetString(reader.ReadBytes((int)reader.ReadUInt32()));
+
+    public static string ReadUintLengthPrefixedUTF8String(this BinaryReader reader)
+    {
+        var len = (int)reader.ReadUInt32();
+        
+        return len == 0 ? string.Empty : Encoding.UTF8.GetString(reader.ReadBytes(len));
+    }
+
+
+    public static unsafe string ReadUintLengthPrefixedUTF8String(this FileStream reader)
+    {
+        var len = reader.ReadType<uint>();
+
+        return len == 0 ? string.Empty : Encoding.UTF8.GetString(reader.ReadTypeArray<byte>(len));
+    }
+
 
 
 

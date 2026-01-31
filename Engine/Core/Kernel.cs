@@ -90,6 +90,7 @@ public static class Kernel
             () =>
             {
 
+                Loading.ScanForAssetArchives();
 
 
                 window = Window.Init(settings);     //<-- indirectly backend creation on render thread

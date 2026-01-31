@@ -2,12 +2,38 @@
 
 
 
+
+
 	<!-- COMPILATION SYMBOLS -->
+
+	<PropertyGroup Condition=" '$(Configuration)' == 'Debug' ">
+		<DefineConstants>$(DefineConstants);DEBUG</DefineConstants>
+	</PropertyGroup>
+
+	<PropertyGroup Condition=" '$(Configuration)' == 'Release' ">
+		<DefineConstants>$(DefineConstants);RELEASE</DefineConstants>
+	</PropertyGroup>
+
+
+	
+	
+	<PropertyGroup Condition = " '$(PublishDir)' != '' OR '$(_IsPublishing)' == 'true'">
+		<DefineConstants>$(DefineConstants);IS_PUBLISH</DefineConstants>
+		<IsPublish>true</IsPublish>
+	</PropertyGroup>
+
+
+
+
 	<PropertyGroup>
 		<DefineConstants>$(DefineConstants);IncludeVulkanBackend</DefineConstants>
 	</PropertyGroup>
 
 
+	
+	
+	
+	
 
 
 
@@ -119,15 +145,14 @@
 	</ItemGroup>
 
 
-	
-	
+
+
 
 
 
 	<!-- COMPILER OPTIMIZATION/STRIPPING IN RELEASE + PUBLISH AOT -->
-
 	<PropertyGroup Condition="$(DefineConstants.Contains('RELEASE'))">
-		
+
 		<PublishAot>true</PublishAot>
 		<SelfContained>true</SelfContained>
 		
@@ -145,10 +170,12 @@
 
 		<IsAotCompatible>true</IsAotCompatible>
 		<AnalysisMode>Recommended</AnalysisMode>
-		
+
 	</PropertyGroup>
 
 
+	
+	
 	<!-- FURTHER RELEASE STRIPPING -->
 	
 	<ItemGroup Condition="$(DefineConstants.Contains('RELEASE'))">
@@ -159,31 +186,35 @@
 
 
 
+	
 
 	
 
-
 	
 	
-
-
+	
 
 	<!-- BUILD PROCESS / SOURCE GEN FOR RELEASE -->
 
 
 	<PropertyGroup Condition="'$(EngineBuildPass)' == 'true'">
 		<StartupObject>Engine.Stripped.EngineBuildProcess</StartupObject>
-		<DefineConstants>$(DefineConstants);ENGINE_BUILD_PASS</DefineConstants>
+		<DefineConstants>$(DefineConstants);ENGINE_BUILD_PASS</DefineConstants>		
 	</PropertyGroup>
+
+	<PropertyGroup Condition="'$(EngineBuildPass)' == 'true' AND '$(IsPublish)' == 'true'">
+		<DefineConstants>$(DefineConstants);IS_PUBLISH</DefineConstants>
+	</PropertyGroup>
+
 
 
 	<Target Name="RunEngineBuild" BeforeTargets="CoreCompile" Condition="$(DefineConstants.Contains('RELEASE')) AND '$(EngineBuildPass)' != 'true' AND '$(DesignTimeBuild)' != 'true'">
 
 
 		<!-- build in debug engine build pass mode -->
-		<Exec Command='dotnet build "$(ProjectPath)" -c Debug /p:EngineBuildPass=True' />
+		<Exec Command='dotnet build "$(ProjectPath)" -c Debug /p:EngineBuildPass=True /p:IsPublish=$(IsPublish) ' />
 
-		
+
 		<!-- execute debug -->
 		<Exec
 		  Command="&quot;$(ProjectDir)bin\Debug\net9.0\win-x64\$(AssemblyName).exe&quot;"
@@ -195,29 +226,20 @@
 		<!-- delete dep graph created by debug and restore fresh for release so debug deps dont leak into release -->
 		<Delete Files="$(ProjectDir)obj\project.assets.json" />
 		<Delete Files="$(ProjectDir)obj\project.assets.lock.json" />
-		
+
 		<Exec Command='dotnet restore &quot;$(ProjectPath)&quot; /p:Configuration=$(Configuration) ' />
 
 	</Target>
 
 
 
+
 	<ItemGroup Condition="$(DefineConstants.Contains('RELEASE'))">
 		<Compile Include="obj/Generated/EngineBuildProcessGenerated.g.cs">
-			<Link>_Generated/EngineBuildProcessGenerated.g.cs</Link> 
+			<Link>_Generated/EngineBuildProcessGenerated.g.cs</Link>
 		</Compile>
 	</ItemGroup>
 
-
-	
-
-	
-
-	
-	<!-- ASSET ARCHIVE CORRECTION FOR NON-PUBLISHED RELEASE BUILDS -->
-	<PropertyGroup Condition = "$(DefineConstants.Contains('RELEASE')) AND '$(PublishDir)' != '' ">
-		<DefineConstants>$(DefineConstants);IS_AOT_PUBLISH;</DefineConstants>
-	</PropertyGroup>
 
 
 

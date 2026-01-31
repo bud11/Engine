@@ -87,17 +87,14 @@ public static partial class EngineSettings
 
 
 
-    private const string AssetArchiveName = "Assets";
 
+    public static readonly string ReleaseRootAssetArchivePath =
 
-    //the actual final AOT relase publish reads the asset archive right in its working directory, whereas the regular IL release build needs to read from working directory/publish/netX.XX/archive.
-
-#if IS_AOT_PUBLISH   
-    public const string ReleaseAssetArchivePath = AssetArchiveName; 
+#if ENGINE_BUILD_PASS && IS_PUBLISH
+        Path.Combine(Directory.GetCurrentDirectory(), "publish");
 #else
-    public static readonly string ReleaseAssetArchivePath = Path.GetRelativePath(Directory.GetCurrentDirectory(), $"{Path.Combine(Directory.GetCurrentDirectory(), "publish", Path.GetFileName(Directory.GetCurrentDirectory()) )}/{AssetArchiveName}");
+        Directory.GetCurrentDirectory();
 #endif
-
 
 
 
@@ -106,13 +103,18 @@ public static partial class EngineSettings
 
 #if DEBUG
 
+    /// <summary>
+    /// The path to the base asset folder.
+    /// <br/> Each immediate sub folder contained within will be compressed into its own separate archive. For example, if this directory contains two folders, One and Two, then release builds will feature two archives respectively named One and Two.
+    /// <br/> <b>This directory cannot directly contain assets.</b>
+    /// </summary>
+    public static readonly string RootAssetDirectoryPath = Path.GetFullPath("../../../../Assets");
+
 
     /// <summary>
-    /// The folder assets can be loaded from, and that will be compressed into a zstd archive in release builds, relative to the debug executable.
+    /// The directory used to cache final asset data that has undergone load-time conversion.
     /// </summary>
-    public const string AssetFolderPath = $"../../../../Assets";
-
-    public const string AssetCachePath = $"../../../../AssetCache";
+    public static readonly string AssetCachePath = Path.GetFullPath("../../../../AssetCache");
 
 
 
@@ -125,15 +127,18 @@ public static partial class EngineSettings
 
 
     /// <summary>
-    /// The quality used to compress the asset directory during release build building. Ranges from 1 to 22. Set lower for faster to compress but less effective compression.
+    /// The quality used to compress the asset directory. Ranges from 1 to 22. Set lower for faster to compress but less effective compression.
     /// </summary>
-    public static readonly byte ReleaseZStdCompressionQuality = 22;
+    public static readonly byte ReleaseZStdCompressionQuality =
+
+#if IS_PUBLISH
+        22
+#else
+        1
+#endif
+        ;
 
 
-    /// <summary>
-    /// A limit on the amount of threads that can participate in compression of the asset directory during release build building. 0 = unlimited.
-    /// </summary>
-    public static readonly ushort ReleaseZStdCompressionThreadLimit = 0;
 
 #endif
 

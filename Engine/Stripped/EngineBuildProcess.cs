@@ -4,13 +4,14 @@ namespace Engine.Stripped;
 
 
 using Engine.Core;
+using System.Buffers;
+using System.Buffers.Binary;
 using System.Collections;
 using System.Collections.Generic;
 using System.Collections.Immutable;
-using System.Diagnostics;
 using System.Numerics;
 using System.Reflection;
-using System.Runtime.CompilerServices;
+using System.Runtime.InteropServices;
 using System.Text;
 using ZstdSharp;
 using static Engine.Core.Loading;
@@ -19,7 +20,7 @@ using static Engine.Core.RenderingBackend;
 
 
 /// <summary>
-/// Converts assets if defined (see <see cref="GameResource.GameResourceFileExtensionMap"/> and <see cref="GameResource.ConvertToFinalAssetBytes(byte[], string)"/>), and compresses the Assets directory into a single zstd archive when building Engine in release mode.
+/// Converts assets if defined (see <see cref="GameResource.GameResourceFileExtensionMap"/> and <see cref="GameResource.ConvertToFinalAssetBytes(byte[], string)"/>), and compresses the Assets directory into zstd archives when building Engine in release mode.
 /// </summary>
 public static class EngineBuildProcess
 {
@@ -43,23 +44,7 @@ public static class EngineBuildProcess
         CleanAssetCache();
 
 
-
-        string ASSET_FOLDER = Path.Combine(Directory.GetCurrentDirectory(), EngineSettings.AssetFolderPath);
-
-        string ASSET_ARCHIVE = Path.Combine(Directory.GetCurrentDirectory(), "publish", Path.GetFileName(Directory.GetCurrentDirectory()));
-        Directory.CreateDirectory(ASSET_ARCHIVE);
-        ASSET_ARCHIVE = Path.Combine(ASSET_ARCHIVE, Path.GetFileName(EngineSettings.ReleaseAssetArchivePath));
-
-
-        Print($"Asset source directory path: {ASSET_FOLDER}");
-        Print($"Asset destination archive path: {ASSET_ARCHIVE}");
-
-
-
-        string AssetLookupDirect = "new()";
-        string AssetLookupDirectFields = string.Empty;
-        string FolderLookupDirect = "new()";
-        string FolderLookupDirectFields = string.Empty;
+        Directory.CreateDirectory(EngineSettings.ReleaseRootAssetArchivePath);
 
 
         foreach (var v in Enum.GetValues<RenderingBackendEnum>())
@@ -76,163 +61,229 @@ public static class EngineBuildProcess
 
 
 
-        var assetDedup = new DedupFields();
 
 
-        if (DirectoryExistsCaseSensitive(ASSET_FOLDER))
+        Dictionary<string, Type> AssetTypesFound = new();
+
+        List<string> AssetArchiveNames = new();
+
+
+        if (Directory.Exists(EngineSettings.RootAssetDirectoryPath))
         {
 
+            List<Task> archiveCompletionTasks = new();
 
 
-
-            var allFiles = Directory
-                .GetFiles(ASSET_FOLDER, "*", SearchOption.AllDirectories)
-                .OrderBy(x => x.Replace("\\", "/"))   // Deterministic order
-                .ToArray();
-
-
-
-            Print($"Found asset source directory, containing a total of {allFiles.Length} files");
-
-
-
-
-            var index = new Dictionary<string, object>();
-            ulong currentOffset = 0;
-
-
-            uint filesProcessed = 0;
-
-
-            using var archiveStream = File.Create(ASSET_ARCHIVE);
-
-
-            var throttler = new SemaphoreSlim(EngineSettings.ReleaseZStdCompressionThreadLimit == 0 ? Environment.ProcessorCount : int.Clamp(EngineSettings.ReleaseZStdCompressionThreadLimit, 1, Environment.ProcessorCount));
-
-
-
-            // in-memory trees to be generated
-            var folderTree = new Dictionary<string, Dictionary<string, AssetDataRange>>();
-            var flatLookup = new Dictionary<string, AssetDataRange>();
-
-
-
-            // Each file processed in parallel, but written sequentially
-
-            foreach (var filePath in allFiles)
+            foreach (var archiveAbsolutePath in Directory.GetDirectories(EngineSettings.RootAssetDirectoryPath))
             {
-                var relativePath = Path.GetRelativePath(ASSET_FOLDER, filePath)
-                                       .Replace("\\", "/");
-
-                relativePath = relativePath[..(relativePath.LastIndexOf('.'))];
 
 
-                await throttler.WaitAsync();
 
-                try
+                var archiveName = Path.GetFileName(archiveAbsolutePath);
+
+
+                AssetArchiveNames.Add(archiveName);
+
+
+                archiveCompletionTasks.Add(Task.Run(async () =>
                 {
 
-                    bool found = GameResource.GameResourceFileExtensionMap.TryGetValue(Path.GetExtension(filePath), out var AssetFoundType);
-
-                    if (found && AssetFoundType == null)
+                    if (DirectoryExistsCaseSensitive(archiveAbsolutePath))
                     {
-                        Print($"File ignored: {relativePath}");
-                        filesProcessed++;
-                        continue;
+
+
+
+
+                        List<byte> header = new();
+
+
+
+
+                        var allFiles = Directory
+                            .GetFiles(archiveAbsolutePath, "*", SearchOption.AllDirectories)
+                            .OrderBy(x => x.Replace("\\", "/"))   // Deterministic order
+                            .ToArray();
+
+
+
+                        Print($"Asset archive '{archiveName}' found");
+
+
+
+
+
+                        var tempPath = Path.Combine(EngineSettings.ReleaseRootAssetArchivePath, archiveName + "_temp");
+
+                        uint actualFiles = 0;
+
+
+                        object l = new();
+
+                        List<Task<AssetTaskData>> compressionTasks = new();
+
+
+                        foreach (var assetAbsolutePath in allFiles)
+                        {
+                            compressionTasks.Add(
+                                Task.Run(async () =>
+                                {
+                                    var relativePath = Path.GetRelativePath(archiveAbsolutePath, assetAbsolutePath);
+
+
+                                    bool found = GameResource.GameResourceFileExtensionMap.TryGetValue(Path.GetExtension(assetAbsolutePath), out var AssetFoundType);
+
+                                    if (found && AssetFoundType == null)
+                                    {
+                                        Print($"File ignored: {relativePath}");
+                                        return default;
+                                    }
+
+
+
+                                    lock (l)
+                                        actualFiles++;
+
+
+                                    byte[] rawBytes;
+
+
+                                    if (found)
+                                    {
+
+                                        lock (AssetTypesFound)
+                                            AssetTypesFound[AssetFoundType.Name] = AssetFoundType;
+
+
+                                        Print($"File detected as {AssetFoundType.FullName}: {relativePath}");
+                                        rawBytes = await (Task<byte[]>)typeof(Loading).GetMethod(nameof(LoadFinalAssetBytes)).MakeGenericMethod(AssetFoundType).Invoke(null, [assetAbsolutePath]);
+                                        Print($"File processed successfully: {relativePath}");
+                                    }
+                                    else
+                                    {
+                                        Print($"File reading as unknown: {relativePath}");
+                                        rawBytes = await File.ReadAllBytesAsync(assetAbsolutePath);
+                                        Print($"File read successfully: {relativePath}");
+                                    }
+
+
+                                    using var compressor = new Compressor(int.Clamp(EngineSettings.ReleaseZStdCompressionQuality, 1, 22));
+
+                                    return new AssetTaskData(Path.ChangeExtension(relativePath, null), AssetFoundType, compressor.Wrap(rawBytes).ToArray());
+
+                                })
+                            );
+                        }
+
+
+
+
+                        ulong currentOffset = 0;
+
+                        List<ulong> offsetsToCorrect = new();
+
+
+                        using (var archiveStream = File.Create(tempPath))
+                        {
+
+                            for (int i = 0; i < compressionTasks.Count; i++)
+                            {
+                                var result = await compressionTasks[i]; // preserves order
+
+                                if (result.data != null)
+                                {
+                                    archiveStream.Write(result.data, 0, result.data.Length);
+
+                                    Print($"File written to archive '{archiveName}' successfully ({i}/{allFiles.Length}): {result.path}");
+
+
+                                    offsetsToCorrect.Add((ulong)header.Count);
+
+                                    header.AddRange(BitConverter.GetBytes((ulong)currentOffset));
+                                    header.AddRange(BitConverter.GetBytes((ulong)result.data.Length));
+                                    header.AddRange(Parsing.GetUintLengthPrefixedUTF8StringAsBytes(result.path));
+                                    header.AddRange(Parsing.GetUintLengthPrefixedUTF8StringAsBytes(result.type?.Name));
+
+
+                                    currentOffset += (ulong)result.data.Length;
+                                }
+                            }
+                        }
+
+
+
+
+
+                        ulong headerSize =
+                             sizeof(uint) +          // actualFiles uint at start
+                             (ulong)header.Count;    // header itself
+
+
+                        Span<byte> headerSpan = CollectionsMarshal.AsSpan(header);
+
+
+                        foreach (var p in offsetsToCorrect)
+                        {
+                            ulong oldOffset = BinaryPrimitives.ReadUInt64LittleEndian(
+                                headerSpan.Slice((int)p, sizeof(ulong)));
+
+                            ulong patched = oldOffset + headerSize;
+
+                            BinaryPrimitives.WriteUInt64LittleEndian(
+                                headerSpan.Slice((int)p, sizeof(ulong)),
+                                patched);
+                        }
+
+
+
+
+
+                        using (var outStream = new FileStream(Path.Combine(EngineSettings.ReleaseRootAssetArchivePath, archiveName), FileMode.Create, FileAccess.Write))
+                        {
+                            outStream.Write(BitConverter.GetBytes(actualFiles));
+
+                            outStream.Write(header.ToArray());
+
+
+                            using var tempStream = new FileStream(tempPath, FileMode.Open, FileAccess.Read);
+
+
+                            byte[] buffer = ArrayPool<byte>.Shared.Rent(128 * 1024);
+                            try
+                            {
+                                int read;
+                                while ((read = tempStream.Read(buffer, 0, buffer.Length)) > 0)
+                                {
+                                    outStream.Write(buffer, 0, read);
+                                }
+                            }
+                            finally
+                            {
+                                ArrayPool<byte>.Shared.Return(buffer);
+                            }
+                        }
+
+                        File.Delete(tempPath);
+
+
+
+
+
+
+                        Print($"Asset archive '{archiveName}' complete");
+
                     }
 
-
-                    var compressed = await Task.Run(async () =>
-                    {
-                        byte[] rawBytes;
-
-                        if (found)
-                        {
-                            Print($"File detected as {AssetFoundType.FullName}: {relativePath}");
-                            rawBytes = await (Task<byte[]>)typeof(Loading).GetMethod(nameof(LoadFinalAssetBytes)).MakeGenericMethod(AssetFoundType).Invoke(null, [filePath]);
-                            Print($"File processed successfully: {relativePath}");
-                        }
-                        else
-                        {
-                            Print($"File reading as unknown: {relativePath}");
-                            rawBytes = await File.ReadAllBytesAsync(filePath);
-                            Print($"File read successfully: {relativePath}");
-                        }
-
-
-                        using var compressor = new Compressor(int.Clamp(EngineSettings.ReleaseZStdCompressionQuality, 1, 22));
-                        return compressor.Wrap(rawBytes).ToArray();
-                    });
-
-
-                    archiveStream.Write(compressed, 0, compressed.Length);
-
-                    Print($"File written to archive successfully ({filesProcessed++}/{allFiles.Length}): {relativePath}");
-
-
-
-
-
-                    // Compute folder and file name
-                    var lastSlash = relativePath.LastIndexOf('/');
-                    string folderPath, fileName;
-                    if (lastSlash == -1)
-                    {
-                        folderPath = string.Empty; // root folder
-                        fileName = relativePath;
-                    }
                     else
-                    {
-                        folderPath = relativePath[..lastSlash];
-                        fileName = relativePath[(lastSlash + 1)..];
-                    }
+                        Print($"Asset archive '{archiveName}' not found");
 
-                    // Add to flatLookup
-                    var adr = new AssetDataRange(AssetFoundType, currentOffset, (ulong)compressed.Length);
-                    flatLookup[relativePath] = adr;
+                }));
 
-                    // Add to folderTree
-                    if (!folderTree.TryGetValue(folderPath, out var folderDict))
-                    {
-                        folderDict = new Dictionary<string, AssetDataRange>();
-                        folderTree[folderPath] = folderDict;
-                    }
-                    folderDict[fileName] = adr;
-
-                    currentOffset += (ulong)compressed.Length;
-
-
-                }
-
-                finally
-                {
-                    throttler.Release();
-                }
             }
 
-
-
-
-            //root asset folder
-            folderTree.TryAdd(string.Empty, new Dictionary<string, AssetDataRange>());
-
-
-            AssetLookupDirect = Emit(flatLookup, 1, assetDedup);
-            FolderLookupDirect = Emit(folderTree, 1, assetDedup);
-
-
-
-
-            Print("Asset archive complete");
+            await Task.WhenAll(archiveCompletionTasks);
 
 
         }
-
-        else 
-            Print("Asset source directory not found");
-
-
-
 
 
 
@@ -244,27 +295,13 @@ public static class EngineBuildProcess
 
 
 
+
         WriteGeneratedFile("../../../../obj/Generated/EngineBuildProcessGenerated.g.cs", $@"
 
 
 namespace Engine.Core;
 
 using System.Collections.Immutable;
-
-
-//ASSET DIRECTORY STRUCTURE 
-
-public static partial class Loading
-{{
-
-{assetDedup.ToString()}    
-
-    public static readonly Dictionary<string, AssetDataRange> AssetLookupDirect = {AssetLookupDirect};
-
-    public static readonly Dictionary<string, Dictionary<string, AssetDataRange>> FolderLookupDirect = {FolderLookupDirect};
-}}
-
-
 
 
 //SHADERS
@@ -279,6 +316,20 @@ public static partial class RenderingBackend
     private static Dictionary<RenderingBackendEnum, Dictionary<string, ComputeShaderSource>> ComputeShaderSources = { Cshsrc };
 
 }}
+
+
+
+
+
+public static partial class Loading
+{{
+
+    private static readonly Dictionary<string, Type> AssetTypeLookup = {Emit(AssetTypesFound, 1)};
+
+    private static readonly List<string> AssetArchiveNames = {Emit(AssetArchiveNames.ToArray())};
+
+}}
+
 
 
 
@@ -625,7 +676,6 @@ public static partial class RenderingBackend
 
 
 
+    private record struct AssetTaskData(string path, Type type, byte[] data);
 
 }
-
-

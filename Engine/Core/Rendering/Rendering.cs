@@ -389,17 +389,17 @@ public static partial class Rendering
     /// </summary>
     /// <param name="func"></param>
     /// <returns></returns>
-    public static Task<object> PushRenderThreadAction(Func<object> func)
+    public static async Task<object> PushRenderThreadAction(Func<object> func)
     {
 
-        if (Thread.CurrentThread == Kernel.RenderThread) throw new Exception();
+        if (Thread.CurrentThread == Kernel.RenderThread) return func.Invoke();
 
 
         var task = new TaskCompletionSource<object>();
         lock (RenderThreadActions) RenderThreadActions.Add(new ThreadBoundActionStruct() { func = func, res = task });
 
 
-        return task.Task;
+        return await task.Task;
     }
 
 

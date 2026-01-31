@@ -952,7 +952,9 @@ public static partial class RenderingBackend
                 PImageIndices = &imageIndex
             };
 
-            khrSwapChain.QueuePresent(graphicsQueue, &presentInfo);
+
+            lock (this)
+                khrSwapChain.QueuePresent(graphicsQueue, &presentInfo);
         }
 
 
