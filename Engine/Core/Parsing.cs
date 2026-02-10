@@ -5,15 +5,482 @@ namespace Engine.Core;
 
 using Engine.GameResources;
 using System.Numerics;
-using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using System.Text;
+
+
+#if DEBUG
 using System.Text.Json;
-using static Engine.Core.EngineMath;
+#endif
 
 
-public static class Parsing
+
+
+
+/// <summary>
+/// A <see cref="uint"/> index reference to a <see cref="GameObject"/> within the context of a parsed file.
+/// </summary>
+/// <param name="Reference"></param>
+/// 
+[StructLayout(LayoutKind.Sequential, Pack = 1, Size = sizeof(uint))]
+public readonly record struct GameObjectReference(uint Reference);
+
+
+
+/// <summary>
+/// A <see cref="uint"/> index reference to a <see cref="GameResource"/> within the context of a parsed file.
+/// </summary>
+/// <param name="Reference"></param>
+/// 
+[StructLayout(LayoutKind.Sequential, Pack = 1, Size = sizeof(uint))]
+public readonly record struct GameResourceReference(uint Reference);
+
+
+
+
+
+
+
+
+public static partial class Parsing
 {
+
+
+
+
+    /// <summary>
+    /// Reads any unmanaged type. Platform agnostic. Also see <seealso cref="ReadUnmanagedTypeArray{T}(Stream, uint)"/>
+    /// </summary>
+    /// <typeparam name="T"></typeparam>
+    /// <param name="reader"></param>
+    /// <returns></returns>
+    public static unsafe T ReadUnmanagedType<T>(this Stream reader) where T : unmanaged
+    {
+        Span<byte> buf = stackalloc byte[sizeof(T)];
+        reader.ReadExactly(buf);
+
+        fixed (byte* p = buf)
+            return *(T*)p;
+    }
+
+
+
+    /// <summary>
+    /// Reads an array of any unmanaged type. Platform agnostic. Also see <seealso cref="ReadUnmanagedType{T}(Stream)"/>
+    /// </summary>
+    /// <typeparam name="T"></typeparam>
+    /// <param name="reader"></param>
+    /// <param name="count"></param>
+    /// <returns></returns>
+    public static unsafe T[] ReadUnmanagedTypeArray<T>(this Stream reader, uint count) where T : unmanaged
+    {
+        if (count == 0) return null;
+
+        T[] result = new T[count];
+
+        Span<byte> span = MemoryMarshal.AsBytes(result.AsSpan());
+        reader.ReadExactly(span);
+
+        return result;
+    }
+
+
+
+
+
+
+
+
+
+
+
+
+
+    /// <summary>
+    /// Reads any unmanaged type. Platform agnostic. Also see <seealso cref="ReadUnmanagedTypeArray{T}(BinaryReader, uint)"/>
+    /// </summary>
+    /// <typeparam name="T"></typeparam>
+    /// <param name="reader"></param>
+    /// <returns></returns>
+    public static unsafe T ReadUnmanagedType<T>(this BinaryReader reader) where T : unmanaged
+    {
+        fixed (byte* buf = reader.ReadBytes(sizeof(T)))
+            return *(T*)buf;
+    }
+
+
+
+    /// <summary>
+    /// Reads an array of any unmanaged type. Platform agnostic. Also see <seealso cref="ReadUnmanagedType{T}(BinaryReader)"/>
+    /// </summary>
+    /// <typeparam name="T"></typeparam>
+    /// <param name="reader"></param>
+    /// <param name="count"></param>
+    /// <returns></returns>
+    public static unsafe T[] ReadUnmanagedTypeArray<T>(this BinaryReader reader, uint count) where T : unmanaged
+    {
+
+        if (count == 0) return null;
+
+
+        T[] result = new T[count];
+
+        // Create a span over the underlying T[] memory
+        Span<byte> span = MemoryMarshal.AsBytes(result.AsSpan());
+
+        reader.Read(span);
+
+        return result;
+    }
+
+
+
+
+    /// <summary>
+    /// Returns a UTF8 string with a <see cref="uint"/> length prefix as a raw byte array.
+    /// </summary>
+    /// <param name="str"></param>
+    /// <returns></returns>
+    public static byte[] GetUintLengthPrefixedUTF8StringAsBytes(string str)
+    {
+        if (str == string.Empty || str == null)
+            return BitConverter.GetBytes(0u);
+
+
+        var utf8 = Encoding.UTF8.GetBytes(str);
+        return [
+            .. BitConverter.GetBytes((uint)utf8.Length),
+        .. utf8
+        ];
+    }
+
+
+
+    public static string ReadUintLengthPrefixedUTF8String(this BinaryReader reader)
+    {
+        var len = (int)reader.ReadUInt32();
+
+        return len == 0 ? string.Empty : Encoding.UTF8.GetString(reader.ReadBytes(len));
+    }
+
+
+    public static unsafe string ReadUintLengthPrefixedUTF8String(this Stream reader)
+    {
+        var len = reader.ReadUnmanagedType<uint>();
+
+        return len == 0 ? string.Empty : Encoding.UTF8.GetString(reader.ReadUnmanagedTypeArray<byte>(len));
+    }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+    /// <summary>
+    /// Reads a dictionary of supported arguments from an internal byte format. Also see <seealso cref="WriteArgumentBytes(JsonElement, Dictionary{Type, Type})"/> / <see cref="WriteArgumentBytes(JsonElement, System.Reflection.MethodInfo, Dictionary{Type, Type})"/>.
+    /// <br/> <paramref name="resourceReferenceLookup"/> is a special parameter to faciliate any <see cref="FixedSerializableParameterTypes.ResourceReference"/>s.
+    /// </summary>
+    /// <param name="stream"></param>
+    /// <returns></returns>
+    /// <exception cref="Exception"></exception>
+    public static Dictionary<string, object> ReadArgumentBytes(Stream stream, GameResource[] resourceReferenceLookup = null)
+    {
+
+        var argCount = stream.ReadUnmanagedType<byte>();
+
+
+        if (argCount == 0) return null;
+
+
+        var final = new Dictionary<string, object>(capacity: argCount);
+
+
+
+
+        for (byte i = 0; i < argCount; i++)
+        {
+            var argName = stream.ReadUintLengthPrefixedUTF8String();
+            var argType = (FixedSerializableParameterTypes)stream.ReadByte();
+
+            object argument = null;
+
+            uint count = stream.ReadUnmanagedType<uint>();
+            bool isArray = count != uint.MaxValue;
+
+
+
+
+            switch (argType)
+            {
+
+                case FixedSerializableParameterTypes.Half:
+                    readUnmanaged<Half>();
+                    break;
+
+                case FixedSerializableParameterTypes.Float:
+                    readUnmanaged<float>();
+                    break;
+
+                case FixedSerializableParameterTypes.Int:
+                    readUnmanaged<int>();
+                    break;
+
+                case FixedSerializableParameterTypes.Uint:
+                    readUnmanaged<uint>();
+                    break;
+
+                case FixedSerializableParameterTypes.Short:
+                    readUnmanaged<short>();
+                    break;
+
+                case FixedSerializableParameterTypes.UShort:
+                    readUnmanaged<ushort>();
+                    break;
+
+                case FixedSerializableParameterTypes.Byte:
+                    readUnmanaged<byte>();
+                    break;
+
+
+                case FixedSerializableParameterTypes.SByte:
+                    readUnmanaged<sbyte>();
+                    break;
+
+                case FixedSerializableParameterTypes.Long:
+                    readUnmanaged<long>();
+                    break;
+
+
+
+
+
+                case FixedSerializableParameterTypes.ULong:
+                    readUnmanaged<ulong>();
+                    break;
+
+                case FixedSerializableParameterTypes.Double:
+                    readUnmanaged<double>();
+                    break;
+
+                case FixedSerializableParameterTypes.Bool:
+                    readUnmanaged<bool>();
+                    break;
+
+                case FixedSerializableParameterTypes.Vector2:
+                    readUnmanaged<Vector2>();
+                    break;
+
+                case FixedSerializableParameterTypes.Vector3:
+                    readUnmanaged<Vector3>();
+                    break;
+
+                case FixedSerializableParameterTypes.Vector4:
+                    readUnmanaged<Vector4>();
+                    break;
+
+
+
+
+                case FixedSerializableParameterTypes.Matrix4x4:
+                    readUnmanaged<Matrix4x4>();
+                    break;
+
+
+
+
+                case FixedSerializableParameterTypes.String:
+                    if (!isArray) argument = stream.ReadUintLengthPrefixedUTF8String();
+                    else
+                    {
+                        string[] arr = new string[count];
+                        for (int s = 0; s < arr.Length; s++)
+                            arr[s] = stream.ReadUintLengthPrefixedUTF8String();
+                        argument = arr;
+                    }
+                    break;
+
+
+
+                case FixedSerializableParameterTypes.ObjectReference:
+                    readUnmanaged<GameObjectReference>();
+                    break;
+
+
+
+
+                case FixedSerializableParameterTypes.ResourceReference:
+                    if (!isArray) argument = resourceReferenceLookup[stream.ReadUnmanagedType<uint>()];
+                    else
+                    {
+                        GameResource[] arr = new GameResource[count];
+
+                        for (int x = 0; x < arr.Length; x++)
+                            arr[x] = resourceReferenceLookup[stream.ReadUnmanagedType<uint>()];
+
+                        argument = arr;
+                    }
+                    break;
+
+
+
+                default:
+                    throw new NotSupportedException();
+            }
+
+
+
+            final[argName] = argument;
+
+
+
+            void readUnmanaged<T>() where T : unmanaged
+            {
+                if (!isArray) argument = stream.ReadUnmanagedType<T>();
+                else argument = stream.ReadUnmanagedTypeArray<T>(count);
+            }
+        }
+
+
+        return final;
+    }
+
+
+
+
+
+
+
+
+
+    public static async Task<GameResource[]> LoadResourceBytes(Stream reader, string FilePath)
+    {
+
+        uint resourceCount = reader.ReadUnmanagedType<uint>();
+
+        if (resourceCount == 0) return null;
+
+
+        GameResource[] resources = new GameResource[resourceCount];
+
+
+        (ushort type, bool external, byte[] data)[] ress = new (ushort type, bool external, byte[] data)[resourceCount];
+        for (int r = 0; r < resourceCount; r++)
+        {
+            var type = reader.ReadUnmanagedType<ushort>();
+            bool external = reader.ReadByte() == 1;
+
+            byte[] data;
+
+            if (external)
+            {
+                var path = reader.ReadUintLengthPrefixedUTF8String();
+                data = Encoding.UTF8.GetBytes(path);
+            }
+            else
+            {
+                data = reader.ReadUnmanagedTypeArray<byte>(reader.ReadUnmanagedType<uint>());
+            }
+
+            ress[r] = (type, external, data);
+        }
+
+
+        await Parallel.ForAsync<uint>(0, resourceCount, async (rIndex, cancellation) =>
+        {
+            var resource = ress[rIndex];
+
+
+            string key = null;
+            if (resource.external) key = Loading.RelativePathToFullPath(Encoding.UTF8.GetString(resource.data), FilePath[..(FilePath.LastIndexOf('/')+1)]);
+            else key = FilePath + "_" + rIndex;
+
+
+            GameResource res;
+
+            if (resource.external)
+                res = resources[rIndex] = await LoadGameResourceFromTypeID(resource.type, key);
+
+            else
+            {
+                using (var memstream = new Loading.AssetByteStream(new MemoryStream(resource.data), resource.data.Length)) 
+                    res = resources[rIndex] = await Loading.InternalLoadOrFetchResource(key, async () => await ConstructGameResourceFromTypeID(resource.type, memstream, key));
+
+            }
+
+
+            res.Init();
+
+            resources[rIndex].AddUser();  //this scene
+
+
+        });
+
+
+        return resources;
+    }
+
+
+
+
+
+    private enum FixedSerializableParameterTypes : byte
+    {
+        Half,
+        Float,
+
+        Int,
+        Uint,
+
+        Short,
+        UShort,
+
+        Byte,
+        SByte,
+
+        Long,
+        ULong,
+        Double,
+
+        Bool,
+
+
+        Vector2,
+        Vector3,
+        Vector4,
+
+        Matrix4x4,
+
+        String,
+
+
+        /// <summary>
+        /// Represents a reference to an object via a <see cref="uint"/> index within the context of a parsed file, which will be converted to an actual <see cref="GameObject"/> reference at usage time.
+        /// </summary>
+        ObjectReference,
+
+        /// <summary>
+        /// Represents a reference to a resource via a <see cref="uint"/> index within the context of a parsed file, which will be converted to an actual <see cref="GameResource"/> reference at usage time.
+        /// </summary>
+        ResourceReference
+
+    }
+
+
+
+
+
+
+
 
 #if DEBUG
 
@@ -66,19 +533,6 @@ public static class Parsing
 
 
 
-    /// <summary>
-    /// Parses a struct from json data using a type object, rather than generic, via reflection.
-    /// </summary>
-    /// <param name="type"></param>
-    /// <param name="json"></param>
-    /// <returns></returns>
-    public static object ParseStructFromJson(Type type, JsonElement json)
-        => typeof(JsonSerializer)
-                    .GetMethod(nameof(JsonSerializer.Deserialize))
-                    .MakeGenericMethod(type)
-                    .Invoke(json, null);
-
-
 
 
 
@@ -127,10 +581,21 @@ public static class Parsing
             var resource = resourcesArr[rIndex];
 
 
+            var resourceTypeName = resource.GetProperty("type").GetString();
+
+            var resourceType = Type.GetType(resourceTypeName);
+
+
+
+            if (resourceType == null)
+                throw new Exception($"Type '{resourceTypeName}' not found - type must be specified in full, for example 'Engine.Core.GameResource' ");
+
+
+
 
             //write type
 
-            resourceFinalBytes.AddRange(Parsing.GetUintLengthPrefixedUTF8StringAsBytes(resource.GetProperty("type").GetString()));
+            resourceFinalBytes.AddRange(BitConverter.GetBytes(GetGameResourceTypeID(resourceType)));
 
             var external = resource.GetProperty("external").GetBoolean();
 
@@ -144,7 +609,7 @@ public static class Parsing
             if (external)
             {
 
-                resourceFinalBytes.AddRange(Parsing.GetUintLengthPrefixedUTF8StringAsBytes(resource.GetProperty("path").GetString()));
+                resourceFinalBytes.AddRange(GetUintLengthPrefixedUTF8StringAsBytes(resource.GetProperty("path").GetString()));
             }
 
 
@@ -174,12 +639,12 @@ public static class Parsing
 
                 //find extension and get the final asset bytes if applicable
 
-                bool extensionHintFound = GameResource.GameResourceFileExtensionMap.TryGetValue(exHint, out var AssetFoundType);
+                bool extensionHintFound = Loading.GameResourceFileAssociations.TryGetValue(exHint, out var AssetFoundType);
+
 
                 if (extensionHintFound)
                 {
-                    data = await (Task<byte[]>)typeof(StaticVirtuals).GetMethod(nameof(StaticVirtuals.Engine_Core_GameResource_ConvertToFinalAssetBytes), System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Static)
-                    .MakeGenericMethod(AssetFoundType).
+                    data = await (Task<byte[]>)AssetFoundType.GetMethod(nameof(GameResource.ConvertToFinalAssetBytes), System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Static).
                     Invoke(null, [data, $"{filePath}/resource_{rIndex}.{exHint}"]);
                 }
 
@@ -213,547 +678,72 @@ public static class Parsing
 
 
 
+    public readonly record struct DeserializedArgument (bool hasValue, object value);
+
+
 
 
 
     /// <summary>
-    /// Writes a json dictionary of supported arguments to a compact byte form.
+    /// Writes parameters for a particular method. The json data should not specify the parameter type.
+    /// <br/> See <see cref="FixedSerializableParameterTypes"/> for a list of currently compatible types.
     /// </summary>
-    /// <param name="final"></param>
-    /// <param name="args"></param>
-    /// <exception cref="Exception"></exception>
-    public static unsafe void WriteArgumentBytes(List<byte> final, Dictionary<string, JsonElement> args)
+    /// <param name="arguments"></param>
+    /// <param name="method"></param>
+    /// <param name="typeReplacement"></param>
+    /// <returns></returns>
+    public static unsafe List<byte> WriteArgumentBytes(JsonElement arguments, System.Reflection.MethodInfo method)
     {
+        var dict = arguments.Deserialize<Dictionary<string, JsonElement>>();
 
-        final.Add((byte)args.Count);
+        List<byte> final = [(byte)dict.Count];
 
 
+        OrderedDictionary<string, Type> signature = new();
 
-        //writes each argument.
+        System.Reflection.ParameterInfo[] array = method.GetParameters();
 
-        foreach (var arg in args)
+        for (int i = 0; i < array.Length; i++)
         {
+            var arg = array[i];
 
-            var argTypeName = arg.Value.GetProperty("type").GetString().ToLowerInvariant();
+            var type = arg.ParameterType;
+
+            signature.Insert(i, arg.Name, arg.ParameterType);
+        }
+
+
+        foreach (var kv in dict)
+            final.AddRange(SerializeParameter(kv.Key, signature[kv.Key].FullName, kv.Value));
+
+
+        return final;
+    }
+
+
+
+
+
+    /// <summary>
+    /// Writes arbitrary parameters each with a type ID and name. The json data needs to specify the type of each parameter via its full C# type name or appropriate primitive alias.
+    /// <br/> See <see cref="FixedSerializableParameterTypes"/> for a list of currently compatible types.
+    /// </summary>
+    /// <param name="arguments"></param>
+    /// <param name="typeReplacement"></param>
+    /// <returns></returns>
+    public static unsafe List<byte> WriteArgumentBytes(JsonElement arguments)
+    {
+        var dict = arguments.Deserialize<Dictionary<string,JsonElement>>();
+
+        List<byte> final = [(byte)dict.Count];
+
+
+        foreach (var arg in dict)
+        {
+            var argTypeName = arg.Value.GetProperty("type").GetString();
             var argument = arg.Value.GetProperty("value");
 
-
-
-
-            bool isArray = argTypeName.EndsWith("[]");
-
-            if (isArray)
-                argTypeName = argTypeName[..^"[]".Length];
-
-
-
-            final.AddRange(GetUintLengthPrefixedUTF8StringAsBytes(arg.Key));
-
-
-            final.Add((byte)EnumParse<SerializedArgumentTypes>(argTypeName));
-
-
-
-
-            switch (argTypeName)
-            {
-
-                case "half":
-                    writeUnmanaged(x => (Half)x.GetSingle());
-                    break;
-
-
-                case "float":
-                    writeUnmanaged(x => x.GetSingle());
-                    break;
-
-
-                case "int":
-                    writeUnmanaged(x => x.GetInt32());
-                    break;
-
-                case "uint":
-                case "objectreference":
-                case "resourcereference":
-                    writeUnmanaged(x => x.GetUInt32());
-                    break;
-
-                case "short":
-                    writeUnmanaged(x => x.GetInt16());
-                    break;
-
-                case "ushort":
-                    writeUnmanaged(x => x.GetUInt16());
-                    break;
-
-                case "byte":
-                    writeUnmanaged(x => x.GetByte());
-                    break;
-
-                case "sbyte":
-                    writeUnmanaged(x => x.GetSByte());
-                    break;
-
-                case "long":
-                    writeUnmanaged(x => x.GetInt64());
-                    break;
-
-                case "ulong":
-                    writeUnmanaged(x => x.GetUInt64());
-                    break;
-
-                case "double":
-                    writeUnmanaged(x => x.GetDouble());
-                    break;
-
-                case "bool":
-                    writeUnmanaged(x => x.GetBoolean());
-                    break;
-
-                case "vector2":
-                    writePackedFloats<Vector2>(2);
-                    break;
-
-                case "vector3":
-                    writePackedFloats<Vector3>(3);
-                    break;
-
-                case "vector4":
-                    writePackedFloats<Vector4>(4);
-                    break;
-
-                case "matrix3x3":
-                    writePackedFloats<Matrix3x3>(9);
-                    break;
-
-                case "matrix4x4":
-                    writePackedFloats<Matrix4x4>(16);
-                    break;
-
-
-                case "string":
-                case "objectpath":
-                    if (!isArray)
-                    {
-                        final.AddRange(BitConverter.GetBytes(uint.MaxValue));
-                        final.AddRange(GetUintLengthPrefixedUTF8StringAsBytes(argument.GetString()));
-                    }
-                    else
-                    {
-                        var stringArray = JsonSerializer.Deserialize<string[]>(argument);
-
-                        final.AddRange(BitConverter.GetBytes((uint)stringArray.Length));
-
-                        for (int i = 0; i < stringArray.Length; i++)
-                            final.AddRange(GetUintLengthPrefixedUTF8StringAsBytes(stringArray[i]));
-                    }
-                    break;
-
-
-                default:
-                    throw new NotSupportedException();
-            }
-
-
-
-
-            unsafe void writePackedFloats<T>(uint count) where T : unmanaged
-            {
-                writeUnmanaged<T>(x =>
-                {
-                    var arr = JsonSerializer.Deserialize<float[]>(x);
-
-                    if (arr.Length != count) 
-                        throw new Exception($"invalid component count for argument {arg.Key}");
-
-                    T val;
-                    fixed (float* p = arr)
-                        val = *(T*)p;
-
-                    return val;
-                } 
-                );
-            }
-
-
-
-
-            unsafe void writeUnmanaged<T>(Func<JsonElement, T> serialize) where T : unmanaged
-            {
-               
-                if (!isArray)
-                {
-                    final.AddRange(BitConverter.GetBytes(uint.MaxValue));
-                    final.AddRange(StructToBytes(serialize.Invoke(argument)));
-                }
-                else
-                {
-                    T[] arr = new T[argument.EnumerateArray().Count()];
-                    var idx = 0;
-                    foreach (var value in argument.EnumerateArray())
-                        arr[idx++] = serialize.Invoke(value);
-
-                    byte[] byteArray = new byte[arr.Length * sizeof(T)];
-                    Buffer.BlockCopy(arr, 0, byteArray, 0, byteArray.Length);
-
-                    final.AddRange(BitConverter.GetBytes((uint)arr.Length));
-                    final.AddRange(byteArray);
-                }
-            }
-        }
-    }
-
-
-
-#endif
-
-
-
-
-    /// <summary>
-    /// Reads any unmanaged type. Platform agnostic. Also see <seealso cref="ReadTypeArray{T}(FileStream, uint)"/>
-    /// </summary>
-    /// <typeparam name="T"></typeparam>
-    /// <param name="reader"></param>
-    /// <returns></returns>
-    public static unsafe T ReadType<T>(this FileStream reader) where T : unmanaged
-    {
-        Span<byte> buf = stackalloc byte[sizeof(T)];
-        reader.ReadExactly(buf);
-
-        fixed (byte* p = buf)
-            return *(T*)p;
-    }
-
-
-
-    /// <summary>
-    /// Reads an array of any unmanaged type. Platform agnostic. Also see <seealso cref="ReadType{T}(FileStream)"/>
-    /// </summary>
-    /// <typeparam name="T"></typeparam>
-    /// <param name="reader"></param>
-    /// <param name="count"></param>
-    /// <returns></returns>
-    public static unsafe T[] ReadTypeArray<T>(this FileStream reader, uint count) where T : unmanaged
-    {
-        T[] result = new T[count];
-
-        Span<byte> span = MemoryMarshal.AsBytes(result.AsSpan());
-        reader.ReadExactly(span); 
-
-        return result;
-    }
-
-
-
-
-
-
-
-
-
-
-    /// <summary>
-    /// Reads any unmanaged type. Platform agnostic. Also see <seealso cref="ReadTypeArray{T}(BinaryReader, uint)"/>
-    /// </summary>
-    /// <typeparam name="T"></typeparam>
-    /// <param name="reader"></param>
-    /// <returns></returns>
-    public static unsafe T ReadType<T>(this BinaryReader reader) where T : unmanaged
-    {
-        fixed (byte* buf = reader.ReadBytes(sizeof(T)))
-            return *(T*)buf;
-    }
-
-
-
-    /// <summary>
-    /// Reads an array of any unmanaged type. Platform agnostic. Also see <seealso cref="ReadType{T}(BinaryReader)"/>
-    /// </summary>
-    /// <typeparam name="T"></typeparam>
-    /// <param name="reader"></param>
-    /// <param name="count"></param>
-    /// <returns></returns>
-    public static unsafe T[] ReadTypeArray<T>(this BinaryReader reader, uint count) where T : unmanaged
-    {
-        T[] result = new T[count];
-
-        // Create a span over the underlying T[] memory
-        Span<byte> span = MemoryMarshal.AsBytes(result.AsSpan());
-
-        int read = reader.Read(span);
-
-        return result;
-    }
-
-
-
-
-    /// <summary>
-    /// Returns a UTF8 string with a <see cref="uint"/> length prefix as a raw byte array.
-    /// </summary>
-    /// <param name="str"></param>
-    /// <returns></returns>
-    public static byte[] GetUintLengthPrefixedUTF8StringAsBytes(string str)
-    {
-        if (str == string.Empty) 
-            return BitConverter.GetBytes(0u);
-
-
-        var utf8 = Encoding.UTF8.GetBytes(str);
-        return [
-            .. BitConverter.GetBytes((uint)utf8.Length),
-        .. utf8
-        ];
-    }
-
-
-
-    public static string ReadUintLengthPrefixedUTF8String(this BinaryReader reader)
-    {
-        var len = (int)reader.ReadUInt32();
-        
-        return len == 0 ? string.Empty : Encoding.UTF8.GetString(reader.ReadBytes(len));
-    }
-
-
-    public static unsafe string ReadUintLengthPrefixedUTF8String(this FileStream reader)
-    {
-        var len = reader.ReadType<uint>();
-
-        return len == 0 ? string.Empty : Encoding.UTF8.GetString(reader.ReadTypeArray<byte>(len));
-    }
-
-
-
-
-
-    /// <summary>
-    /// Represents the types that can be loaded/deloaded from resources. See <see cref="ReadArgumentBytes"/> and <see cref="WriteArgumentBytes"/>.
-    /// </summary>
-    private enum SerializedArgumentTypes : byte
-    {
-        Half,
-        Float,
-
-        Int,
-        Uint,
-
-        Short,
-        UShort,
-
-        Byte,
-        SByte,
-
-        Long,
-        ULong,
-        Double,
-
-        Bool,
-
-        Vector2,
-        Vector3,
-        Vector4,
-
-        Matrix3x3,
-        Matrix4x4,
-
-        String,
-
-
-        /// <summary>
-        /// Represents a reference to an object via a <see cref="uint"/> index.
-        /// </summary>
-        ObjectReference,
-
-        /// <summary>
-        /// Represents a reference to an object via a <see cref="string"/> path relative to the scene root.
-        /// </summary>
-        ObjectPath,
-
-        /// <summary>
-        /// Represents a reference to a resource via a <see cref="uint"/> index.
-        /// </summary>
-        ResourceReference
-
-    }
-
-
-
-
-
-
-
-    /// <summary>
-    /// Reads a dictionary of supported arguments from an internal byte format. Also see <seealso cref="WriteArgumentBytes"/>.
-    /// <br/> <paramref name="resourceReferenceLookup"/> is a special parameter to faciliate any <see cref="SerializedArgumentTypes.ResourceReference"/>s.
-    /// </summary>
-    /// <param name="reader"></param>
-    /// <returns></returns>
-    /// <exception cref="Exception"></exception>
-    public static Dictionary<string, object> ReadArgumentBytes(BinaryReader reader, GameResource[] resourceReferenceLookup = null)
-    {
-
-
-
-        var argCount = reader.ReadByte();
-
-
-        if (argCount == 0) return null;
-
-
-
-
-        var final = new Dictionary<string, object>(capacity: argCount);
-
-
-        for (byte i = 0; i < argCount; i++)
-        {
-            var argName = reader.ReadUintLengthPrefixedUTF8String();
-            var argType = (SerializedArgumentTypes)reader.ReadByte();
-
-            object argument = null;
-
-            uint count = reader.ReadUInt32();
-            bool isArray = count != uint.MaxValue;
-
-
-            switch (argType)
-            {
-
-                case SerializedArgumentTypes.Half:
-                    readUnmanaged<Half>();
-                    break;
-
-                case SerializedArgumentTypes.Float:
-                    readUnmanaged<float>();
-                    break;
-
-                case SerializedArgumentTypes.Int:
-                    readUnmanaged<int>();
-                    break;
-
-                case SerializedArgumentTypes.Uint:
-                    readUnmanaged<uint>();
-                    break;
-
-                case SerializedArgumentTypes.Short:
-                    readUnmanaged<short>();
-                    break;
-
-                case SerializedArgumentTypes.UShort:
-                    readUnmanaged<ushort>();
-                    break;
-
-                case SerializedArgumentTypes.Byte:
-                    readUnmanaged<byte>();
-                    break;
-
-                case SerializedArgumentTypes.SByte:
-                    readUnmanaged<sbyte>();
-                    break;
-
-                case SerializedArgumentTypes.Long:
-                    readUnmanaged<long>();
-                    break;
-
-                case SerializedArgumentTypes.ULong:
-                    readUnmanaged<ulong>();
-                    break;
-
-                case SerializedArgumentTypes.Double:
-                    readUnmanaged<double>();
-                    break;
-
-                case SerializedArgumentTypes.Bool:
-                    readUnmanaged<bool>();
-                    break;
-
-                case SerializedArgumentTypes.Vector2:
-                    readUnmanaged<Vector2>();
-                    break;
-
-                case SerializedArgumentTypes.Vector3:
-                    readUnmanaged<Vector3>();
-                    break;
-
-                case SerializedArgumentTypes.Vector4:
-                    readUnmanaged<Vector4>();
-                    break;
-
-
-                case SerializedArgumentTypes.Matrix3x3:
-                    readUnmanaged<Matrix3x3>();
-                    break;
-
-                case SerializedArgumentTypes.Matrix4x4:
-                    readUnmanaged<Matrix4x4>();
-                    break;
-
-
-
-
-                case SerializedArgumentTypes.String:
-                    if (!isArray) argument = reader.ReadUintLengthPrefixedUTF8String();
-                    else
-                    {
-                        string[] arr = new string[count];
-                        for (int s = 0; s < arr.Length; s++)
-                            arr[s] = reader.ReadUintLengthPrefixedUTF8String();
-                        argument = arr;
-                    }
-                    break;
-
-
-                case SerializedArgumentTypes.ObjectPath:
-                    if (!isArray) argument = new ObjectPath(reader.ReadUintLengthPrefixedUTF8String());
-                    else
-                    {
-                        ObjectPath[] arr = new ObjectPath[count];
-                        for (int s = 0; s < arr.Length; s++)
-                            arr[s] = new ObjectPath(reader.ReadUintLengthPrefixedUTF8String());
-                        argument = arr;
-                    }
-                    break;
-
-
-
-                case SerializedArgumentTypes.ObjectReference:
-                    readUnmanaged<ObjectReference>();
-                    break;
-
-
-
-                case SerializedArgumentTypes.ResourceReference:
-                    if (!isArray) argument = resourceReferenceLookup[reader.ReadUInt32()];
-                    else
-                    {
-                        GameResource[] arr = new GameResource[count];
-
-                        for (int x = 0; x < arr.Length; x++)
-                            arr[x] = resourceReferenceLookup[reader.ReadUInt32()];
-
-                        argument = arr;
-                    }
-                    break;
-
-
-
-                default:
-                    throw new NotSupportedException();
-            }
-
-
-
-            final[argName] = argument;
-
-
-
-            void readUnmanaged<T>() where T : unmanaged
-            {
-                if (!isArray) argument = reader.ReadType<T>();
-                else argument = reader.ReadTypeArray<T>(count);
-            }
+            final.AddRange(SerializeParameter(arg.Key, argTypeName, argument));
         }
 
 
@@ -764,72 +754,309 @@ public static class Parsing
 
 
 
-    public static async Task<GameResource[]> LoadResourceBytes(BinaryReader reader, string FilePath)
+
+
+
+
+    private static List<byte> SerializeParameter(string argName, string typeName, JsonElement value)
     {
-
-        uint resourceCount = reader.ReadUInt32();
-
-        if (resourceCount == 0) return null;
+        List<byte> final = new();
 
 
-        GameResource[] resources = new GameResource[resourceCount];
+
+        bool isArray = typeName.EndsWith("[]");
+        if (isArray)
+            typeName = typeName.Replace("[]", string.Empty);
 
 
-        (string type, bool external, byte[] data)[] ress = new (string type, bool external, byte[] data)[resourceCount];
-        for (int r = 0; r < resourceCount; r++)
+        typeName = typeName switch
         {
-            var type = reader.ReadUintLengthPrefixedUTF8String();
-            bool external = reader.ReadByte() == 1;
+            "bool" => "System.Boolean",
 
-            byte[] data;
+            "byte" => "System.Byte",
+            "sbyte" => "System.SByte",
 
-            if (external)
-            {
-                var path = reader.ReadUintLengthPrefixedUTF8String();
-                data = Encoding.UTF8.GetBytes(path);
-            }
-            else
-            {
-                uint len = reader.ReadUInt32();
-                data = reader.ReadBytes((int)len);
-            }
+            "short" => "System.Int16",
+            "ushort" => "System.UInt16",
 
-            ress[r] = (type, external, data);
+            "int" => "System.Int32",
+            "uint" => "System.UInt32",
+
+            "long" => "System.Int64",
+            "ulong" => "System.UInt64",
+
+            "float" => "System.Single",
+            "double" => "System.Double",
+            "half" => "System.Half",
+
+            "char" => "System.Char",
+            "string" => "System.String",
+            "object" => "System.Object",
+
+            _ => typeName
+        };
+
+        if (isArray) 
+            typeName += "[]";
+
+
+
+        var type = Type.GetType(typeName);
+
+
+
+        if (type == null)
+            throw new Exception($"Type '{typeName}' not found - type must be specified in full (with the exception of types with built in aliases) - for example 'System.Numerics.Matrix4x4' ");
+
+
+        replace(typeof(GameObject), typeof(GameObjectReference));
+        replace(typeof(GameResource), typeof(GameResourceReference));
+
+
+
+        void replace(Type detection, Type replacement)
+        {
+            if ((type.IsArray ? type.GetElementType() : type).IsAssignableTo(detection))
+                type = type.IsArray ? replacement.MakeArrayType() : replacement;
+
         }
 
 
-        await Parallel.ForAsync<uint>(0, resourceCount, async (rIndex, cancellation) =>
+
+
+
+        //name
+        final.AddRange(GetUintLengthPrefixedUTF8StringAsBytes(argName));
+
+        //type (fixed lookup in place for future proofing incase arbitrary type idx source generation is introduced)
+        final.Add((byte)TypeToEnumLookup[(type.IsArray ? type.GetElementType() : type)]);
+
+
+
+
+        if (type.IsArray)
         {
-            var resource = ress[rIndex];
+            var arr = value.Deserialize<JsonElement[]>();
+
+            final.AddRange(BitConverter.GetBytes((uint)arr.Length));  //array length
+
+            var elementtype = type.GetElementType();
+
+            for (int i = 0; i < arr.Length; i++)
+                WriteType(elementtype, arr[i]);
+
+        }
+        else
+        {
+            final.AddRange(BitConverter.GetBytes(uint.MaxValue));
+            WriteType(type, value);
+        }
 
 
-            string key = null;
-            if (resource.external) key = Loading.RelativePathToFullPath(Encoding.UTF8.GetString(resource.data), FilePath[..(FilePath.LastIndexOf('/')+1)]);
-            else key = FilePath + "_" + rIndex;
 
 
-            GameResource res;
+        return final;
 
-            if (resource.external)
-                res = resources[rIndex] = await GameResource.LoadResourceViaTypeName(resource.type, key);
+
+
+
+
+        // ======     only writes unmanaged types with the exception of string   ======
+
+        void WriteType(Type type, JsonElement? jsonValue)
+        {
+
+
+
+
+
+            if (type == typeof(bool))
+                writeUnmanaged(x => x.GetBoolean());
+
+            else if (type == typeof(byte))
+                writeUnmanaged(x => x.GetByte());
+
+            else if (type == typeof(sbyte))
+                writeUnmanaged(x => x.GetSByte());
+
+            else if (type == typeof(char))
+                writeUnmanaged(x => x.GetString()[0]);
+
+            else if (type == typeof(short))
+                writeUnmanaged(x => x.GetInt16());
+
+            else if (type == typeof(ushort))
+                writeUnmanaged(x => x.GetUInt16());
+
+            else if (type == typeof(int))
+                writeUnmanaged(x => x.GetInt32());
+
+
+            else if (type == typeof(uint)
+                || type == typeof(GameObjectReference)
+                || type == typeof(GameResourceReference))
+                writeUnmanaged(x => x.GetUInt32());
+
+
+            else if (type == typeof(long))
+                writeUnmanaged(x => x.GetInt64());
+
+            else if (type == typeof(ulong))
+                writeUnmanaged(x => x.GetUInt64());
+
+            else if (type == typeof(Half))
+                writeUnmanaged(x => (Half)x.GetSingle());
+
+            else if (type == typeof(float))
+                writeUnmanaged(x => x.GetSingle());
+
+            else if (type == typeof(double))
+                writeUnmanaged(x => x.GetDouble());
+
+            else if (type == typeof(decimal))
+                writeUnmanaged(x => x.GetDecimal());
+
+
+            else if (type.IsEnum)
+            {
+                if (jsonValue == null)
+                    final.AddRange(BoxedStructToBytes(Convert.ChangeType(Activator.CreateInstance(type.GetEnumUnderlyingType()), type.GetEnumUnderlyingType())));
+
+                else
+                {
+                    Type underlying = Enum.GetUnderlyingType(type);
+
+                    object value = underlying switch
+                    {
+                        Type t when t == typeof(byte) => jsonValue.Value.GetByte(),
+                        Type t when t == typeof(sbyte) => (sbyte)jsonValue.Value.GetInt32(),
+                        Type t when t == typeof(short) => jsonValue.Value.GetInt16(),
+                        Type t when t == typeof(ushort) => jsonValue.Value.GetUInt16(),
+                        Type t when t == typeof(int) => jsonValue.Value.GetInt32(),
+                        Type t when t == typeof(uint) => jsonValue.Value.GetUInt32(),
+                        Type t when t == typeof(long) => jsonValue.Value.GetInt64(),
+                        Type t when t == typeof(ulong) => jsonValue.Value.GetUInt64(),
+                        Type t when t == typeof(string) => typeof(Parsing).GetMethod(nameof(EnumParse)).MakeGenericMethod(underlying).Invoke(null, [jsonValue.Value, jsonValue.Value.GetString()]),
+                        _ => throw new NotSupportedException()
+                    };
+
+                    final.AddRange(BoxedStructToBytes(value));
+                    return;
+                }
+            }
+
+
+
+
+            else if (type == typeof(string))
+                final.AddRange(GetUintLengthPrefixedUTF8StringAsBytes(jsonValue == null ? string.Empty : jsonValue.Value.GetString()));
+
 
             else
-                res = resources[rIndex] = await Loading.InternalLoadOrFetchResource(key, async () => await GameResource.ConstructResourceViaTypeName(resource.type, resource.data, key));
+            {
+
+                //if not public + unmanaged, throw
+                if (!type.IsValueType ||
+                    type.IsEnum ||
+                    type.ContainsGenericParameters ||
+                    type.IsPointer ||
+                    !IsUnManaged(type) ||
+                    !IsFullyPublic(type))
+                    throw new NotSupportedException();
 
 
-            res.Init();
-            
-            resources[rIndex].AddUser();  //this scene
+
+                foreach (var field in type.GetFields(System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public))
+                {
+                    if (jsonValue == null || !jsonValue!.Value.TryGetProperty(field.Name, out var fieldValue))
+                        WriteType(field.FieldType, null);
+
+                    else
+                        WriteType(field.FieldType, fieldValue);
+                }
+
+            }
 
 
-        });
 
 
-        return resources;
+
+            unsafe void writeUnmanaged<T>(Func<JsonElement, T> serialize) where T : unmanaged
+                => final.AddRange(StructToBytes(jsonValue == null ? default(T) : serialize.Invoke(jsonValue!.Value)));
+
+
+
+            static bool IsFullyPublic(Type type)
+            {
+                while (type != null)
+                {
+                    if (type.IsNested)
+                    {
+                        if (!type.IsNestedPublic)
+                            return false;
+
+                        type = type.DeclaringType;
+                    }
+                    else
+                    {
+                        if (!type.IsPublic)
+                            return false;
+
+                        break;
+                    }
+                }
+
+                return true;
+            }
+
+        }
+
     }
 
 
 
+
+    class U<T> where T : unmanaged { }
+    static bool IsUnManaged(this Type t)
+    {
+        try { typeof(U<>).MakeGenericType(t); return true; }
+        catch (Exception) { return false; }
+    }
+
+
+
+    private static Dictionary<Type, FixedSerializableParameterTypes> TypeToEnumLookup = new()
+    {
+        { typeof(Half),   FixedSerializableParameterTypes.Half },
+        { typeof(float),  FixedSerializableParameterTypes.Float },
+        { typeof(double), FixedSerializableParameterTypes.Double },
+
+        { typeof(sbyte), FixedSerializableParameterTypes.SByte },
+        { typeof(short), FixedSerializableParameterTypes.Short },
+        { typeof(int),   FixedSerializableParameterTypes.Int },
+        { typeof(long),  FixedSerializableParameterTypes.Long },
+
+        { typeof(byte),   FixedSerializableParameterTypes.Byte },
+        { typeof(ushort), FixedSerializableParameterTypes.UShort },
+        { typeof(uint),   FixedSerializableParameterTypes.Uint },
+        { typeof(ulong),  FixedSerializableParameterTypes.ULong },
+
+        { typeof(bool),   FixedSerializableParameterTypes.Bool },
+        { typeof(string), FixedSerializableParameterTypes.String },
+
+        { typeof(Vector2), FixedSerializableParameterTypes.Vector2 },
+        { typeof(Vector3), FixedSerializableParameterTypes.Vector3 },
+        { typeof(Vector4), FixedSerializableParameterTypes.Vector4 },
+        { typeof(Matrix4x4), FixedSerializableParameterTypes.Matrix4x4 },
+
+        { typeof(GameObjectReference), FixedSerializableParameterTypes.ObjectReference },
+        { typeof(GameResourceReference), FixedSerializableParameterTypes.ResourceReference },
+    };
+
+
+
+
+#endif
 
 
 

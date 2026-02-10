@@ -27,7 +27,7 @@ public partial class SkinnedModelInstance : ModelInstance
     public Skeleton Skeleton;
 
 
-    [GameObjectInitMethod]
+    
     public new void Init(Skeleton Skeleton, ModelResource Model, GameResource[] Materials = null, Dictionary<string, VertexAttributeDefinitionPlusBufferStruct> extraAttributeBuffers = null, string Name = default, Matrix4x4 Transform = default)
     {
 

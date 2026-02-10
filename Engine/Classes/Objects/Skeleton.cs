@@ -3,6 +3,9 @@ namespace Engine.GameObjects;
 
 
 using Engine.Attributes;
+using Engine.Core;
+
+
 using System.Collections.Immutable;
 using System.Numerics;
 
@@ -11,14 +14,8 @@ using System.Numerics;
 public partial class Skeleton : GameObject
 {
 
-    public class Bone
-    {
-        public byte Index;
+    public record class Bone(ushort Index, GameObject Object, Matrix4x4 Rest, Matrix4x4 RestInv);
 
-        public GameObject Object;
-        public Matrix4x4 Rest;
-        public Matrix4x4 RestInv;
-    }
 
 
 
@@ -29,7 +26,7 @@ public partial class Skeleton : GameObject
 
 
 
-    [GameObjectInitMethod]
+    
     public new void Init(GameObject[] Bones, string Name = default, Matrix4x4 Transform = default)
     {
 
@@ -38,14 +35,13 @@ public partial class Skeleton : GameObject
 
         var thisinv = GlobalTransform.Matrix;
 
-        for (byte i = 0; i < Bones.Length; i++)
+        for (ushort i = 0; i < Bones.Length; i++)
         {
             var b = Bones[i];
 
             OnGlobalTransformChangedEvent.Add(BoneTransformChanged);
 
-            var inst = new Bone() { Object = b, Rest = b.Transform.Matrix, RestInv = thisinv * b.GlobalTransform.AffineInverse().Matrix };
-            inst.Index = i;
+            var inst = new Bone(i, b, b.Transform.Matrix, thisinv * b.GlobalTransform.AffineInverse().Matrix);
 
             dict[b.Name] = arr[i] = inst;
 
@@ -75,7 +71,7 @@ public partial class Skeleton : GameObject
 
 
 
-    private Matrix4x4[] FinalBoneMatrices;
+    protected Matrix4x4[] FinalBoneMatrices;
 
     public void RecalculateAndUploadSkinningDataIfNeeded()
     {
@@ -83,8 +79,13 @@ public partial class Skeleton : GameObject
         {
             var thisinv = GlobalTransform.AffineInverse().Matrix;
 
-            for (int bone = 0; bone < BonesByIndex.Length; bone++)
-                FinalBoneMatrices[bone] = BonesByIndex[bone].RestInv * BonesByIndex[bone].Object.GlobalTransform.Matrix * thisinv;
+
+            for (ushort boneIndex = 0; boneIndex < BonesByIndex.Length; boneIndex++)
+            {
+                var bone = BonesByIndex[boneIndex];
+                FinalBoneMatrices[boneIndex] = bone.RestInv * bone.Object.GlobalTransform.Matrix * thisinv;
+            }
+
 
 
             UploadSkinningData();

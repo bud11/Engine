@@ -51,7 +51,7 @@ public partial class ModelInstance : DrawObject
 
 
 
-    [GameObjectInitMethod]
+    
     public void Init(ModelResource Model, GameResource[] Materials = null, Dictionary<string, VertexAttributeDefinitionPlusBufferStruct> extraAttributeBuffers = null, string Name = default, Matrix4x4 Transform = default)
     {
 

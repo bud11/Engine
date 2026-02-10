@@ -214,6 +214,9 @@ public partial class Camera : GameObject
 
         // !!!! this automatically calls setup !!!!
         this.Resolution = Resolution;
+
+
+        base.Init();
     }
 
 

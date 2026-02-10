@@ -90,9 +90,6 @@ public static class Kernel
             () =>
             {
 
-                Loading.ScanForAssetArchives();
-
-
                 window = Window.Init(settings);     //<-- indirectly backend creation on render thread
 
 
@@ -108,17 +105,20 @@ public static class Kernel
 
 
 
-
-
+                Loading.ScanForAssetArchives();
 
 #if DEBUG
+                Loading.ScanResourceAssociations();
+
                 ShaderCompilation.CompileShaders();
 
                 ImGUIController.Init();
 #endif
 
 
-                Entry.Init().Wait();  //stall nessecary
+
+
+                Entry.Init().Wait();  //stall is nessecary
 
 
 

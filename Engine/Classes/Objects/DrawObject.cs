@@ -2,6 +2,7 @@
 
 
 using Engine.GameResources;
+using static Engine.Core.EngineMath;
 
 namespace Engine.GameObjects;
 
@@ -14,10 +15,25 @@ namespace Engine.GameObjects;
 public abstract class DrawObject : AABBObject
 {
 
+    public void Init(string Name = default, Transform transform = default)
+    {
+        base.Init(Name, transform);
+    }
+
+
+
+
+
+    public static readonly List<DrawObject> AllDrawableObjects = new();
+
+
     public bool DrawnThisFrame { get; private set; }
+
+
 
     public override void Loop()
     {
+
         DrawnThisFrame = false;
 
         base.Loop();

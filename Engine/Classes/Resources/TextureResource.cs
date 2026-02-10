@@ -21,6 +21,9 @@ using Engine.Stripped;
 
 
 
+
+[FileExtensionAssociation(".png")]
+[FileExtensionAssociation(".exr")]
 public class TextureResource : GameResource
 {
 
@@ -37,7 +40,7 @@ public class TextureResource : GameResource
 
 #if DEBUG
 
-    [StaticVirtualOverride]
+    
     public static new async Task<byte[]> ConvertToFinalAssetBytes(byte[] bytes, string filePath)
     {
         TextureConversion.TextureProcessingData dat;
@@ -84,31 +87,25 @@ public class TextureResource : GameResource
 
 
 
-    [StaticVirtualOverride]
-    public static new async Task<GameResource> Load(byte[] bytes, string key)
+    
+    public static new async Task<GameResource> Load(Loading.AssetByteStream stream, string key)
     {
 
-        using (var stream = new MemoryStream(bytes))
-        {
-            using (BinaryReader reader = new BinaryReader(stream))
-            {
-                var w = reader.ReadUInt32();
-                var h = reader.ReadUInt32();
-                var d = reader.ReadUInt32();
+        var w = stream.ReadUnmanagedType<uint>();
+        var h = stream.ReadUnmanagedType<uint>();
+        var d = stream.ReadUnmanagedType<uint>();
 
-                TextureFormats format = (TextureFormats)reader.ReadByte();
-                TextureTypes type = (TextureTypes)reader.ReadByte();
+        TextureFormats format = (TextureFormats)stream.ReadByte();
+        TextureTypes type = (TextureTypes)stream.ReadByte();
 
 
-                byte[][] mips = new byte[reader.ReadByte()][];
+        byte[][] mips = new byte[stream.ReadByte()][];
 
-                for (int i = 0; i < mips.Length; i++)
-                    mips[i] = reader.ReadBytes((int)reader.ReadUInt32());
+        for (int i = 0; i < mips.Length; i++)
+            mips[i] = stream.ReadUnmanagedTypeArray<byte>(stream.ReadUnmanagedType<uint>());
 
 
-                return new TextureResource(BackendTextureReference.Create(new Vector3<uint>(w, h, d), type, format, false, mips), key);
-            }
-        }
+        return new TextureResource(BackendTextureReference.Create(new Vector3<uint>(w, h, d), type, format, false, mips), key);
 
     }
 

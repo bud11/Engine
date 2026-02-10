@@ -19,6 +19,9 @@ using Engine.Core;
 using System.Text.Json;
 #endif
 
+
+
+[FileExtensionAssociation(".anim")]
 public class AnimationResource : GameResource
 {
 
@@ -52,7 +55,7 @@ public class AnimationResource : GameResource
 #if DEBUG
 
 
-    [StaticVirtualOverride]
+    
     public static new async Task<byte[]> ConvertToFinalAssetBytes(byte[] bytes, string filePath)
     {
 
@@ -128,71 +131,69 @@ public class AnimationResource : GameResource
 
 
 
-    [StaticVirtualOverride]
-    public static new async Task<GameResource> Load(byte[] bytes, string key)
+    
+    public static new async Task<GameResource> Load(Loading.AssetByteStream stream, string key)
     {
+        var length = stream.ReadUnmanagedType<float>();
+        var loops = stream.ReadByte() == 1;
 
-        using (MemoryStream ms = new(bytes))
-        using (BinaryReader reader = new BinaryReader(ms))
+
+        var trackcount = stream.ReadUnmanagedType<uint>();
+
+
+
+        TrackData[] tracks = new TrackData[trackcount];
+
+
+        for (uint tr = 0; tr < trackcount; tr++)
         {
-
-            var length = reader.ReadSingle();
-            var loops = reader.ReadBoolean();
+            var identifier = stream.ReadUintLengthPrefixedUTF8String();
 
 
-            var trackcount = reader.ReadUInt32();
+            var tracktype = (TrackTypes)stream.ReadByte();
 
-            TrackData[] tracks = new TrackData[trackcount];
+            var trackvaluescount = stream.ReadUnmanagedType<uint>();
 
 
-            for (uint tr = 0; tr < trackcount; tr++)
+            var timesarray = stream.ReadUnmanagedTypeArray<float>(trackvaluescount);
+
+            object contentarray = null;
+
+            switch (tracktype)
             {
-                var identifier = reader.ReadUintLengthPrefixedUTF8String();
+                case TrackTypes.Position:
+                case TrackTypes.Scale:
 
-                var tracktype = (TrackTypes)reader.ReadByte();
+                    contentarray = stream.ReadUnmanagedTypeArray<Vector3>(trackvaluescount);
 
-                var trackvaluescount = reader.ReadUInt32();
+                    break;
 
-                var timesarray = reader.ReadTypeArray<float>(trackvaluescount);
+                case TrackTypes.Rotation:
 
-                object contentarray = null;
+                    contentarray = stream.ReadUnmanagedTypeArray<Quaternion>(trackvaluescount);
 
-                switch (tracktype)
-                {
-                    case TrackTypes.Position:
-                    case TrackTypes.Scale:
+                    break;
 
-                        contentarray = reader.ReadTypeArray<Vector3>(trackvaluescount);
+                case TrackTypes.Value:
 
-                        break;
+                    contentarray = stream.ReadUnmanagedTypeArray<float>(trackvaluescount);
 
-                    case TrackTypes.Rotation:
+                    break;
 
-                        contentarray = reader.ReadTypeArray<Quaternion>(trackvaluescount);
-
-                        break;
-
-                    case TrackTypes.Value:
-
-                        contentarray = reader.ReadTypeArray<float>(trackvaluescount);
-
-                        break;
-
-                }
-
-
-                tracks[tr] = new()
-                {
-                    Data = contentarray,
-                    Identifier = identifier,
-                    Type = tracktype,
-                    Times = timesarray,
-                };
             }
 
 
-            return new AnimationResource(length, loops, tracks, key);
+            tracks[tr] = new()
+            {
+                Data = contentarray,
+                Identifier = identifier,
+                Type = tracktype,
+                Times = timesarray,
+            };
         }
+
+
+        return new AnimationResource(length, loops, tracks, key);
     }
 
 

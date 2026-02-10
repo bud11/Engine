@@ -240,7 +240,6 @@ public static class Window
     {
         lock (windowValidLock)
         {
-            if (!windowValid) Debug.Print("invalid, cleared");
             return windowValid;
         }
     }

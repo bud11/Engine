@@ -43,6 +43,12 @@ public static class EngineBuildProcess
 
         CleanAssetCache();
 
+        ScanResourceAssociations();
+
+
+
+
+
 
         Directory.CreateDirectory(EngineSettings.ReleaseRootAssetArchivePath);
 
@@ -130,7 +136,7 @@ public static class EngineBuildProcess
                                     var relativePath = Path.GetRelativePath(archiveAbsolutePath, assetAbsolutePath);
 
 
-                                    bool found = GameResource.GameResourceFileExtensionMap.TryGetValue(Path.GetExtension(assetAbsolutePath), out var AssetFoundType);
+                                    bool found = GameResourceFileAssociations.TryGetValue(Path.GetExtension(assetAbsolutePath), out var AssetFoundType);
 
                                     if (found && AssetFoundType == null)
                                     {
@@ -155,7 +161,7 @@ public static class EngineBuildProcess
 
 
                                         Print($"File detected as {AssetFoundType.FullName}: {relativePath}");
-                                        rawBytes = await (Task<byte[]>)typeof(Loading).GetMethod(nameof(LoadFinalAssetBytes)).MakeGenericMethod(AssetFoundType).Invoke(null, [assetAbsolutePath]);
+                                        rawBytes = await (await (Task<AssetByteStream>)typeof(Loading).GetMethod(nameof(GetFinalAssetBytes)).MakeGenericMethod(AssetFoundType).Invoke(null, [assetAbsolutePath])).GetArray();
                                         Print($"File processed successfully: {relativePath}");
                                     }
                                     else
@@ -201,7 +207,7 @@ public static class EngineBuildProcess
                                     header.AddRange(BitConverter.GetBytes((ulong)currentOffset));
                                     header.AddRange(BitConverter.GetBytes((ulong)result.data.Length));
                                     header.AddRange(Parsing.GetUintLengthPrefixedUTF8StringAsBytes(result.path));
-                                    header.AddRange(Parsing.GetUintLengthPrefixedUTF8StringAsBytes(result.type?.Name));
+                                    header.AddRange(BitConverter.GetBytes(Parsing.GetGameResourceTypeID(result.type)));
 
 
                                     currentOffset += (ulong)result.data.Length;
@@ -323,9 +329,6 @@ public static partial class RenderingBackend
 
 public static partial class Loading
 {{
-
-    private static readonly Dictionary<string, Type> AssetTypeLookup = {Emit(AssetTypesFound, 1)};
-
     private static readonly List<string> AssetArchiveNames = {Emit(AssetArchiveNames.ToArray())};
 
 }}

@@ -2,9 +2,7 @@
 
 namespace Engine.GameObjects;
 
-
-
-
+using Engine.Core;
 using System.Numerics;
 using static Engine.Core.EngineMath;
 
@@ -15,6 +13,15 @@ using static Engine.Core.EngineMath;
 /// </summary>
 public abstract class AABBObject : GameObject
 {
+
+    public void Init(string Name = default, Transform transform = default)
+    {
+        base.Init(Name, transform);
+    }
+
+
+
+
 
     /// <summary>
     /// The unaltered local AABB of this object.
@@ -33,6 +40,8 @@ public abstract class AABBObject : GameObject
 
         base.GlobalTransformChanged();
     }
+
+
 
     public AABB GetOrRecalculateCachedGlobalAABB()
     {

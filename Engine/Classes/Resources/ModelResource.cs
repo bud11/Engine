@@ -24,6 +24,9 @@ using System.Text.Json;
 #endif
 
 
+
+
+[FileExtensionAssociation(".mdl")]
 public class ModelResource : GameResource
 {
 
@@ -222,19 +225,17 @@ public class ModelResource : GameResource
 
 
 
-    [StaticVirtualOverride]
-    public static new async Task<GameResource> Load(byte[] bytes, string key)
+    
+    public static new async Task<GameResource> Load(Loading.AssetByteStream stream, string key)
     {
-        using var ms = new MemoryStream(bytes);
-        using var reader = new BinaryReader(ms);
 
 
 
 
 
-        uint vertexCount = reader.ReadUInt32();
-        uint attribDefCount = reader.ReadUInt32();
-        uint bufferCount = reader.ReadUInt32();
+        uint vertexCount = stream.ReadUnmanagedType<uint>();
+        uint attribDefCount = stream.ReadUnmanagedType<uint>();
+        uint bufferCount = stream.ReadUnmanagedType<uint>();
 
 
 
@@ -242,8 +243,8 @@ public class ModelResource : GameResource
 
         for (uint i = 0; i < bufferCount; i++)
         {
-            bool writeable = reader.ReadByte() == 1;
-            var data = reader.ReadBytes((int)reader.ReadUInt32());
+            bool writeable = stream.ReadByte() == 1;
+            var data = stream.ReadUnmanagedTypeArray<byte>(stream.ReadUnmanagedType<uint>());
 
             buffers[i] = BackendVertexBufferAllocationReference.Create<byte>(data, writeable);
         }
@@ -254,29 +255,29 @@ public class ModelResource : GameResource
 
         for (uint i = 0; i < attribDefCount; i++)
         {
-            string name = reader.ReadUintLengthPrefixedUTF8String();
+            string name = stream.ReadUintLengthPrefixedUTF8String();
 
 
-            var componentFormat = (VertexAttributeBufferComponentFormat)reader.ReadByte();
-            byte offset = reader.ReadByte();
-            byte stride = reader.ReadByte();
-            var scope = (VertexAttributeScope)reader.ReadByte();
-            byte bufferIndex = reader.ReadByte();
+            var componentFormat = (VertexAttributeBufferComponentFormat)stream.ReadByte();
+            byte offset = (byte)stream.ReadByte();
+            byte stride = (byte)stream.ReadByte();
+            var scope = (VertexAttributeScope)stream.ReadByte();
+            byte bufferIndex = (byte)stream.ReadByte();
 
             attributes[name] = new VertexAttributeDefinitionPlusBufferClass(buffers[bufferIndex], new VertexAttributeDefinition(componentFormat, stride, offset, scope));
         }
 
 
-        var submeshes = reader.ReadTypeArray<SubmeshRange>(reader.ReadUInt32());
+        var submeshes = stream.ReadUnmanagedTypeArray<SubmeshRange>(stream.ReadUnmanagedType<uint>());
 
-        var idxcount = reader.ReadUInt32();
+        var idxcount = stream.ReadUnmanagedType<uint>();
 
-        BackendIndexBufferAllocationReference indexbuffer = idxcount == 0 ? null : BackendIndexBufferAllocationReference.Create(reader.ReadTypeArray<uint>(idxcount), false);
+        BackendIndexBufferAllocationReference indexbuffer = idxcount == 0 ? null : BackendIndexBufferAllocationReference.Create(stream.ReadUnmanagedTypeArray<uint>(idxcount), false);
 
 
 
-        Vector3 min = reader.ReadType<Vector3>();
-        Vector3 max = reader.ReadType<Vector3>();
+        Vector3 min = stream.ReadUnmanagedType<Vector3>();
+        Vector3 max = stream.ReadUnmanagedType<Vector3>();
 
         var aabb = AABB.FromMinMax(min, max);
 
@@ -296,7 +297,8 @@ public class ModelResource : GameResource
 
 #if DEBUG
 
-    [StaticVirtualOverride]
+
+    
     public static new async Task<byte[]> ConvertToFinalAssetBytes(byte[] bytes, string filePath)
     {
         var dict = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(bytes);

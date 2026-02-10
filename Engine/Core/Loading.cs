@@ -66,15 +66,13 @@ public static partial class Loading
 
             using (var filestream = new FileStream(archivePath, FileMode.Open, FileAccess.Read))
             {
-                var assetCount = filestream.ReadType<uint>();
+                var assetCount = filestream.ReadUnmanagedType<uint>();
                 for (uint i = 0; i < assetCount; i++)
                 {
-                    var assetOffset = filestream.ReadType<ulong>();
-                    var assetLength = filestream.ReadType<ulong>();
+                    var assetOffset = filestream.ReadUnmanagedType<ulong>();
+                    var assetLength = filestream.ReadUnmanagedType<ulong>();
                     var assetPath = filestream.ReadUintLengthPrefixedUTF8String();
-                    var associatedTypeName = filestream.ReadUintLengthPrefixedUTF8String();
-                    Type assetType = associatedTypeName == string.Empty ? null : AssetTypeLookup[associatedTypeName];
-
+                    Type assetType = Parsing.GetGameResourceTypeFromTypeID(filestream.ReadUnmanagedType<ushort>());
 
                     AssetLookupDirect[$"{archiveName}/{assetPath}"] = new AssetDataRange(archivePath, assetType, assetOffset, assetLength);
                 }
@@ -103,7 +101,14 @@ public static partial class Loading
 
 
 
-    public static async Task<byte[]> LoadAssetBytes(string assetPath)
+
+    /// <summary>
+    /// Returns a stream over the asset at <paramref name="assetPath"/>, <b> which must be manually disposed of. </b>
+    /// <br/> This is very literally just a read only file stream operation and should only manually be used if you're confident you want to read an asset file without engine-aided processing/conversion/resource association.
+    /// </summary>
+    /// <param name="assetPath"></param>
+    /// <returns></returns>
+    public static AssetByteStream AcquireAssetByteStream(string assetPath)
     {
 
 #if DEBUG
@@ -112,22 +117,122 @@ public static partial class Loading
         if (!AssetExists(assetPath)) 
             throw new Exception();
 
-        return await File.ReadAllBytesAsync(assetPath);
+        return new AssetByteStream(File.OpenRead(assetPath), new FileInfo(assetPath).Length);
 #else
 
         var entry = AssetLookupDirect[assetPath];
 
-        using var fs = File.OpenRead(entry.archivePath);
+        var fs = File.OpenRead(entry.archivePath);
         fs.Position = (long)entry.Offset;
 
-        using var zstdStream = new DecompressionStream(fs);
-        using var ms = new MemoryStream();
-
-        await zstdStream.CopyToAsync(ms);
-        return ms.ToArray();
+        return new AssetByteStream(new DecompressionStream(fs, bufferSize: (int)entry.Length, leaveOpen: false), (long)entry.Length);
 #endif
 
     }
+
+
+
+
+    /// <summary>
+    /// Represents a read-only, advance-only stream over one specific asset file.
+    /// </summary>
+    public sealed class AssetByteStream : Stream
+    {
+        private readonly Stream _baseStream;
+        private readonly long _length;
+        private long _remaining;
+
+        public AssetByteStream(Stream baseStream, long length)
+        {
+            _baseStream = baseStream ?? throw new ArgumentNullException(nameof(baseStream));
+            if (length < 0)
+                throw new ArgumentOutOfRangeException(nameof(length));
+
+            _length = length;
+            _remaining = length;
+        }
+
+        /// <summary>
+        /// Reads the entire asset into a byte[] and disposes the stream.
+        /// </summary>
+        public async Task<byte[]> GetArray()
+        {
+            var buffer = new byte[_length];
+            int offset = 0;
+
+            while (_remaining > 0)
+            {
+                int read = await ReadAsync(
+                    buffer,
+                    offset,
+                    (int)Math.Min(int.MaxValue, _remaining)
+                ).ConfigureAwait(false);
+
+                if (read == 0)
+                    break;
+
+                offset += read;
+            }
+
+            Dispose();
+            return buffer;
+        }
+
+        protected override void Dispose(bool disposing)
+        {
+            if (disposing)
+                _baseStream.Dispose();
+
+            base.Dispose(disposing);
+        }
+
+        public override bool CanRead => _baseStream.CanRead;
+        public override bool CanSeek => false;
+        public override bool CanWrite => false;
+
+        public override long Length => _length;
+
+        public override long Position
+        {
+            get => _length - _remaining;
+            set => throw new NotSupportedException();
+        }
+
+        public override int Read(byte[] buffer, int offset, int count)
+        {
+            if (_remaining <= 0)
+                return 0;
+
+            count = (int)Math.Min(count, _remaining);
+            int read = _baseStream.Read(buffer, offset, count);
+            _remaining -= read;
+            return read;
+        }
+
+        public override async ValueTask<int> ReadAsync(
+            Memory<byte> buffer,
+            CancellationToken cancellationToken = default)
+        {
+            if (_remaining <= 0)
+                return 0;
+
+            int count = (int)Math.Min(buffer.Length, _remaining);
+            int read = await _baseStream
+                .ReadAsync(buffer.Slice(0, count), cancellationToken)
+                .ConfigureAwait(false);
+
+            _remaining -= read;
+            return read;
+        }
+
+        public override void Flush() => throw new NotSupportedException();
+        public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+        public override void SetLength(long value) => throw new NotSupportedException();
+        public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+    }
+
+
+
 
 
 
@@ -265,7 +370,7 @@ public static partial class Loading
 
 
     /// <summary>
-    /// Deletes development cache files that don't have an existing matching asset.
+    /// Debug-only method that deletes development-time cache files which don't have an existing matching asset.
     /// </summary>
     public static void CleanAssetCache()
     {
@@ -342,16 +447,16 @@ public static partial class Loading
             var loadpath = resourcePath;  //gets mutated, not useless
 
 
-            byte[] finalBytes = null;
+            AssetByteStream stream = null;
 
 
 #if DEBUG
 
+
             //scans for an existing file according to ResourceFileExtensionMap
 
-            var ValidFileExtensions = GameResource.GameResourceFileExtensionMap.Where(x => x.Value == typeof(T)).Select(x => x.Key);
+            var ValidFileExtensions = GameResourceFileAssociations.Where(x => x.Value == typeof(T)).Select(x => x.Key);
 
-            if (ValidFileExtensions.Contains(null)) throw new Exception("Resource excluded from loading via presence of null extension key");
 
 
             foreach (var v in ValidFileExtensions)
@@ -365,21 +470,23 @@ public static partial class Loading
             }
 
 
-            if (resourcePath == loadpath) throw new Exception($"Resource '{resourcePath}' not found (scanned for {string.Join(", ", ValidFileExtensions)})");
+            if (resourcePath == loadpath) 
+                throw new Exception($"Resource '{resourcePath}' not found (scanned for {string.Join(", ", ValidFileExtensions)})");
+
 
 
 
             //if type converts, try loading cached result, otherwise convert and cache result if cached file doesnt exist or doesnt match
 
-            finalBytes = await LoadFinalAssetBytes<T>(Path.Combine(EngineSettings.RootAssetDirectoryPath, loadpath));
+            stream = await GetFinalAssetBytes<T>(Path.Combine(EngineSettings.RootAssetDirectoryPath, loadpath));
 
 
 #else
-            finalBytes = await LoadAssetBytes(loadpath);
+            stream = AcquireAssetByteStream(loadpath);
 #endif
 
 
-            var res = await StaticVirtuals.Engine_Core_GameResource_Load<T>(finalBytes, resourcePath);
+            var res = await Parsing.ConstructGameResourceFromGeneric<T>(stream, resourcePath);
 
             res.Init();
 
@@ -398,16 +505,15 @@ public static partial class Loading
 #if DEBUG
 
 
-    public static readonly List<string> AssetLoadingDebugList = new();
-
 
     /// <summary>
-    /// This method returns final asset bytes (converted and cached if nessecary) and should not be used directly.
+    /// This method gets the final asset bytes (converting and caching the source file if nessecary) and should not be used directly.
     /// </summary>
     /// <typeparam name="T"></typeparam>
     /// <param name="loadpath"></param>
     /// <returns></returns>
-    public static async Task<byte[]> LoadFinalAssetBytes<T>(string loadpath) where T : GameResource
+    /// 
+    public static async Task<AssetByteStream> GetFinalAssetBytes<T>(string loadpath) where T : GameResource
     {
         var relative = Path.GetRelativePath(EngineSettings.RootAssetDirectoryPath, loadpath);
 
@@ -426,12 +532,13 @@ public static partial class Loading
         loadpath = Path.GetFullPath(loadpath);
 
 
-        byte[] finalBytes = null;
+        AssetByteStream finalStream = null;
+
 
 
         var convertcheck = typeof(T).GetMethod(nameof(GameResource.ConvertToFinalAssetBytes));
 
-        if (convertcheck != null && convertcheck.GetCustomAttribute<StaticVirtualOverrideAttribute>() != null)
+        if (convertcheck != null)
         {
 
 
@@ -441,7 +548,7 @@ public static partial class Loading
             Directory.CreateDirectory(Directory.GetParent(cachedFileDir).FullName);
 
 
-            var load = await LoadAssetBytes(loadpath);
+            var load = await AcquireAssetByteStream(loadpath).GetArray();
 
 
             uint crc = 0;
@@ -451,42 +558,43 @@ public static partial class Loading
                 crc = Crc32.HashToUInt32(load);
 
 
-                using (var filestream = new FileStream(cachedFileDir, FileMode.Open, FileAccess.Read))
+                var filestream = new FileStream(cachedFileDir, FileMode.Open, FileAccess.Read);
+
+
+
+                uint storedCrc = filestream.ReadUnmanagedType<uint>();
+
+                if (storedCrc == crc)
                 {
-                    byte[] stored = new byte[sizeof(uint)];
+                    statusPrint("Cached file found");
 
-                    await filestream.ReadExactlyAsync(stored);
+                    int remaining = (int)(filestream.Length - filestream.Position);
 
-                    uint storedCrc = BitConverter.ToUInt32(stored);
-
-
-                    if (storedCrc == crc)
-                    {
-
-                        statusPrint("Cached file found");
-
-                        int remaining = (int)(filestream.Length - filestream.Position);
-                        finalBytes = new byte[remaining];
-                        await filestream.ReadExactlyAsync(finalBytes);
-                    }
-                    else
-                    {
-                        crc = 0;
-                    }
+                    finalStream = new AssetByteStream(filestream, remaining);
                 }
+                else
+                {
+                    crc = 0;
+                    filestream.Dispose();
+                }
+
+
             }
 
 
             //cached file wasnt found or doesn't match
             if (crc == 0)
             {
+
+
                 statusPrint($"Required cache missing or out of date for asset '{relative}', converting...");
 
 
                 liststatusChange(assetloadingstatusForDebugMsg.Converting);
 
 
-                finalBytes = await StaticVirtuals.Engine_Core_GameResource_ConvertToFinalAssetBytes<T>(load, loadpath);
+                var finalBytes = await (Task<byte[]>)typeof(T).GetMethod(nameof(GameResource.ConvertToFinalAssetBytes), BindingFlags.Static | BindingFlags.Public, [typeof(byte[]), typeof(string)]).Invoke(null, [load, loadpath]);
+
 
                 using (var filestream = new FileStream(cachedFileDir, FileMode.Create))
                 {
@@ -494,12 +602,14 @@ public static partial class Loading
                     await filestream.WriteAsync(finalBytes);
                 }
 
+                finalStream = new AssetByteStream(new MemoryStream(finalBytes), finalBytes.Length);
+
             }
 
         }
 
 
-        else finalBytes = await LoadAssetBytes(loadpath);
+        else finalStream = AcquireAssetByteStream(loadpath);
 
 
 
@@ -511,7 +621,7 @@ public static partial class Loading
 
 
 
-        return finalBytes;
+        return finalStream;
 
 
 
@@ -558,6 +668,27 @@ public static partial class Loading
         Done
     }
 
+    public static readonly List<string> AssetLoadingDebugList = new();
+
+
+
+
+    
+/*
+    /// <summary>
+    /// Prepares a <typeparamref name="GameObjectType"/> from a final byte array (bytes already ran through the type's <see cref="GameResource.ConvertToFinalAssetBytes(byte[], string)"/> override, if there is one).
+    /// </summary>
+    /// <typeparam name="GameObjectType"></typeparam>
+    /// <param name="bytes"></param>
+    /// <param name="key"></param>
+    /// <param name="resourcePath"></param>
+    /// <returns></returns>
+    public static async Task<GameObjectType> ConstructResourceFromFinalBytes<GameObjectType>(byte[] bytes, string key, string resourcePath = null) where GameObjectType : GameResource
+    {
+        return (GameObjectType)await InternalLoadOrFetchResource(resourcePath, async () => await GameResource.__StaticVirtual_Load<GameObjectType>(bytes, key));
+    }
+*/
+
 
 #endif
 
@@ -569,21 +700,6 @@ public static partial class Loading
 
 
 
-
-
-
-    /// <summary>
-    /// Prepares a <typeparamref name="GameObjectType"/> from a final byte array (bytes already ran through the type's <see cref="GameResource.ConvertToFinalAssetBytes(byte[], string)"/> override, if there is one).
-    /// </summary>
-    /// <typeparam name="GameObjectType"></typeparam>
-    /// <param name="bytes"></param>
-    /// <param name="key"></param>
-    /// <param name="resourcePath"></param>
-    /// <returns></returns>
-    public static async Task<GameObjectType> ConstructResourceFromFinalBytes<GameObjectType>(byte[] bytes, string key, string resourcePath = null) where GameObjectType : GameResource
-    {
-        return (GameObjectType)await InternalLoadOrFetchResource(resourcePath, async () => await StaticVirtuals.Engine_Core_GameResource_Load<GameObjectType>(bytes, key));
-    }
 
 
 
@@ -740,6 +856,39 @@ public static partial class Loading
 
         return false;
     }
+
+
+
+
+
+#if DEBUG
+
+    public static readonly Dictionary<string, Type> GameResourceFileAssociations = new();
+
+    
+    /// <summary>
+    /// Debug-only method that searches for <see cref="FileExtensionAssociationAttribute"/>s on <see cref="GameResource"/>s
+    /// </summary>
+    /// <exception cref="Exception"></exception>
+    [Conditional("DEBUG")]
+    public static void ScanResourceAssociations()
+    {
+        GameResourceFileAssociations.Clear();
+
+        var types = Assembly.GetExecutingAssembly().GetTypes().Where(x => x.IsAssignableTo(typeof(GameResource)));
+
+        foreach (var type in types)
+        {
+            foreach (var attrib in type.GetCustomAttributes<FileExtensionAssociationAttribute>())
+            {
+                if (!GameResourceFileAssociations.TryAdd(attrib.Extension, type)) 
+                    throw new Exception($"Multiple resources associated with extension '.{attrib.Extension}'");
+            }
+        }
+    }
+
+
+#endif
 
 
 

@@ -7,30 +7,18 @@ namespace Engine.GameResources;
 
 using Engine.Attributes;
 using Engine.Core;
-using Engine.GameObjects;
 using System.Collections.Immutable;
-using System.Runtime.InteropServices;
+
+using static Engine.Core.Parsing;
+
+
+#if DEBUG
+using System.Reflection;
 using System.Text.Json;
+#endif
 
 
 
-
-
-/// <summary>
-/// An index reference to a <see cref="GameObject"/> within the context of scene-instantiated objects.
-/// </summary>
-/// <param name="Reference"></param>
-[StructLayout(LayoutKind.Sequential, Pack = 1, Size = sizeof(uint))]
-public readonly record struct ObjectReference(uint Reference);
-
-
-
-/// <summary>
-/// An string path to a <see cref="GameObject"/> relative to the scene root.
-/// </summary>
-/// <param name="Reference"></param>
-[StructLayout(LayoutKind.Sequential, Pack = 1, Size = sizeof(uint))]
-public readonly record struct ObjectPath(string Reference);
 
 
 
@@ -44,6 +32,10 @@ public readonly record struct ObjectPath(string Reference);
 /// <br /> A scene can refer to external resources and/or embed them directly, and scenes can reference other scenes.
 /// <br /> Scenes themselves can also own resources and buffers, which may be useful for something like lightmapping textures+buffers for example.
 /// </summary>
+/// 
+
+
+[FileExtensionAssociation(".scn")]
 public partial class SceneResource : GameResource
 {
 
@@ -52,7 +44,7 @@ public partial class SceneResource : GameResource
     private class SceneObjectGenData
     {
 
-        public string TypeName;
+        public ushort TypeID;
 
         public Dictionary<string, object> Args;
 
@@ -60,6 +52,9 @@ public partial class SceneResource : GameResource
 
         public SceneResource SelfSceneInstance;  //if this object is pointing to another scene..
         public SceneObjectGenData OriginalGenData;
+
+
+        public uint SelfIndex;
 
     }
 
@@ -73,7 +68,7 @@ public partial class SceneResource : GameResource
 
 
 
-    public readonly ImmutableArray<GameResource> SceneOwnedReferences;
+    private readonly ImmutableArray<GameResource> SceneOwnedReferences;
 
     private readonly SceneObjectGenData SceneRootObject;
     private readonly SceneObjectGenData[] SceneObjects;
@@ -97,7 +92,8 @@ public partial class SceneResource : GameResource
 
 #if DEBUG
 
-    [StaticVirtualOverride]
+
+    
     public static new async Task<byte[]> ConvertToFinalAssetBytes(byte[] bytes, string filePath)
     {
 
@@ -166,21 +162,59 @@ public partial class SceneResource : GameResource
 
 
 
+            var objTypeName = obj.GetProperty("type").GetString();
+
+            var objType = Type.GetType(objTypeName);
+
+
+            if (objType == null)
+                throw new Exception($"Type '{objTypeName}' not found - type must be specified in full, for example 'Engine.Core.GameObject' ");
+
+
+
+
             //write object type
 
-            final.AddRange(Parsing.GetUintLengthPrefixedUTF8StringAsBytes(obj.GetProperty("type").GetString()));
+            final.AddRange(BitConverter.GetBytes(GetGameObjectTypeID(objType)));
 
 
 
             //write each argument
 
-            if (obj.TryGetProperty("arguments", out var argsGet))
+            if (obj.TryGetProperty("arguments", out var args))
             {
-                var args = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(argsGet);
 
-                Parsing.WriteArgumentBytes(final, args);
+
+                Type objtypecheck = objType;
+                MethodInfo objInitMethod = null;
+
+
+                while (true)
+                {
+                    if (objtypecheck == typeof(object))
+                        throw new Exception("Missing Init method");
+
+
+                    var initfind = objtypecheck.GetMethods(BindingFlags.Instance | BindingFlags.Public | BindingFlags.DeclaredOnly).Where(x => x.Name == "Init");
+
+
+                    if (initfind.Any())
+                    {
+                        objInitMethod = initfind.FirstOrDefault();
+
+                        break;
+                    }
+
+                    objtypecheck = objtypecheck.BaseType;
+                }
+
+
+                final.AddRange(WriteArgumentBytes(args, objInitMethod));
             }
+
             else final.Add(0);
+
+
         }
 
 
@@ -195,111 +229,104 @@ public partial class SceneResource : GameResource
 
 
 
-    [StaticVirtualOverride]
-    public static new async Task<GameResource> Load(byte[] bytes, string ScenePath)
+    
+    public static new async Task<GameResource> Load(Loading.AssetByteStream stream, string ScenePath)
     {
 
 
+        var SceneResources = await LoadResourceBytes(stream, ScenePath);
 
 
-        using (MemoryStream ms = new(bytes))
-        using (BinaryReader reader = new BinaryReader(ms))
+
+
+        SceneObjectGroup[] Groups = new SceneObjectGroup[stream.ReadUnmanagedType<uint>()];
+        for (int i = 0; i < Groups.Length; i++)
+        {
+            Groups[i] = new()
+            {
+                Name = stream.ReadUintLengthPrefixedUTF8String(),
+
+                ObjectIdxs = stream.ReadUnmanagedTypeArray<uint>(stream.ReadUnmanagedType<uint>())
+            };
+        }
+
+
+
+
+        uint objectcount = stream.ReadUnmanagedType<uint>();
+
+        SceneObjectGenData[] SceneObjects = new SceneObjectGenData[objectcount];
+
+        uint?[] parents = new uint?[objectcount];
+
+        SceneObjectGenData SceneRoot = null;
+
+
+
+        for (uint obj = 0; obj < objectcount; obj++)
         {
 
-
-            var SceneResources = await Parsing.LoadResourceBytes(reader, ScenePath);
-
-
+            uint sceneref = stream.ReadUnmanagedType<uint>();
+            uint parent = stream.ReadUnmanagedType<uint>();
 
 
-            SceneObjectGroup[] Groups = new SceneObjectGroup[reader.ReadUInt32()];
-            for (int i = 0; i < Groups.Length; i++)
+            var objectTypeID = stream.ReadUnmanagedType<ushort>();  
+
+
+
+            SceneObjectGenData inst = null;
+
+
+            //if this object is the root of a scene reference
+            if (sceneref != uint.MaxValue)
             {
-                Groups[i] = new()
-                {
-                    Name = reader.ReadUintLengthPrefixedUTF8String(),
+                var scn = (SceneResource)SceneResources[sceneref];
+                var oinst = scn.SceneRootObject;
 
-                    ObjectIdxs = reader.ReadTypeArray<uint>(reader.ReadUInt32())
-                };
+                inst = new() { TypeID = objectTypeID, Args = new(), SelfSceneInstance = scn, OriginalGenData = oinst };
             }
 
+            //otherwise make totally fresh data
+            else inst = new() { TypeID = objectTypeID, Args = new() };
 
 
 
-            uint objectcount = reader.ReadUInt32();
-
-            SceneObjectGenData[] SceneObjects = new SceneObjectGenData[objectcount];
-
-            uint?[] parents = new uint?[objectcount];
-
-            SceneObjectGenData SceneRoot = null;
+            if (parent == uint.MaxValue)
+                SceneRoot = inst;
+            else
+                parents[obj] = parent;
 
 
 
-            for (uint obj = 0; obj < objectcount; obj++)
-            {
+            inst.Args = ReadArgumentBytes(stream, SceneResources);
+            
+            inst.SelfIndex = obj;
 
-                uint sceneref = reader.ReadUInt32();
-                uint parent = reader.ReadUInt32();
-
-
-                parents[obj] = parent == uint.MaxValue ? null : parent;
-
-
-                var objectTypeName = reader.ReadUintLengthPrefixedUTF8String();
-
-
-
-                SceneObjectGenData inst = null;
-
-
-                //if this object is the root of a scene reference
-                if (sceneref != uint.MaxValue)
-                {
-                    var scn = (SceneResource)SceneResources[sceneref];
-                    var oinst = scn.SceneRootObject;
-
-                    inst = new() { TypeName = objectTypeName, Args = new(), SelfSceneInstance = scn, OriginalGenData = oinst };
-                }
-
-                //otherwise make totally fresh data
-                else inst = new() { TypeName = objectTypeName, Args = new() };
-
-
-
-
-                if (parent == uint.MaxValue) SceneRoot = inst;
-
-
-                inst.Args = Parsing.ReadArgumentBytes(reader, SceneResources);
-
-
-                SceneObjects[obj] = inst;
-            }
-
-
-
-            if (SceneRoot == null) throw new Exception("Scene is missing a root.");
-
-
-
-
-            //sort final object datas into actual heirarchy, add into groups, and add references to other objects where nessecary
-
-            for (uint obj = 0; obj < objectcount; obj++)
-            {
-                var p = parents[obj];
-                if (p != null)
-                {
-                    var parent = SceneObjects[p.Value];
-                    if (parent.Children == null) parent.Children = new();
-                    parent.Children.Add(SceneObjects[obj]);
-                }
-            }
-
-
-            return new SceneResource(SceneResources, SceneObjects, SceneRoot, Groups, ScenePath);
+            SceneObjects[obj] = inst;
         }
+
+
+
+        if (SceneRoot == null) throw new Exception("Scene is missing a root.");
+
+
+
+
+        //sort final object datas into actual heirarchy, add into groups, and add references to other objects where nessecary
+
+        for (uint obj = 0; obj < objectcount; obj++)
+        {
+            var p = parents[obj];
+            if (p != null)
+            {
+                var parent = SceneObjects[p.Value];
+                if (parent.Children == null) parent.Children = new();
+                parent.Children.Add(SceneObjects[obj]);
+            }
+        }
+
+
+        return new SceneResource(SceneResources, SceneObjects, SceneRoot, Groups, ScenePath);
     }
 
 
@@ -317,7 +344,8 @@ public partial class SceneResource : GameResource
         var objIdxs = new Dictionary<uint, GameObject>();
         var sceneInstances = new Dictionary<GameObject, Dictionary<uint, GameObject>>();
 
-        // Create the full object tree from the RootObject:
+
+
         var rootObj = CreateInstanceTree(SceneRootObject, args);
 
 
@@ -334,35 +362,32 @@ public partial class SceneResource : GameResource
 
         GameObject CreateInstanceTree(SceneObjectGenData gendata, Dictionary<string, object> parentArgs)
         {
-            // Resolve and merge argument dictionaries
             Dictionary<string, object> resolvedArgs = ResolveArgs(gendata, parentArgs);
 
 
             GameObject inst;
 
 
-            // Embedded scene?
             if (gendata.SelfSceneInstance != null)
             {
                 var nested = gendata.SelfSceneInstance.InstantiateInternal(resolvedArgs, false);
 
-                sceneInstances.Add(nested.root, nested.objs); // Store nested instance mapping
+                sceneInstances.Add(nested.root, nested.objs); 
                 inst = nested.root;
             }
 
             else
-                inst = GameObject.ConstructObject(gendata.TypeName);
+                inst = ConstructGameObjectFromTypeID(gendata.TypeID);
 
 
 
-            // Register this instance
-            uint id = (uint)Array.IndexOf(SceneObjects, gendata);
+            uint id = gendata.SelfIndex;
             objIdxs[id] = inst;
             readyArgs[inst] = resolvedArgs;
 
 
 
-            // Recursively build children
+
             if (gendata.Children != null)
             {
                 foreach (var childGen in gendata.Children)
@@ -377,20 +402,24 @@ public partial class SceneResource : GameResource
 
 
 
+
+
         Dictionary<string, object> ResolveArgs(SceneObjectGenData gendata, Dictionary<string, object> parentArgs)
         {
-            // Start with this object's args
-            var args = gendata.Args ?? new Dictionary<string, object>();
+            Dictionary<string, object> args =
+                gendata.Args != null
+                    ? new Dictionary<string, object>(gendata.Args)
+                    : new Dictionary<string, object>();
 
-            // Walk up through scene instance ancestry
             var gather = gendata;
             while (gather.SelfSceneInstance != null)
             {
-                args = Union(gather.OriginalGenData.Args, args);
+                if (gather.OriginalGenData.Args != null)
+                    args = Union(gather.OriginalGenData.Args, args);
+
                 gather = gather.OriginalGenData;
             }
 
-            // Apply root override LAST
             if (gendata == SceneRootObject && parentArgs != null)
                 args = Union(args, parentArgs);
 
@@ -400,9 +429,9 @@ public partial class SceneResource : GameResource
 
 
 
-
         void InitAll(GameObject obj)
         {
+
             ImmutableArray<GameObject> array = obj.GetChildren();
             for (int i = 0; i < array.Length; i++)
                 InitAll(array[i]);
@@ -411,11 +440,11 @@ public partial class SceneResource : GameResource
             if (readyArgs.TryGetValue(obj, out var args))
             {
                 FixupReferences(obj, args);
-                GameObject.CallObjectInit(obj, args);
+                CallInitFor(obj, args);
             }
             else
             {
-                GameObject.CallObjectInit(obj, null);
+                CallInitFor(obj, null);
             }
         }
 
@@ -427,28 +456,18 @@ public partial class SceneResource : GameResource
             {
                 //object index references
 
-                if (entry.Value is ObjectReference singleRef)
+                if (entry.Value is GameObjectReference singleRef)
                     args[entry.Key] = ResolveRef(obj, singleRef);
 
-                else if (entry.Value is ObjectReference[] arr)
+                else if (entry.Value is GameObjectReference[] arr)
                     args[entry.Key] = arr.Select(r => ResolveRef(obj, r)).ToArray();
-
-
-
-                //object path references
-
-                else if (entry.Value is ObjectPath @ref)
-                    args[entry.Key] = obj.GetObject<GameObject>(@ref.Reference);
-
-                else if (entry.Value is ObjectPath[] arr2)
-                    args[entry.Key] = arr2.Select(r => obj.GetObject<GameObject>(r.Reference)).ToArray();
 
             }
         }
 
 
 
-        GameObject ResolveRef(GameObject localRoot, ObjectReference reference)
+        GameObject ResolveRef(GameObject localRoot, GameObjectReference reference)
         {
             var lookup = objIdxs;
             if (sceneInstances.TryGetValue(localRoot, out var nested))

@@ -1,7 +1,7 @@
 ﻿
 
 
-namespace Engine.GameObjects;
+namespace Engine.Core;
 
 
 using Engine.Attributes;
@@ -20,6 +20,11 @@ using static Engine.Core.EngineMath;
 
 /// <summary>
 /// An object with basic parameters within the game world heirarchy.
+/// <br/>
+/// <br/> GameObjects are required to implement a public, non-abstract, non-virtual, non-static, constructor-style method named Init, with any number of arguments and any kind of return type. 
+/// <br/> This Init method must also call its direct ancestor's Init. 
+/// <br/>
+/// <br/> GameObjects cannot implement any actual C# constructor arguments.
 /// </summary>
 public partial class GameObject : Freeable
 {
@@ -469,7 +474,7 @@ public partial class GameObject : Freeable
     /// The base initialization method for an object.
     /// </summary>
 
-    [GameObjectInitMethod]
+    
     public void Init(string Name = default, Matrix4x4 Transform = default)
     {
         this.Name = Name;
@@ -481,7 +486,7 @@ public partial class GameObject : Freeable
             NamedGameObjects.TryAdd(Name, this);
 
 
-        FinalInit();
+        PostInit();
     }
 
 
@@ -491,7 +496,7 @@ public partial class GameObject : Freeable
     /// </summary>
 
     [PartialDefaultReturn]
-    protected virtual partial void FinalInit();
+    protected virtual partial void PostInit();
 
 
 
@@ -505,8 +510,6 @@ public partial class GameObject : Freeable
 
 
     public static readonly List<GameObject> AllGameObjects = new();
-
-    public static readonly List<DrawObject> AllDrawableObjects = new();
 
     /// <summary>
     /// Contains every <see cref="GameObject"/> with a name. <br/> <b>! ! ! Objects will replace each other if they have the same name. This is only reliably useful for objects you know have unique names. ! ! !</b>

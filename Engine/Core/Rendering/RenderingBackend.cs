@@ -1839,6 +1839,7 @@ public static partial class RenderingBackend
 
 
 
+#if DEBUG
 
     /// <summary>
     /// <br/><b> WARNING: This method invokes one or more immediate rendering commands, and should only be called from the render thread during frame rendering. See <see cref="PushDeferredRenderThreadCommand{T}"/>. </b>
@@ -1858,7 +1859,7 @@ public static partial class RenderingBackend
     /// </summary>
     private struct _callonanythread;
 
-
+#endif
 
 
 

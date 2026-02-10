@@ -19,27 +19,39 @@ public static partial class Entry
 
 
 
+#if DEBUG
     /// <summary>
     /// Runs immediately on launch before anything else. Used to obtain launch settings. Also see <seealso cref="Init"/> and <see cref="Engine.Core.EngineSettings"/>.
     /// </summary>
     private readonly struct _EngineInitSummary;
+#endif
+
+
     public static partial EngineInitSettings EngineInit();
 
 
 
-
+#if DEBUG
     /// <summary>
     /// Called once the engine is ready (along with shaders defined in <see cref="InitShaders"/>).
     /// </summary>
     private readonly struct _InitSummary;
+#endif
+
+
     public static partial Task Init();
 
 
 
+#if DEBUG
     /// <summary>
     /// Called every logic frame.
     /// </summary>
     private readonly struct _LoopSummary;
+#endif
+
+
+
     public static unsafe partial void Loop();
 
 

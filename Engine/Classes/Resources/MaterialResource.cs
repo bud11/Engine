@@ -22,6 +22,7 @@ using System.Text.Json;
 
 
 
+[FileExtensionAssociation(".mat")]
 public partial class MaterialResource : GameResource
 {
 
@@ -121,32 +122,25 @@ public partial class MaterialResource : GameResource
 
 
 
-
-    [StaticVirtualOverride]
-    public static new async Task<GameResource> Load(byte[] bytes, string key)
+    
+    public static new async Task<GameResource> Load(Loading.AssetByteStream stream, string key)
     {
-        using (var stream = new MemoryStream(bytes))
-        {
-            using (BinaryReader reader = new BinaryReader(stream))
-            {
+        var Shader = GetShader(stream.ReadUintLengthPrefixedUTF8String());
 
-                var Shader = GetShader(reader.ReadUintLengthPrefixedUTF8String());
-
-                RasterizationDetails rasterization = reader.ReadType<RasterizationDetails>();
-                BlendState blending = reader.ReadType<BlendState>();
-                DepthStencilState depthStencil = reader.ReadType<DepthStencilState>();
+        RasterizationDetails rasterization = stream.ReadUnmanagedType<RasterizationDetails>();
+        BlendState blending = stream.ReadUnmanagedType<BlendState>();
+        DepthStencilState depthStencil = stream.ReadUnmanagedType<DepthStencilState>();
 
 
-                return new MaterialResource(Shader, rasterization, blending, depthStencil, Parsing.ReadArgumentBytes(reader, await Parsing.LoadResourceBytes(reader, key)), key);
-            }
-        }
+        return new MaterialResource(Shader, rasterization, blending, depthStencil, Parsing.ReadArgumentBytes(stream, await Parsing.LoadResourceBytes(stream, key)), key);
     }
 
 
 #if DEBUG
 
 
-    [StaticVirtualOverride]
+
+    
     public static new async Task<byte[]> ConvertToFinalAssetBytes(byte[] bytes, string filePath)
     {
 
@@ -199,12 +193,11 @@ public partial class MaterialResource : GameResource
 
 
         if (dict.TryGetValue("Arguments", out var argsGet))
-        {
-            var args = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(argsGet);
+            finalbytes.AddRange(Parsing.WriteArgumentBytes(argsGet));
 
-            Parsing.WriteArgumentBytes(finalbytes, args);
-        }
-        else finalbytes.Add(0);
+        else 
+            finalbytes.Add(0);
+
 
 
         return finalbytes.ToArray();

@@ -230,7 +230,7 @@ public static unsafe partial class Entry
         //The added GameObjectInitMethod attribute also isn't nessecary in this particular case, but it enables this object type to be scene instantiated smoothly.
 
 
-        [GameObjectInitMethod]
+        
         public new void Init(float spinSpeed, ModelResource model, GameResource[] materials = null, Dictionary<string, RenderingBackend.VertexAttributeDefinitionPlusBufferStruct> extraAttributeBuffers = null)
         {
             SpinSpeed = spinSpeed;
@@ -488,7 +488,7 @@ public static unsafe partial class Entry
 
                     ordering: Camera.CameraDrawSortMode.NearToFar,
 
-                    objectWhiteList: GameObject.AllDrawableObjects
+                    objectWhiteList: DrawObject.AllDrawableObjects
                 ),
             ]
         );

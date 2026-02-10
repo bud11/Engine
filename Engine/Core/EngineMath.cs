@@ -74,7 +74,7 @@ public static class EngineMath
         // Equality implementation
         public readonly bool Equals(AABB other) => Min.Equals(other.Min) && Max.Equals(other.Max);
 
-        public override readonly bool Equals(object obj) => obj is AABB other && Equals(other);
+        public override readonly bool Equals(object? obj) => obj is AABB other && Equals(other);
 
         public override readonly int GetHashCode()
         {
@@ -90,6 +90,35 @@ public static class EngineMath
         public static bool operator ==(AABB left, AABB right) => left.Equals(right);
 
         public static bool operator !=(AABB left, AABB right) => !(left == right);
+
+
+        public static AABB operator *(AABB left, Transform transform) 
+            => new AABB(transform * left.Min, transform * left.Max);
+
+
+
+
+        public readonly bool Overlaps(AABB other) =>
+            Min.X <= other.Min.X || Max.X >= other.Max.X ||
+            Min.Y <= other.Min.Y || Max.Y >= other.Max.Y ||
+            Min.Z <= other.Min.Z || Max.Z >= other.Max.Z;
+
+
+        public readonly bool Encompasses(AABB other) =>
+            Min.X <= other.Min.X && Max.X >= other.Max.X &&
+            Min.Y <= other.Min.Y && Max.Y >= other.Max.Y &&
+            Min.Z <= other.Min.Z && Max.Z >= other.Max.Z;
+
+
+        public readonly AABB Union(AABB other) =>
+            new AABB(Vector3.Min(Min, other.Min), Vector3.Max(Max, other.Max));
+
+        public readonly float GetSurfaceArea()
+        {
+            Vector3 size = Max - Min; 
+            return 2f * (size.X * size.Y + size.X * size.Z + size.Y * size.Z);
+        }
+
     }
 
 
