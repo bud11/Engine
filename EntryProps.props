@@ -157,14 +157,15 @@
 		<SelfContained>true</SelfContained>
 		
 		<InvariantGlobalization>true</InvariantGlobalization>
-		
-		<Optimize>true</Optimize>
 
+
+		<Optimize>true</Optimize>
 
 		<DebugType>none</DebugType>
 		<DebugSymbols>false</DebugSymbols>
 		<StripSymbols>true</StripSymbols>
 
+		
 		<EnableCompressionInSingleFile>true</EnableCompressionInSingleFile>
 		<PublishSingleFile>true</PublishSingleFile>
 

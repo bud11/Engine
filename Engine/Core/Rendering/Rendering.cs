@@ -374,11 +374,8 @@ public static partial class Rendering
 
 
 
-    private struct ThreadBoundActionStruct
-    {
-        public Func<object> func;
-        public TaskCompletionSource<object> res;
-    }
+    private readonly record struct ThreadBoundActionStruct(Func<object> func, TaskCompletionSource<object> res);
+
 
     private static List<ThreadBoundActionStruct> RenderThreadActions = new();
 
@@ -396,7 +393,7 @@ public static partial class Rendering
 
 
         var task = new TaskCompletionSource<object>();
-        lock (RenderThreadActions) RenderThreadActions.Add(new ThreadBoundActionStruct() { func = func, res = task });
+        lock (RenderThreadActions) RenderThreadActions.Add(new ThreadBoundActionStruct(func, task));
 
 
         return await task.Task;

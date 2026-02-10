@@ -174,7 +174,7 @@ public static class EngineBuildProcess
 
                                     using var compressor = new Compressor(int.Clamp(EngineSettings.ReleaseZStdCompressionQuality, 1, 22));
 
-                                    return new AssetTaskData(Path.ChangeExtension(relativePath, null), AssetFoundType, compressor.Wrap(rawBytes).ToArray());
+                                    return new AssetTaskData(Path.ChangeExtension(relativePath, null), AssetFoundType, compressor.Wrap(rawBytes).ToArray(), (uint)rawBytes.Length);
 
                                 })
                             );
@@ -205,7 +205,7 @@ public static class EngineBuildProcess
                                     offsetsToCorrect.Add((ulong)header.Count);
 
                                     header.AddRange(BitConverter.GetBytes((ulong)currentOffset));
-                                    header.AddRange(BitConverter.GetBytes((ulong)result.data.Length));
+                                    header.AddRange(BitConverter.GetBytes((ulong)result.uncompressedLength));
                                     header.AddRange(Parsing.GetUintLengthPrefixedUTF8StringAsBytes(result.path));
                                     header.AddRange(BitConverter.GetBytes(Parsing.GetGameResourceTypeID(result.type)));
 
@@ -679,6 +679,6 @@ public static partial class Loading
 
 
 
-    private record struct AssetTaskData(string path, Type type, byte[] data);
+    private record struct AssetTaskData(string path, Type type, byte[] data, uint uncompressedLength);
 
 }

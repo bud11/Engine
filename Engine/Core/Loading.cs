@@ -9,13 +9,13 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
-using System.Reflection;
 using System.Threading;
 using System.Threading.Tasks;
 using ZstdSharp;
 
 #if DEBUG
 using System.IO.Hashing;
+using System.Reflection;
 #endif
 
 
@@ -32,6 +32,7 @@ public static partial class Loading
     /// <summary>
     /// Header for a compressed asset file. <br/>
     /// <paramref name="Type"/> will match the type of the asset assuming the original file extension was correctly associated in <see cref="GameResource.GameResourceFileExtensionMap"/>. Otherwise it will be null.
+    /// <br/> <paramref name="Length"/> is the size of the uncompressed asset within the archive, not the literal size within the archive.
     /// </summary>
     /// <param name="Type"></param>
     /// <param name="Offset"></param>
@@ -145,8 +146,7 @@ public static partial class Loading
         public AssetByteStream(Stream baseStream, long length)
         {
             _baseStream = baseStream ?? throw new ArgumentNullException(nameof(baseStream));
-            if (length < 0)
-                throw new ArgumentOutOfRangeException(nameof(length));
+            ArgumentOutOfRangeException.ThrowIfNegative(length);
 
             _length = length;
             _remaining = length;
@@ -162,11 +162,7 @@ public static partial class Loading
 
             while (_remaining > 0)
             {
-                int read = await ReadAsync(
-                    buffer,
-                    offset,
-                    (int)Math.Min(int.MaxValue, _remaining)
-                ).ConfigureAwait(false);
+                int read = await ReadAsync(buffer.AsMemory(offset, (int)Math.Min(int.MaxValue, _remaining))).ConfigureAwait(false);
 
                 if (read == 0)
                     break;
