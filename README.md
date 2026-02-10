@@ -1,4 +1,4 @@
-# A 3D game engine/framework written entirely in and around C#/NET 9.0. <br/> 🚧 In active development, around 85% complete within the context of an initial public release 🚧
+# A 3D game engine/framework written entirely in and around C#/NET 9.0. <br/> 🚧 In active development, around 90% complete within the context of an initial public release 🚧
 
 The primary goal of the engine is offering full control without too much boilerplate or confusion.
 
