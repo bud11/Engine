@@ -1,5 +1,10 @@
-# A 3D game engine/framework written entirely in and around C#/NET 9.0.
-# 🚧 In active development, around 85% complete within the context of an initial public release 🚧
+# A 3D game engine/framework written entirely in and around C#/NET 9.0. <br/> 🚧 In active development, around 85% complete within the context of an initial public release 🚧
+
+The primary goal of the engine is offering full control without too much boilerplate or confusion.
+
+The first half of that goal nessecitates it manifest closer to a framework or library than an engine, while the second half encourages offering as many malluable succinct abstractions and types and as much foundational code as possible, all of which is either naturally flexible enough to use without worry or clearly exposes minimal extension/implementation gaps.
+
+And to that end, the engine requires being cloned as a repo.
 
 
 ## Features:
@@ -18,11 +23,9 @@
 
 - Fully unified single-language source to modify and extend freely
 
-<br/>
+- <b>Debug builds</b> come with hot-reloadable code/shaders/assets and ImGUI integration 
 
-- Debug builds come with hot-reloadable code/shaders/assets and ImGUI integration 
-
-- Release builds come with shader precompilation, zstd asset compression, and can target NativeAOT when published 
+- <b>Release builds</b> come with shader precompilation, zstd asset compression, and can target NativeAOT when published 
 
 
 
