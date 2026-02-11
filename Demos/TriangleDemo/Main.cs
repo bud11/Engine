@@ -59,9 +59,9 @@ public static partial class Entry
     public static partial void InitShaders()
     {
 
-        //first we need a shader to draw the triangle. This is a simple red NDC coordinate shader.
-        //shaders are always written as full sets of stages.
-        //shaders can only be registered in this one method - see the method summary for more info.
+        //First we need a shader to draw the triangle. This is a simple red NDC coordinate shader.
+        //Shaders are always written as full sets of stages.
+        //Shaders can only be registered in this one method - see the method summary for more info.
 
 
         ShaderCompilation.RegisterShader(
@@ -99,7 +99,7 @@ public static partial class Entry
     public static partial async Task Init()
     {
 
-        //next up is creating vertex buffers. here we only need one, and a collection to hold it and define its usage.
+        //Next up is creating vertex buffers. here we only need one, and a collection to hold it and define its usage.
 
         TriangleVertPos = RenderingBackend.BackendVertexBufferAllocationReference.Create(
              [
@@ -111,7 +111,7 @@ public static partial class Entry
 
 
 
-        //if any buffer keys are missing or dont match in the context of later draw calls, thats okay, they'll either be ignored or internally filled in with dummy buffers that meet whatever shader's spec.
+        //If any buffer keys are missing or dont match in the context of later draw calls, thats okay, they'll either be ignored or internally filled in with dummy buffers that meet shader specifications at draw time.
 
         TriangleAttributes = new()
         {
@@ -145,8 +145,8 @@ public static partial class Entry
     public static unsafe partial void Loop()
     {
 
-        //heres the main engine loop, which runs on the logic thread, but can push rendering commands to the render thread to consume.
-        //in this case we just want to draw the triangle to screen, so all we need to do is this.
+        //Heres the main engine loop, which runs on the logic thread, but can push rendering commands to the render thread to consume.
+        //In this case we just want to draw the triangle to screen, so all we need to do is this.
 
 
         Rendering.PushDeferredRenderThreadCommand(new StartDrawToScreenStruct());

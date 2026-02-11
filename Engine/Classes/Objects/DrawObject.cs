@@ -10,7 +10,7 @@ namespace Engine.GameObjects;
 
 
 /// <summary>
-/// A <see cref="GameObject"/> that issues draw calls.
+/// A <see cref="Core.GameObject"/> that issues draw calls.
 /// </summary>
 public abstract class DrawObject : AABBObject
 {

@@ -544,21 +544,33 @@ public sealed class GlueGenerator : IIncrementalGenerator
 
 
 
-
-
     static IEnumerable<INamedTypeSymbol> GetAllTypes(INamespaceSymbol ns)
     {
         foreach (var member in ns.GetMembers())
         {
-            if (member is INamespaceSymbol nested)
+            if (member is INamespaceSymbol nestedNs)
             {
-                foreach (var t in GetAllTypes(nested))
+                foreach (var t in GetAllTypes(nestedNs))
                     yield return t;
             }
             else if (member is INamedTypeSymbol type)
             {
                 yield return type;
+
+                foreach (var nestedType in GetNestedTypes(type))
+                    yield return nestedType;
             }
+        }
+    }
+
+    static IEnumerable<INamedTypeSymbol> GetNestedTypes(INamedTypeSymbol type)
+    {
+        foreach (var nested in type.GetTypeMembers())
+        {
+            yield return nested;
+
+            foreach (var deeper in GetNestedTypes(nested))
+                yield return deeper;
         }
     }
 

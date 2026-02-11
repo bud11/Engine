@@ -103,6 +103,8 @@ public static partial class EngineSettings
 
 #if DEBUG
 
+
+
     /// <summary>
     /// The path to the base asset folder.
     /// <br/> Each immediate sub folder contained within will be compressed into its own separate archive. For example, if this directory contains two folders, One and Two, then release builds will feature two archives respectively named One and Two.
@@ -119,11 +121,12 @@ public static partial class EngineSettings
 
 
 
-
     /// <summary>
     /// The path pointing to Nvidia Texture Tools 3's nvtt_export.exe.
     /// </summary>
     public const string NVTT3Path = "C:\\Program Files\\NVIDIA Corporation\\NVIDIA Texture Tools\\nvtt_export.exe";
+
+
 
 
     /// <summary>

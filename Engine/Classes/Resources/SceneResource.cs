@@ -28,7 +28,7 @@ using System.Text.Json;
 
 
 /// <summary>
-/// Defines a scene of objects and resources. See <see cref="GameObjectInitMethodAttribute"/> for making <see cref="GameObject"/> types compatible with scene instantiation.
+/// Defines a scene of objects and resources. 
 /// <br /> A scene can refer to external resources and/or embed them directly, and scenes can reference other scenes.
 /// <br /> Scenes themselves can also own resources and buffers, which may be useful for something like lightmapping textures+buffers for example.
 /// </summary>
@@ -184,32 +184,21 @@ public partial class SceneResource : GameResource
             if (obj.TryGetProperty("arguments", out var args))
             {
 
-
-                Type objtypecheck = objType;
-                MethodInfo objInitMethod = null;
-
-
-                while (true)
-                {
-                    if (objtypecheck == typeof(object))
-                        throw new Exception("Missing Init method");
+                var objInitMethod = objType
+                                        .GetMethods(BindingFlags.Instance | BindingFlags.Public | BindingFlags.DeclaredOnly)
+                                        .Where(m =>
+                                            m.Name == "Init" &&
+                                            m.DeclaringType == objType
+                                        );
 
 
-                    var initfind = objtypecheck.GetMethods(BindingFlags.Instance | BindingFlags.Public | BindingFlags.DeclaredOnly).Where(x => x.Name == "Init");
 
+                if (objInitMethod.Count() == 1)
+                    final.AddRange(WriteArgumentBytes(args, objInitMethod.FirstOrDefault()));
 
-                    if (initfind.Any())
-                    {
-                        objInitMethod = initfind.FirstOrDefault();
+                else
+                    throw new Exception(!objInitMethod.Any() ? "No init method" : "Too many init methods");
 
-                        break;
-                    }
-
-                    objtypecheck = objtypecheck.BaseType;
-                }
-
-
-                final.AddRange(WriteArgumentBytes(args, objInitMethod));
             }
 
             else final.Add(0);

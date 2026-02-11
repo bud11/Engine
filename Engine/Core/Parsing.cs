@@ -696,28 +696,21 @@ public static partial class Parsing
     {
         var dict = arguments.Deserialize<Dictionary<string, JsonElement>>();
 
-        List<byte> final = [(byte)dict.Count];
+        List<byte> final = new();
 
+        var args = 0;
 
-        OrderedDictionary<string, Type> signature = new();
-
-        System.Reflection.ParameterInfo[] array = method.GetParameters();
-
-        for (int i = 0; i < array.Length; i++)
+        foreach (var kv in method.GetParameters())
         {
-            var arg = array[i];
-
-            var type = arg.ParameterType;
-
-            signature.Insert(i, arg.Name, arg.ParameterType);
+            if (dict.TryGetValue(kv.Name, out var get))
+            {
+                final.AddRange(SerializeParameter(kv.Name, kv.ParameterType.FullName, get));
+                args++;
+            }
         }
 
 
-        foreach (var kv in dict)
-            final.AddRange(SerializeParameter(kv.Key, signature[kv.Key].FullName, kv.Value));
-
-
-        return final;
+        return [(byte)args, ..final];
     }
 
 

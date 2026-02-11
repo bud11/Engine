@@ -11,6 +11,9 @@ using Engine.Stripped;
 
 
 
+
+
+
 ////////////////////////////////////////////
 ////////////////////////////////////////////
 ////////////////////////////////////////////
@@ -27,9 +30,8 @@ using Engine.Stripped;
 //
 //
 
-//DEMO 2
-//This is the cube demo. It shows more structured drawing with objects, cameras and materials, as well as some very basic game logic.
-//The end result is a custom spinning cube object drawn to a camera object's framebuffer via a basic pipeline, which is then drawn to the screen.
+//DEMO 3
+//This is the first scene demo. It borrows most of the logic from the cube demo, except we load a basic existing scene with a single model, texture and material instead.
 
 
 ////////////////////////////////////////////
@@ -42,16 +44,17 @@ using Engine.Stripped;
 
 
 
-//Most default objects and resources are set up to be ready for partial extension and/or standard override.
-//Reading ahead and coming back to this afterward is recommended.
 
+
+
+
+
+//Same as before, we need to do some mild extension to get things working.
 
 namespace Engine.GameObjects
 {
     public partial class ModelInstance : DrawObject
     {
-
-        //GameObject.PostInit runs after object Init as a virtual method, and acts as a good place to manifest some custom behavior without directly modifying source code.
 
         protected override void PostInit()
         {
@@ -60,9 +63,6 @@ namespace Engine.GameObjects
 
             base.PostInit();
         }
-
-
-        //DrawObject.PreDraw runs before any draw call, but only if it hasn't ran yet within this frame. Updating the model matrix here rather than during DrawObject.Draw prevents redundant writes.
 
         public override void PreDraw()
         {
@@ -84,6 +84,43 @@ namespace Engine.GameObjects
 
 
 
+//Though this time, we also need to define a PostInit for materials.
+//Materials, as eluded to in the cube demo, are capable of carrying references to arbitrary arguments and resources.
+
+
+namespace Engine.GameResources
+{
+
+    public partial class MaterialResource : GameResource
+    {
+
+        protected override void PostInit()
+        {
+            var initial = new Dictionary<string, RenderingBackend.IResourceSetResource>();
+
+            var meta = Entry.exampleShader.Metadata.ResourceSets["MaterialResources"].Metadata;
+
+
+            foreach (var kv in Arguments)  //<-- parsed earlier internally
+
+                if (meta.Textures.ContainsKey(kv.Key))
+                    initial[kv.Key] =
+                        new RenderingBackend.BackendTextureAndSamplerReferencesPair(
+
+                            ((TextureResource)kv.Value).BackendReference,
+
+                            RenderingBackend.BackendSamplerReference.Get(
+                                new RenderingBackend.SamplerDetails(Rendering.TextureWrapModes.Repeat, Rendering.TextureFilters.Linear, Rendering.TextureFilters.Linear, Rendering.TextureFilters.Linear, false))
+                            );
+
+
+
+            MaterialResourceSets["MaterialResources"] = RenderingBackend.BackendResourceSetReference.CreateFromMetadata(meta, ["MaterialUBO"], initial);
+        }
+
+    }
+
+}
 
 
 
@@ -91,27 +128,32 @@ namespace Engine.GameObjects
 
 
 
-public static unsafe partial class Entry
+
+
+
+
+
+
+
+/// <summary>
+/// The first scene demo.
+/// </summary>
+public static partial class Entry
 {
 
 
 
 
     //global resources + metadata
-
     public static RenderingBackend.BackendResourceSetReference GlobalResources;
-    private static RenderingBackend.BackendUniformBufferAllocationReference GlobalUniformBuffer;
+    public static RenderingBackend.BackendUniformBufferAllocationReference GlobalUniformBuffer;
 
 
 
     //objects
-
-    private static SpinningCube Cube;
     private static Camera Camera;
 
 
-
-    //screen quad for drawing to screen
 
     private static RenderingBackend.BackendVertexBufferAllocationReference ScreenQuadVertPos;
     private static UnmanagedKeyValueHandleCollectionOwner<string, RenderingBackend.VertexAttributeDefinitionPlusBufferClass> ScreenQuadAttributes;
@@ -122,7 +164,7 @@ public static unsafe partial class Entry
 
 
 
-
+    
     /// <summary>
     /// <inheritdoc cref="_EngineInitSummary"/>
     /// </summary>
@@ -130,7 +172,9 @@ public static unsafe partial class Entry
 
 
 
+
 #if DEBUG
+
 
     /// <summary>
     /// <inheritdoc cref="_InitShadersSummary"/>
@@ -138,15 +182,14 @@ public static unsafe partial class Entry
     public static partial void InitShaders()
     {
 
-        //This time, we need to define resource sets in our shader, which're named collections of named resources that shaders can consume and share.
+
+        //Ths is all essentially the same as the cube demo, but this time featuring a texture on exampleShader.
+
 
 
         ShaderCompilation.RegisterShader(
 
-            ShaderName: "exampleShader",   //the shader name so we can get the shader later.
-
-
-            //our two resource sets.
+            ShaderName: "exampleShader", 
 
             ResourceSets: new Dictionary<string, ShaderCompilation.ShaderResourceSetDefinition>
             {
@@ -173,47 +216,44 @@ public static unsafe partial class Entry
                             }
                         )
                     }
+                ),
+
+                ["MaterialResources"] = new ShaderCompilation.ShaderResourceSetDefinition(
+                    new OrderedDictionary<string, ShaderCompilation.IShaderResourceSetResourceDefinition>()
+                    {
+                        ["Texture"] = new ShaderCompilation.ShaderTextureDefinition(Rendering.TextureSamplerTypes.Texture2D)
+                    }
                 )
             },
 
 
             Attributes: new Dictionary<string, ShaderCompilation.ShaderAttributeDefinition>()
             {
-                { "Position", new(Rendering.ShaderAttributeBufferFinalFormat.Vec3, ShaderCompilation.ShaderAttributeStageMask.VertexIn) },
-                { "Normal", new(Rendering.ShaderAttributeBufferFinalFormat.Vec3, ShaderCompilation.ShaderAttributeStageMask.VertexIn | ShaderCompilation.ShaderAttributeStageMask.VertexOutFragmentIn) },
+                { "position", new(Rendering.ShaderAttributeBufferFinalFormat.Vec3, ShaderCompilation.ShaderAttributeStageMask.VertexIn) },
+                { "normal", new(Rendering.ShaderAttributeBufferFinalFormat.Vec3, ShaderCompilation.ShaderAttributeStageMask.VertexIn | ShaderCompilation.ShaderAttributeStageMask.VertexOutFragmentIn) },
+                { "uv", new(Rendering.ShaderAttributeBufferFinalFormat.Vec2, ShaderCompilation.ShaderAttributeStageMask.VertexIn | ShaderCompilation.ShaderAttributeStageMask.VertexOutFragmentIn) },
                 { "FinalColor", new(Rendering.ShaderAttributeBufferFinalFormat.Vec4, ShaderCompilation.ShaderAttributeStageMask.FragmentOut) }
             },
 
 
-
-
-            //a basic hardcoded lighting setup
-
             VertexMainBody:
                 """
 
-                gl_Position = GlobalUBO.ProjectionMatrix * GlobalUBO.ViewMatrix * ModelUBO.ModelMatrix * vec4(Position, 1.0);   
+                gl_Position = GlobalUBO.ProjectionMatrix * GlobalUBO.ViewMatrix * ModelUBO.ModelMatrix * vec4(position, 1.0);   
                 
                 mat3 normalMatrix = transpose(inverse(mat3(ModelUBO.ModelMatrix)));
-                FragNormal = normalize(normalMatrix * Normal);
+                Fragnormal = normalize(normalMatrix * normal);
 
-                """,    
+                """,
 
             FragmentMainBody:
-                "FragOutFinalColor = vec4(vec3(1.0) * clamp(dot(FragNormal, normalize(vec3(1, 1, -1))), 0.2, 1), 1.0);"     
+                "FragOutFinalColor = vec4(texture(Texture, Fraguv).rgb * clamp(dot(Fragnormal, normalize(vec3(1, 1, -1))), 0.2, 1), 1.0);"
 
 
 
             );
 
 
-
-
-
-
-
-
-        //we also need a screen quad shader this time, so we can draw the camera object's framebuffer texture to the screen.
 
         ShaderCompilation.RegisterShader(
 
@@ -229,64 +269,48 @@ public static unsafe partial class Entry
                 )
             },
 
-
             Attributes: new Dictionary<string, ShaderCompilation.ShaderAttributeDefinition>()
             {
                 { "Position", new(Rendering.ShaderAttributeBufferFinalFormat.Vec2, ShaderCompilation.ShaderAttributeStageMask.VertexIn | ShaderCompilation.ShaderAttributeStageMask.VertexOutFragmentIn) },
-                { "FinalColor", new(Rendering.ShaderAttributeBufferFinalFormat.Vec4, ShaderCompilation.ShaderAttributeStageMask.FragmentOut) }   //our final fragment output.
+                { "FinalColor", new(Rendering.ShaderAttributeBufferFinalFormat.Vec4, ShaderCompilation.ShaderAttributeStageMask.FragmentOut) }  
             },
 
             VertexMainBody:
                 "gl_Position = vec4(Position, 0.0, 1.0);",
 
             FragmentMainBody:
-                "FragOutFinalColor = textureLod(Texture, -FragPosition*0.5+0.5, 0);"      //using the ndc position to double as a uv 
-
+                "FragOutFinalColor = textureLod(Texture, -FragPosition*0.5+0.5, 0);" 
             );
-
-
     }
+
+
 
 #endif
 
 
 
 
+    public static RenderingBackend.BackendShaderReference exampleShader;
 
-    //Now lets define a cube class.
 
-    public class SpinningCube : ModelInstance
+
+    // We can also define a spinning cow class.
+    // This is mostly same as the spinning cube, though in this context, we're not creating it manually. Instead, the scene defines it.
+
+    public class SpinningCow : ModelInstance
     {
 
         private float SpinSpeed;
 
-
-
-        //Each object needs to call base.Init to function properly.
-
-        //This is an example of a typical GameObject Init implementation. 
-
-        //This isn't virtual or abstract in the interest of allowing you to shape and adjust argument requirements as they head downstream. That does mean you need to be careful and make sure to call the correct base method at the end though.
-        //This also doesn't technically need to be named Init, but it keeps things consistent.
-
-        //The added GameObjectInitMethod attribute also isn't nessecary in this particular case, but it enables this object type to be scene instantiated smoothly.
-
-
-        
-        public new void Init(float spinSpeed, ModelResource model, GameResource[] materials = null, Dictionary<string, RenderingBackend.VertexAttributeDefinitionPlusBufferStruct> extraAttributeBuffers = null)
+        public new void Init(float spinSpeed, ModelResource Model, GameResource[] Materials = null, Dictionary<string, RenderingBackend.VertexAttributeDefinitionPlusBufferStruct> extraAttributeBuffers = null)
         {
             SpinSpeed = spinSpeed;
-
-            base.Init(model, materials, extraAttributeBuffers);  //  <----  and here we're calling the original ModelInstance Init method.
+            base.Init(Model, Materials, extraAttributeBuffers); 
         }
 
-
-
-        //This is a simple logic loop to make the cube spin at a framerate independent speed according to what was supplied from Init.
         public override void Loop()
         {
-            GlobalTransform = GlobalTransform.Rotated(Vector3.UnitY, float.DegreesToRadians(SpinSpeed * Logic.Delta)) with { Origin = new(0, MathF.Sin(SpinSpeed * Logic.TimeActive * 0.03f) * 2f, 0) };
-
+            GlobalTransform = GlobalTransform.Rotated(Vector3.UnitY, float.DegreesToRadians(SpinSpeed * Logic.Delta)) with { Origin = new(0, MathF.Sin(SpinSpeed * Logic.TimeActive * 0.03f) * 1f, 0) };
             base.Loop();
         }
 
@@ -297,54 +321,16 @@ public static unsafe partial class Entry
 
 
 
-
-
-
-
-    public static RenderingBackend.BackendShaderReference exampleShader;
-
-
-
     /// <summary>
     /// <inheritdoc cref="_InitSummary"/>
     /// </summary>
     public static partial async Task Init()
     {
+
+
         exampleShader = RenderingBackend.GetShader("exampleShader");
 
-
-
-        //We need a material to draw the cube with.
-        //Materials are essentially only a wrapper around the combined idea of fixed state draw calls and shader resources, so no control is particularly lost over manual drawing nor is any particular pipeline idea imposed, a point emphasised later.
-
-
-
-        var material = new MaterialResource(
-
-            shader: exampleShader,
-
-            //fixed pipeline state. these structs already have sensible defaults and can be left as is here.
-            rasterization: new(),
-            blending: new(),
-            depthStencil: new(),
-
-            //this would be a dictionary, which can encapsulate higher level material hints, as well as references to relevant resources like textures, but we dont need anything special yet.
-            arguments: null,
-
-            //an optional GameResource key, optionally used for fetching/tracking the resource. typically null for code-initialized resources.
-            key: null
-
-            );
-
-
-
-
-        
-        //This is fairly self explanatory. We're actualizing GlobalResources as defined earlier, and having this method also create and assign GlobalUBO to it to reduce boilerplate, which we can then read back to assign the field.
-        //As usual, check the method summaries for more info.
-
-        GlobalResources = RenderingBackend.BackendResourceSetReference.CreateFromMetadata(exampleShader.Metadata.ResourceSets["GlobalResources"].Metadata, createInitialBuffers: ["GlobalUBO"]);
-
+        GlobalResources = RenderingBackend.BackendResourceSetReference.CreateFromMetadata(exampleShader.Metadata.ResourceSets["GlobalResources"].Metadata, ["GlobalUBO"]);
         GlobalUniformBuffer = GlobalResources.GetUniformBuffer("GlobalUBO");
 
 
@@ -352,35 +338,33 @@ public static unsafe partial class Entry
 
 
 
-        //Any game objects created manually via code (aka not instanced via a scene system) must call Init to recieve arguments and enter collections.
+        //Now we can instantiate the scene.
+        var scn = await Loading.LoadResource<SceneResource>("Assets/cow");    //<-- paths are relative to the Asset root directory and should never feature extensions.
 
-        Cube = new SpinningCube();
-        Cube.Init(
-            spinSpeed: 45f,
-            model: MeshGeneration.GenerateCube(Vector3.One),    //<--  this creates a model resource, which is basically just a wrapper around buffers like the ones from the triangle demo. 
-            materials: [material]);
+        //Scene instantiation automatically calls the Init method for each object involved with arguments derived from the scene data, so this is all we need to do.
+        var root = scn.Instantiate();
+
+
+        //To learn a little more about how this works, start by reading the GameObject and GameResource summaries.
+
+
+
+
+
+
+
+
+
+
+        /////  ============================================================== Everything else in the file from here is the same as the cube demo ==============================================================  ///////
+
+
 
 
 
         Camera = new();
 
-
-
-
-
-
-
-
-
-
-
-
-        //Now we can move onto making the camera and screen quad.
-        //The final screen quad isn't an object in the scene and doesn't need to be treated like one.
-
-
         ScreenQuadVertPos = RenderingBackend.BackendVertexBufferAllocationReference.Create<float>(initialcontent: [-1, -1, 1, -1, 1, 1, -1, -1, -1, 1, 1, 1], writeable: false);
-
 
         ScreenQuadAttributes =
             new()
@@ -399,9 +383,6 @@ public static unsafe partial class Entry
 
 
 
-
-
-
         ScreenQuadShader = RenderingBackend.GetShader("screenQuad");
 
         var texresourcesetmeta = ScreenQuadShader.Metadata.ResourceSets["TextureResources"].Metadata;
@@ -410,18 +391,13 @@ public static unsafe partial class Entry
         ScreenQuadResourceSetCollection = new() { ["TextureResources"] = screenQuadResourceSet };
 
 
-
-        //Textures (and texture + sampler pairs) are immutable, so if the resolution changes, the old texture just becomes invalid, and the set needs to be updated.
-
         Camera.OnResolutionChanged.Add(() =>
         {
 
             var cameraTexture = new RenderingBackend.BackendTextureAndSamplerReferencesPair(
 
-                                        //the color buffer from the camera that we want to display on screen
                                         Camera.FrameBuffer.ColorAttachments[0],
 
-                                        //..plus the sampler, to describe how to present it.
                                         RenderingBackend.BackendSamplerReference.Get(
 
                                             new RenderingBackend.SamplerDetails(
@@ -434,16 +410,13 @@ public static unsafe partial class Entry
                                         );
 
 
-
             var wr3 = screenQuadResourceSet.StartWrite(true);
             wr3.PushWrite("Texture", cameraTexture);
             wr3.EndWrite();
+
         });
 
 
-
-
-        //doing the above resolution changed hook BEFORE calling init ensures it'll be used during init as well.
 
         Camera.Init(
 
@@ -457,10 +430,7 @@ public static unsafe partial class Entry
             );
 
 
-
-
-        Camera.GlobalPosition = new Vector3(0, 0, -10);
-
+        Camera.GlobalPosition = new Vector3(0, 0, -5);
 
 
     }
@@ -469,19 +439,14 @@ public static unsafe partial class Entry
 
 
 
-
-
-
-
-
-
-
+    /// <summary>
+    /// <inheritdoc cref="_LoopSummary"/>
+    /// </summary>
     public static unsafe partial void Loop()
     {
 
 
-        //First up is logic.
-        //All we need to do in this case is call each object's loop, but you can do whatever you want in whatever order you want.
+
 
         for (int i = 0; i < GameObject.AllGameObjects.Count; i++)
             GameObject.AllGameObjects[i].Loop();
@@ -495,19 +460,12 @@ public static unsafe partial class Entry
 
 
 
-        //Buffer writes operate as direct, unsafe batches.
-        //Writing multiple values in one is more optimal than unique batches.
-        //Writing can also be done with much less safety than this if speed is a bigger concern. Read summaries for more info
-
-
         var writehandle = GlobalUniformBuffer.StartWrite(true);
 
         writehandle.PushWriteFromOffsetOf("ProjectionMatrix", Camera.GetProjectionMatrix());
         writehandle.PushWriteFromOffsetOf("ViewMatrix", Camera.GetViewMatrix());
 
         writehandle.EndWrite();
-
-
 
 
 
@@ -519,16 +477,12 @@ public static unsafe partial class Entry
 
 
 
-        //Next up is rendering with the camera.
-        //Cameras have a flexible programmable pipeline system, but all we need to do here is draw everything, so this is a simple one stage pipeline.
-
         Camera.Render(
             [
                 new Camera.CameraSubpassDefinition
                 (
-                    //All we're doing here is saying that this stage in the pipeline should clear the color and depth buffers and then write into them.
                     frameBufferPipelineStageReq: new RenderingBackend.FrameBufferPipelineStage()
-                                                .SpecifyColorAttachments(rangeStart: 0, rangeEnd: 1, access: RenderingBackend.FrameBufferPipelineAttachmentAccessFlags.Write, clear: true)
+                                                .SpecifyColorAttachment(0, access: RenderingBackend.FrameBufferPipelineAttachmentAccessFlags.Write, clear: true)
                                                 .SpecifyDepth(access: RenderingBackend.FrameBufferPipelineAttachmentAccessFlags.Write, clear: true),
 
 
@@ -543,17 +497,8 @@ public static unsafe partial class Entry
 
 
 
-
-        //And, finally, we draw our screen quad with the camera framebuffer, similar to before.
-
-
         Rendering.PushDeferredRenderThreadCommand(new StartDrawToScreenStruct());
 
-
-        Rendering.PushDeferredRenderThreadCommand(new SetScissorStruct(
-            default,
-            RenderingBackend.CurrentSwapchainDetails.Size
-        ));
 
         Rendering.PushDeferredRenderThreadCommand(new DrawStruct(ScreenQuadAttributes.GetUnderlyingCollection(),
                                                    ScreenQuadResourceSetCollection.GetUnderlyingCollection(),
@@ -567,14 +512,17 @@ public static unsafe partial class Entry
 
 
 
+        Rendering.PushDeferredRenderThreadCommand(new SetScissorStruct(
+            default,
+            RenderingBackend.CurrentSwapchainDetails.Size
+        ));
+
+
+
+
         Rendering.PushDeferredRenderThreadCommand(new EndDrawToScreenStruct());
 
 
     }
 
 }
-
-
-
-
-
