@@ -41,6 +41,7 @@
 
 
 	<!-- BASIC PROPERTIES -->
+	
 	<PropertyGroup>
 		
 		<OutputType>WinExe</OutputType>
@@ -55,8 +56,6 @@
 		
 		<StartupObject>Engine.Core.Kernel</StartupObject>
 
-		
-		
 	</PropertyGroup>
 
 	
@@ -64,6 +63,7 @@
 
 
 	<!-- INCLUDE ENGINE SOURCE FILES -->
+	
 	<ItemGroup>
 		<Compile Include="$(MSBuildThisFileDirectory)\Engine\**\*.cs">
 			<Link>Engine\%(RecursiveDir)%(Filename)%(Extension)</Link>
@@ -77,12 +77,13 @@
 	
 	
 	<!-- EXCLUDE MISC FILES, DISPLAY ASSETS -->
+	
 	<PropertyGroup>
 		<EnableDefaultItems>false</EnableDefaultItems>
 	</PropertyGroup>
 	
 	<ItemGroup>
-		<None Include="Assets\**\*" CopyToOutputDirectory="Never"  />
+		<None Include="AssetRoot\**\*" CopyToOutputDirectory="Never"  />
 
 		<Compile Include="**/*.cs" Exclude="bin/**;obj/**" />
 	</ItemGroup>
@@ -95,6 +96,7 @@
 
 
 	<!-- PACKAGES -->
+	
 	<ItemGroup>
 		<PackageReference Include="SDL3-CS" Version="3.3.6"  />
 		<PackageReference Include="SDL3-CS.Native" Version="3.3.6" />
@@ -112,6 +114,7 @@
 
 	
 	<!-- DEBUG PACKAGES -->
+	
 	<ItemGroup Condition="$(DefineConstants.Contains('DEBUG'))">
 		<PackageReference Include="ImGui.NET" Version="1.91.6.1"/>
 		<PackageReference Include="ByteSize" Version="2.1.2" />
@@ -130,6 +133,7 @@
 
 
 	<!-- GENERAL SOURCE GEN -->
+	
 	<ItemGroup>
 		<ProjectReference Include="$(MSBuildThisFileDirectory)\SourceGen\_SourceGen.csproj" OutputItemType="Analyzer" ReferenceOutputAssembly="false" />
 	</ItemGroup>
@@ -151,6 +155,7 @@
 
 
 	<!-- COMPILER OPTIMIZATION/STRIPPING IN RELEASE + PUBLISH AOT -->
+	
 	<PropertyGroup Condition="$(DefineConstants.Contains('RELEASE'))">
 
 		<PublishAot>true</PublishAot>
@@ -187,16 +192,31 @@
 
 
 
-	
 
 	
+	<!-- ASSET COMPRESSION -->
 
+	<!-- average release build -->
+	<PropertyGroup>
+		<ZStdCompressionQuality>1</ZStdCompressionQuality>
+	</PropertyGroup>
 	
-	
-	
+	<!-- final NativeAOT publish release -->
+	<PropertyGroup Condition="'$(PublishAot)' == 'true'">
+		<ZStdCompressionQuality>22</ZStdCompressionQuality>
+	</PropertyGroup>
+
+
+
+
+
+
+
+
+
+
 
 	<!-- BUILD PROCESS / SOURCE GEN FOR RELEASE -->
-
 
 	<PropertyGroup Condition="'$(EngineBuildPass)' == 'true'">
 		<StartupObject>Engine.Stripped.EngineBuildProcess</StartupObject>
@@ -208,7 +228,6 @@
 	</PropertyGroup>
 
 
-
 	<Target Name="RunEngineBuild" BeforeTargets="CoreCompile" Condition="$(DefineConstants.Contains('RELEASE')) AND '$(EngineBuildPass)' != 'true' AND '$(DesignTimeBuild)' != 'true'">
 
 
@@ -218,7 +237,7 @@
 
 		<!-- execute debug -->
 		<Exec
-		  Command="&quot;$(ProjectDir)bin\Debug\net9.0\win-x64\$(AssemblyName).exe&quot;"
+		  Command="&quot;$(TargetPath)&quot; $(ZStdCompressionQuality)"
 		  WorkingDirectory="$(TargetDir)"
 		  IgnoreExitCode="false"
 		  ConsoleToMSBuild="true" />

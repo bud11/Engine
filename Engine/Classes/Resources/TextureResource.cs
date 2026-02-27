@@ -24,7 +24,7 @@ using Engine.Stripped;
 
 [FileExtensionAssociation(".png")]
 [FileExtensionAssociation(".exr")]
-public class TextureResource : GameResource
+public class TextureResource : GameResource, GameResource.ILoads, GameResource.IConverts
 {
 
     public readonly BackendTextureReference BackendReference;
@@ -40,8 +40,9 @@ public class TextureResource : GameResource
 
 #if DEBUG
 
-    
-    public static new async Task<byte[]> ConvertToFinalAssetBytes(byte[] bytes, string filePath)
+    public static bool ForceReconversion(byte[] bytes, byte[] currentCache) => false;
+
+    public static async Task<byte[]> ConvertToFinalAssetBytes(byte[] bytes, string filePath)
     {
         TextureConversion.TextureProcessingData dat;
 
@@ -88,12 +89,12 @@ public class TextureResource : GameResource
 
 
     
-    public static new async Task<GameResource> Load(Loading.AssetByteStream stream, string key)
+    public static async Task<GameResource> Load(Loading.AssetByteStream stream, string key)
     {
 
-        var w = stream.ReadUnmanagedType<uint>();
-        var h = stream.ReadUnmanagedType<uint>();
-        var d = stream.ReadUnmanagedType<uint>();
+        var w = stream.DeserializeType<uint>();
+        var h = stream.DeserializeType<uint>();
+        var d = stream.DeserializeType<uint>();
 
         TextureFormats format = (TextureFormats)stream.ReadByte();
         TextureTypes type = (TextureTypes)stream.ReadByte();
@@ -102,7 +103,7 @@ public class TextureResource : GameResource
         byte[][] mips = new byte[stream.ReadByte()][];
 
         for (int i = 0; i < mips.Length; i++)
-            mips[i] = stream.ReadUnmanagedTypeArray<byte>(stream.ReadUnmanagedType<uint>());
+            mips[i] = stream.DeserializeType<byte[]>();
 
 
         return new TextureResource(BackendTextureReference.Create(new Vector3<uint>(w, h, d), type, format, false, mips), key);

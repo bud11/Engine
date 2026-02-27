@@ -58,12 +58,11 @@ public static partial class Entry
 #if DEBUG
 
     /// <summary>
-    /// A debug-only method <b>(implementation must be wrapped in #if DEBUG)</b> where shaders can be initialized. <b>Registering shaders from an entry point outside of this method isn't supported. </b> <br/>
-    /// This is to facilitate the engine stripping this method (as well as the entirety of <see cref="Engine.Stripped.ShaderCompilation"/>) and instead precompiling shaders in release builds, and to support shader hot reloading in debug builds prompted by <see cref="Engine.Stripped.ShaderCompilation.CompileShaders"/> or <see cref="Engine.Stripped.ShaderCompilation.CompileShader"/> (which in turn call this).
+    /// A development-time, debug-only method <b>(implementation must be wrapped in #if DEBUG)</b> where shaders can be initialized. <b>Registering shaders from an entry point outside of this method isn't supported. </b> <br/>
+    /// This is to facilitate the engine stripping this method (as well as the entirety of <see cref="Engine.Stripped.ShaderCompilation"/>) and instead directly precompiling shaders into release builds at build time, while also supporting shader hot reloading in debug builds prompted by <see cref="Engine.Stripped.ShaderCompilation.CompileShaders"/> or <see cref="Engine.Stripped.ShaderCompilation.CompileShader"/> (which in turn call this).
     /// <br/> Also see <seealso cref="InitDebugShaders"/> to define shaders that shouldn't be precompiled into release.
     /// </summary>
     private readonly struct _InitShadersSummary;
-    [PartialDefaultReturn]
     public static partial void InitShaders();
 
 
@@ -71,8 +70,8 @@ public static partial class Entry
     /// Works the same way as <see cref="InitShaders"/>, except shaders defined here won't be precompiled and included in release.
     /// </summary>
     private readonly struct _InitDebugShadersSummary;
-    [PartialDefaultReturn]
     public static partial void InitDebugShaders();
+
 
 #endif
 

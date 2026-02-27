@@ -4,84 +4,60 @@ namespace Engine.GameObjects;
 
 using Engine.Attributes;
 using Engine.Core;
-using System.Collections.Immutable;
-
-using static Engine.Core.EngineMath;
-using static Engine.Core.Rendering;
-using static Engine.Core.RenderingBackend;
 using Engine.GameResources;
-using System.Numerics;
+using static Engine.Core.EngineMath;
+using static Engine.Core.RenderingBackend;
 
 
 
 
 /// <summary>
-/// An object that embodies one or more instances of a <see cref="ModelResource"/>. By default, just one, but functionality can be expanded via overrides. See <seealso cref="MultiModelInstance"/> for an implementation of instancing
+/// A <see cref="GameObject"/> that embodies a <see cref="ModelResource"/>. 
 /// </summary>
 public partial class ModelInstance : DrawObject
 {
 
 
 
-
-    public ModelResource Model { get; private set; }
+    [DataValue]
+    public ModelResource Model;
 
 
     protected override AABB BaseAABB => Model.BaseAABB;
 
 
-
-
-    private MaterialResource[] Materials;
-    public ImmutableArray<MaterialResource> GetMaterials() => ImmutableArray.ToImmutableArray(Materials);
-
-    public MaterialResource GetMaterial(byte index) => Materials[index];
-
-    public virtual void SetMaterial(byte index, MaterialResource mat) => Materials.AddRefCountedReference(index, mat);
+    [DataValue]
+    public RefCountCollections.RefCountedArray<MaterialResource> Materials;
 
 
 
 
+    /// <summary>
+    /// Resource sets to be used globally for every model instance.
+    /// </summary>
+    public static readonly UnmanagedKeyValueHandleCollectionOwner<string, BackendResourceSetReference> GlobalModelInstanceResourceSets = new();
 
+
+    /// <summary>
+    /// Resource sets to be used at the individual model instance level.
+    /// </summary>
     public readonly UnmanagedKeyValueHandleCollectionOwner<string, BackendResourceSetReference> ModelInstanceResourceSets = new();
-    public readonly UnmanagedKeyValueHandleCollectionOwner<string, VertexAttributeDefinitionPlusBufferClass> VertexAttributeBuffers = new();
+
+
+    /// <summary>
+    /// Vertex attributes to be used at the individual model instance level.
+    /// </summary>
+    public readonly UnmanagedKeyValueHandleCollectionOwner<string, VertexAttributeDefinitionPlusBufferClass> ModelInstanceVertexAttributeBuffers = new();
 
 
 
 
 
-
-    
-    public void Init(ModelResource Model, GameResource[] Materials = null, Dictionary<string, VertexAttributeDefinitionPlusBufferStruct> extraAttributeBuffers = null, string Name = default, Matrix4x4 Transform = default)
+    public override void Init()
     {
-
-        this.Model = Model;
-        this.Model.AddUser();
-
-        this.Materials = new MaterialResource[Model.SubMeshes.Length];
-
-
-        if (Materials != null)
-            for (byte i = 0; i < Materials.Length; i++)
-                SetMaterial(i, (MaterialResource)Materials[i]);
-
-
-
-
-        foreach (var kv in Model.Buffers)
-            VertexAttributeBuffers[kv.Key] = new VertexAttributeDefinitionPlusBufferClass(kv.Value.Buffer, kv.Value.Definition);
-
-        if (extraAttributeBuffers != null)
-            foreach (var kv in extraAttributeBuffers)
-                VertexAttributeBuffers[kv.Key] = new VertexAttributeDefinitionPlusBufferClass(kv.Value.Buffer.Target, kv.Value.Definition);
-
-
-        base.Init(Name, Transform);
+        base.Init();
         AllDrawableObjects.Add(this);
     }
-
-
-
 
 
     protected override void OnFree()
@@ -90,14 +66,18 @@ public partial class ModelInstance : DrawObject
 
         Model.RemoveUser();
 
-        foreach (var mat in Materials) mat?.RemoveUser();
+        Materials.Free();
 
         base.OnFree();
     }
 
 
 
-    public unsafe override void Draw(delegate*<DrawObject, MaterialResource, MaterialResource.MaterialDefinition> MaterialDefinitionMutator = null)
+    /// <summary>
+    /// Draws the full model using all of its materials.
+    /// </summary>
+    /// <param name="resolver"></param>
+    public unsafe override void Draw(delegate*<MaterialResource, MaterialResource.MaterialResolution> resolver)
     {
         for (var i = 0; i < Model.SubMeshes.Length; i++)
         {
@@ -106,46 +86,45 @@ public partial class ModelInstance : DrawObject
             var sm = Model.SubMeshes[i];
 
             if (mat != null)
-                Draw(mat, sm.Start, sm.End);
+                Draw(mat, resolver, sm.Start, sm.End);
         }
     }
+
 
 
     /// <summary>
     /// Draws the entire model using one manually provided material.
     /// </summary>
-    /// <param name="Material"></param>
-    /// <param name="Priority"></param>
-    /// <param name="MaterialDefinitionMutator"></param>
-    public virtual unsafe void DrawWithOneMaterial(MaterialResource Material, delegate*<DrawObject, MaterialResource, MaterialResource.MaterialDefinition> MaterialDefinitionMutator = null)
+    /// <param name="material"></param>
+    /// <param name="resolver"></param>
+    public virtual unsafe void DrawWithOneMaterial(MaterialResource material, delegate*<MaterialResource, MaterialResource.MaterialResolution> resolver)
     {
-        Draw(Material, 0, Model.SubMeshes[^1].End);
+        Draw(material, resolver, 0, Model.SubMeshes[^1].End);
     }
-
 
 
     /// <summary>
     /// Issues an actual draw call.
     /// </summary>
-    /// <param name="Material"></param>
+    /// <param name="material"></param>
+    /// <param name="resolver"></param>
     /// <param name="Start"></param>
     /// <param name="End"></param>
-    /// <param name="MaterialDefinitionMutator"></param>
-    public virtual unsafe void Draw(MaterialResource Material, uint Start, uint End, delegate*<DrawObject, MaterialResource, MaterialResource.MaterialDefinition> MaterialDefinitionMutator = null)
+    public virtual unsafe void Draw(MaterialResource material, delegate*<MaterialResource, MaterialResource.MaterialResolution> resolver, uint Start, uint End)
     {
-        var def = Material.Definition;
-        if (MaterialDefinitionMutator != null) def = MaterialDefinitionMutator(this, Material);
+        var resolve = resolver(material);
+        if (resolve.Shader == null) return;
 
-        PushDeferredRenderThreadCommand(new DrawStruct(VertexAttributeBuffers.GetUnderlyingCollection(),
-                                                        ModelInstanceResourceSets.GetUnderlyingCollection().Combine(def.MaterialResourceSets),
-                                                        def.Shader,
-                                                        def.Rasterization,
-                                                        def.Blending,
-                                                        def.DepthStencil,
-                                                        Model.IndexBuffer,
-                                                        new(Start, End, 0, 1)));
+        Rendering.Draw(Model.Buffers.GetUnderlyingCollection().Combine(in ModelInstanceVertexAttributeBuffers.GetUnderlyingCollection()),
+                        GlobalModelInstanceResourceSets.GetUnderlyingCollection().Combine(in ModelInstanceResourceSets.GetUnderlyingCollection()).Combine(in resolve.MaterialResourceSets),
+                        resolve.Shader,
+                        resolve.RasterizationDetails,
+                        resolve.BlendState,
+                        resolve.DepthStencilState,
+                        Model.IndexBuffer,
+                        new IndexingDetails(Start, End, 0, 1));
+
     }
-
 
 }
 

@@ -1,11 +1,13 @@
 ﻿
 namespace Engine.Core;
 
+using Engine.Stripped;
 using System;
 using System.Buffers;
 using System.Collections;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Linq;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
@@ -125,7 +127,7 @@ public static class MiscExtensions
 
 /// <summary>
 /// A small unmanaged dictionary-style collection that uses supplied <see cref="GCHandle"/>s for keys and values to allow stack allocation.
-/// <br/> Given <see cref="GCHandle"/>s must be allocated and freed manually. This collection doesn't own anything - see <seealso cref="UnmanagedKeyValueHandleCollectionOwner{KeyType, ValueType}"/> for a wrapper that does.
+/// <br/> Given <see cref="GCHandle"/>s must be managed manually. This collection doesn't own or manage handles. See <seealso cref="UnmanagedKeyValueHandleCollectionOwner{KeyType, ValueType}"/> for a wrapper that does.
 /// </summary>
 public unsafe struct UnmanagedKeyValueHandleCollection<KeyT, ValueT> where KeyT : class where ValueT : class
 {
@@ -276,6 +278,11 @@ public unsafe struct UnmanagedKeyValueHandleCollection<KeyT, ValueT> where KeyT 
 
     public readonly UnmanagedKeyValueHandleCollection<KeyT, ValueT> Combine(in UnmanagedKeyValueHandleCollection<KeyT, ValueT> b)
     {
+        if (_count == 0 && b._count == 0) return default;
+        if (_count == 0) return b;
+        if (b._count == 0) return this;
+
+
         var result = this;
 
         for (int i = 0; i < b._count; i++)
@@ -284,7 +291,6 @@ public unsafe struct UnmanagedKeyValueHandleCollection<KeyT, ValueT> where KeyT 
             result[key] = b[key];
         }
 
-
         return result;
     }
 }
@@ -292,12 +298,21 @@ public unsafe struct UnmanagedKeyValueHandleCollection<KeyT, ValueT> where KeyT 
 
 
 /// <summary>
-/// Wraps an <see cref="UnmanagedKeyValueHandleCollection{KeyT, ValueT}"/> and creates and releases normal <see cref="GCHandle"/>s when keys/values are added/removed.
+/// Wraps an <see cref="UnmanagedKeyValueHandleCollection{KeyT, ValueT}"/> and creates and releases <see cref="GCHandle"/>s when keys/values are added/removed.
 /// <br/> Handles will be released on object destruction.
-/// <br/> The intention is that logical semi-permanent collections can still exist while temporary transient permutations and combinations can be quickly created and passed downstream without constant further allocation.
 /// </summary>
 public class UnmanagedKeyValueHandleCollectionOwner<KeyT, ValueT> : IEnumerable<KeyValuePair<KeyT, ValueT>> where KeyT : class where ValueT : class
 {
+
+    public UnmanagedKeyValueHandleCollectionOwner(IEnumerable<KeyValuePair<KeyT, ValueT>> enumerable)
+    {
+        _enumerator = new(this);
+
+        foreach (var kv in enumerable) 
+            this[kv.Key] = kv.Value;
+    }
+
+
 
     public UnmanagedKeyValueHandleCollectionOwner()
     {
@@ -311,6 +326,10 @@ public class UnmanagedKeyValueHandleCollectionOwner<KeyT, ValueT> : IEnumerable<
     private readonly Dictionary<ValueT, GCHandle> valuehandles = new();
 
 
+    /// <summary>
+    /// Returns the underlying <see cref="UnmanagedKeyValueHandleCollection{KeyT, ValueT}"/> struct that this wraps.
+    /// </summary>
+    /// <returns></returns>
     public ref UnmanagedKeyValueHandleCollection<KeyT, ValueT> GetUnderlyingCollection() => ref Collection;
 
 
@@ -589,15 +608,11 @@ public static class Comparisons
 /// Wraps <see cref="GCHandle"/> with a strongly typed generic.
 /// </summary>
 /// <typeparam name="T"></typeparam>
-public unsafe struct GCHandle<T>  where T : class 
+public unsafe struct GCHandle<T>(GCHandle handle) where T : class 
 {
 
-    private GCHandle Handle;
+    private GCHandle Handle = handle;
 
-    public GCHandle(GCHandle handle)
-    {
-        Handle = handle;
-    }
 
     /// <summary>
     /// Gets the object this handle represents.
@@ -615,6 +630,11 @@ public unsafe struct GCHandle<T>  where T : class
 
     public static GCHandle<T> Alloc(T reference, GCHandleType type) => new(GCHandle.Alloc(reference, type));
     public static GCHandle<T> Alloc(T reference) => new(GCHandle.Alloc(reference));
+
+
+    public static GCHandle<T> FromIntPtr(nint value) => (GCHandle<T>)GCHandle.FromIntPtr(value);
+    public readonly IntPtr ToIntPtr() => GCHandle.ToIntPtr(Handle);
+
 
 
     public static explicit operator GCHandle<T> (GCHandle handle) => new(handle);
@@ -997,7 +1017,7 @@ public unsafe sealed class DeferredCommandBuffer
     [StructLayout(LayoutKind.Sequential)]
     private unsafe struct CommandHeader
     {
-        public delegate*<void*, void> ExecuteFn;
+        public void* ExecuteFn;
         public ushort Size;
 
 #if DEBUG
@@ -1017,47 +1037,85 @@ public unsafe sealed class DeferredCommandBuffer
 
 
 #if DEBUG
-    private readonly List<string> _debugOrigins = new();
+    private readonly List<StackTrace> _debugOrigins = new();
 #endif
 
 
 
 
-    public void PushCommand<T>(T cmd
-#if DEBUG
-        , string file,
-          int line
-#endif
-    )
-        where T : unmanaged, IDeferredCommand
+    public unsafe void PushCommand(void* fn)
+    {
+        lock (this)
+        {
+            CommandHeader header = new CommandHeader
+            {
+                ExecuteFn = fn,
+                Size = (ushort)sizeof(CommandHeader)
+            };
 
+
+            fixed (byte* dst = &_buffer[_offset])
+            {
+                Unsafe.WriteUnaligned(dst, header);
+
+                PushTrace(dst);
+            }
+
+            _offset += sizeof(CommandHeader);
+        }
+
+    }
+
+
+
+    public void PushCommand<T>(T cmd) where T : unmanaged, IDeferredCommand
     {
 
         lock (this)
         {
             CommandHeader header = new CommandHeader
             {
-                ExecuteFn = &T.Execute,
+                ExecuteFn = (delegate*<void*, void>) &T.Execute,
                 Size = (ushort)(sizeof(CommandHeader) + sizeof(T))
             };
 
 
             fixed (byte* dst = &_buffer[_offset])
             {
-
                 Unsafe.WriteUnaligned(dst, header);
                 Unsafe.WriteUnaligned(dst + sizeof(CommandHeader), cmd);
 
-#if DEBUG
-                _debugOrigins.Add($"\n{typeof(T)}: Called from: {file} ({line})");
-                ((CommandHeader*)dst)->DebugIndex = _debugOrigins.Count - 1;
-#endif
+                PushTrace(dst);
             }
 
             _offset += sizeof(CommandHeader) + sizeof(T);
         }
 
     }
+
+
+
+    [Conditional("DEBUG")]
+    private unsafe void PushTrace(byte* dst)
+    {
+        int debugidx = -1;
+
+        if (EngineDebug.DeferredCommandStackTraceStorage)
+        {
+            _debugOrigins.Add(new StackTrace(true));
+            debugidx = _debugOrigins.Count - 1;
+        }
+
+        ((CommandHeader*)dst)->DebugIndex = debugidx;
+
+    }
+
+
+
+
+
+
+
 
     public bool ContainsCommands()
     {
@@ -1095,15 +1153,28 @@ public unsafe sealed class DeferredCommandBuffer
                     {
 #endif
                         var cmdPtr = ptr + sizeof(CommandHeader);
-                        header->ExecuteFn(cmdPtr);
+
+                        if (header->Size == sizeof(CommandHeader))
+                            ((delegate*<void>)(header->ExecuteFn))();
+                        else
+                            ((delegate*<void*, void>)(header->ExecuteFn))(cmdPtr);
 #if DEBUG
                     }
                     catch (Exception ex)
                     {
-                        var origin = _debugOrigins[header->DebugIndex];
-                        throw new Exception($"{origin}\n Deferred command failed: {ex.Message}", ex);
+                        if (header->DebugIndex != -1)
+                        {
+                            var originTrace = _debugOrigins[header->DebugIndex];
+                            throw new Exception(
+                                "Deferred command originally submitted from:\n" +
+                                originTrace + "\n\nDeferred command failure:\n" +
+                                ex,
+                                ex);
+                        }
+                        throw;
                     }
 #endif
+
 
                     ptr += header->Size;
                 }

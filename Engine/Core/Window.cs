@@ -221,7 +221,7 @@ public static class Window
 
             SDL.SyncWindow(SDLWindowHandle);
 
-            Rendering.PushRenderThreadAction(() => { RenderingBackend.ConfigureSwapchain(Size, UseHDR); return null; });
+            RenderThread.PushRenderThreadAction(() => { RenderingBackend.ConfigureSwapchain(Size, UseHDR); return null; });
 
             windowValid = false;
         }

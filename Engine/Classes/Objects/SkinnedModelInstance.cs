@@ -3,14 +3,11 @@
 
 namespace Engine.GameObjects;
 
-
-
 using Engine.Attributes;
-using static Engine.Core.EngineMath;
-using static Engine.Core.RenderingBackend;
-using Engine.Core;
 using Engine.GameResources;
-using System.Numerics;
+using static Engine.Core.EngineMath;
+
+
 
 public partial class SkinnedModelInstance : ModelInstance
 {
@@ -24,30 +21,17 @@ public partial class SkinnedModelInstance : ModelInstance
         }
     }
 
+
+    [DataValue]
     public Skeleton Skeleton;
 
-
-    
-    public new void Init(Skeleton Skeleton, ModelResource Model, GameResource[] Materials = null, Dictionary<string, VertexAttributeDefinitionPlusBufferStruct> extraAttributeBuffers = null, string Name = default, Matrix4x4 Transform = default)
-    {
-
-        this.Skeleton = Skeleton;
-        base.Init(Model, Materials, extraAttributeBuffers, Name, Transform);
-    }
 
 
     public override void PreDraw()
     {
-        Skeleton.RecalculateAndUploadSkinningDataIfNeeded();
+        Skeleton?.ReuploadSkinningDataIfNeeded();
         base.PreDraw();
     }
-
-    public override unsafe void Draw(delegate*<DrawObject, MaterialResource, MaterialResource.MaterialDefinition> MaterialDefinitionMutator = default)
-    {
-        base.Draw(MaterialDefinitionMutator);
-    }
-
-
 
 }
 

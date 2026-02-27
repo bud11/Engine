@@ -23,10 +23,52 @@ using System.Reflection;
 
 
 /// <summary>
-/// Facilitates loading and/or indexing assets from the asset directory.
+/// Facilitates loading/indexing asset files/<see cref="GameResource"/>s.
 /// </summary>
 public static partial class Loading
 {
+
+
+
+    // --------------- !!!!! Changing these paths will break .props, the build process, .gitignore and external tools !!!!! --------------- \\
+
+
+#if DEBUG
+
+    /// <summary>
+    /// The path to the development-time asset root directory. 
+    /// <br/> Each immediate sub folder contained within will be compressed into its own separate archive. For example, if this directory contains two folders, One and Two, then release builds will feature two archives respectively named One and Two.
+    /// <br/> <b>This directory cannot directly contain assets.</b>
+    /// </summary>
+    public static readonly string AssetRootDirectoryPath = Path.GetFullPath("../../../../AssetRoot");
+
+
+    /// <summary>
+    /// The path to the development-time directory used to cache final asset data that has undergone development-time conversion.
+    /// </summary>
+    public static readonly string AssetCachePath = Path.GetFullPath("../../../../AssetRootCache");
+
+#endif
+
+
+    /// <summary>
+    /// The path to the release-build directory which contains asset archives.
+    /// </summary>
+    public static readonly string ReleaseRootAssetArchivePath = Directory.GetCurrentDirectory();
+
+    // ------------------------------------------------------------------------------------------------------------------------------------ \\
+
+
+
+
+
+
+
+
+
+
+
+
 
 
     /// <summary>
@@ -48,7 +90,7 @@ public static partial class Loading
 
 
     /// <summary>
-    /// (Re)scans for (registered, not arbitrary) asset archives within <see cref="EngineSettings.ReleaseAssetArchivesPath"/>. Only affects release builds.
+    /// (Re)scans for (registered, not arbitrary) asset archives within <see cref="Loading.ReleaseRootAssetArchivePath"/>. Only affects release builds.
     /// </summary>
     
     public static unsafe void ScanForAssetArchives()
@@ -63,17 +105,17 @@ public static partial class Loading
 
         foreach (string archiveName in AssetArchiveNames)
         {
-            var archivePath = Path.Combine(EngineSettings.ReleaseRootAssetArchivePath, archiveName);
+            var archivePath = Path.Combine(Loading.ReleaseRootAssetArchivePath, archiveName);
 
             using (var filestream = new FileStream(archivePath, FileMode.Open, FileAccess.Read))
             {
-                var assetCount = filestream.ReadUnmanagedType<uint>();
+                var assetCount = filestream.DeserializeType<uint>();
                 for (uint i = 0; i < assetCount; i++)
                 {
-                    var assetOffset = filestream.ReadUnmanagedType<ulong>();
-                    var assetLength = filestream.ReadUnmanagedType<ulong>();
-                    var assetPath = filestream.ReadUintLengthPrefixedUTF8String();
-                    Type assetType = Parsing.GetGameResourceTypeFromTypeID(filestream.ReadUnmanagedType<ushort>());
+                    var assetOffset = filestream.DeserializeType<ulong>();
+                    var assetLength = filestream.DeserializeType<ulong>();
+                    var assetPath = filestream.DeserializeType<string>();
+                    Type assetType = Parsing.GetGameResourceTypeFromTypeID(filestream.DeserializeType<ushort>());
 
                     AssetLookupDirect[$"{archiveName}/{assetPath}"] = new AssetDataRange(archivePath, assetType, assetOffset, assetLength);
                 }
@@ -113,7 +155,7 @@ public static partial class Loading
     {
 
 #if DEBUG
-        assetPath = Path.Combine(EngineSettings.RootAssetDirectoryPath, assetPath);
+        assetPath = Path.GetFullPath(Path.Combine(AssetRootDirectoryPath, assetPath));
 
         if (!AssetExists(assetPath)) 
             throw new Exception();
@@ -255,7 +297,7 @@ public static partial class Loading
             throw new Exception();
 
 
-        filepaths = [.. Directory.GetFiles(Path.Combine(EngineSettings.RootAssetDirectoryPath, path)).Select(x => Path.GetRelativePath(target, x))];
+        filepaths = [.. Directory.GetFiles(Path.Combine(AssetRootDirectoryPath, path)).Select(x => Path.GetRelativePath(target, x))];
 
 #else
 
@@ -294,7 +336,7 @@ public static partial class Loading
     {
 #if DEBUG
 
-        path = Path.Combine(EngineSettings.RootAssetDirectoryPath, path);
+        path = Path.Combine(AssetRootDirectoryPath, path);
 
         IsInDirectSubfolderCheck(path);
 
@@ -308,7 +350,7 @@ public static partial class Loading
 
 
     /// <summary>
-    /// Returns true if an asset folder exists. 
+    /// Returns true if an asset folder or archive exists. 
     /// </summary>
     /// <param name="path"></param>
     /// <returns></returns>
@@ -316,7 +358,7 @@ public static partial class Loading
     {
 #if DEBUG
 
-        path = Path.Combine(EngineSettings.RootAssetDirectoryPath, path);
+        path = Path.Combine(AssetRootDirectoryPath, path);
 
         IsInDirectSubfolderCheck(path);
 
@@ -338,7 +380,7 @@ public static partial class Loading
 
     private static void IsInDirectSubfolderCheck(string filePath)
     {
-        var parentFolder = EngineSettings.RootAssetDirectoryPath;
+        var parentFolder = AssetRootDirectoryPath;
 
         var fileDirectory = Path.GetDirectoryName(filePath);
         if (fileDirectory == null)
@@ -371,16 +413,16 @@ public static partial class Loading
     public static void CleanAssetCache()
     {
 
-        if (!DirectoryExistsCaseSensitive(EngineSettings.AssetCachePath))
+        if (!DirectoryExistsCaseSensitive(AssetCachePath))
             return;
 
 
-        foreach (var cacheFile in Directory.EnumerateFiles(EngineSettings.AssetCachePath, "*", SearchOption.AllDirectories))
+        foreach (var cacheFile in Directory.EnumerateFiles(AssetCachePath, "*", SearchOption.AllDirectories))
         {
             try
             {
-                var relativePath = Path.GetRelativePath(EngineSettings.AssetCachePath, cacheFile);
-                var sourcePath = Path.Combine(EngineSettings.RootAssetDirectoryPath, relativePath).Replace(".cached", string.Empty);
+                var relativePath = Path.GetRelativePath(AssetCachePath, cacheFile);
+                var sourcePath = Path.Combine(AssetRootDirectoryPath, relativePath).Replace(".cached", string.Empty);
 
                 if (!FileExistsCaseSensitive(sourcePath))
                 {
@@ -403,7 +445,7 @@ public static partial class Loading
 
 
 
-        RemoveEmptyDirectories(EngineSettings.AssetCachePath);
+        RemoveEmptyDirectories(AssetCachePath);
 
         static void RemoveEmptyDirectories(string root)
         {
@@ -428,8 +470,8 @@ public static partial class Loading
 
 
     /// <summary>
-    /// Loads a <see cref="GameResource"/> from the game's asset folder (see <see cref="EngineSettings.RootAssetDirectoryPath"/>, <see cref="GameResource.Load(byte[], string)"></see> and <see cref="GameResource.GameResourceFileExtensionMap"/>).
-    /// <br /> <b><paramref name="resourcePath"/> should be relative to the asset folder and should not include a file extension. </b>
+    /// Loads a <see cref="GameResource"/> from a folder/archive within the game's asset root directory (see <see cref="Loading.AssetRootDirectoryPath"/>).
+    /// <br/> <b><paramref name="resourcePath"/> should be relative to the asset root directory and should not include a file extension. </b>
     /// </summary>
     /// <typeparam name="T"></typeparam>
     /// <param name="resourcePath"></param>
@@ -474,7 +516,7 @@ public static partial class Loading
 
             //if type converts, try loading cached result, otherwise convert and cache result if cached file doesnt exist or doesnt match
 
-            stream = await GetFinalAssetBytes<T>(Path.Combine(EngineSettings.RootAssetDirectoryPath, loadpath));
+            stream = await GetFinalAssetBytes<T>(Path.GetFullPath(Path.Combine(AssetRootDirectoryPath, loadpath)));
 
 
 #else
@@ -484,7 +526,7 @@ public static partial class Loading
 
             var res = await Parsing.ConstructGameResourceFromGeneric<T>(stream, resourcePath);
 
-            res.Init();
+            res.Register();
 
             return res;
 
@@ -501,23 +543,33 @@ public static partial class Loading
 #if DEBUG
 
 
-
     /// <summary>
-    /// This method gets the final asset bytes (converting and caching the source file if nessecary) and should not be used directly.
+    /// Caches and/or fetches the asset file at <paramref name="relativePath"/>'s final bytes.
+    /// <br/> This is a development-time debug-only method and usually shouldn't be used directly.
     /// </summary>
     /// <typeparam name="T"></typeparam>
-    /// <param name="loadpath"></param>
+    /// <param name="relativePath"></param>
     /// <returns></returns>
-    /// 
-    public static async Task<AssetByteStream> GetFinalAssetBytes<T>(string loadpath) where T : GameResource
+    public static async Task<AssetByteStream> GetFinalAssetBytes<T>(string relativePath) where T : GameResource
     {
-        var relative = Path.GetRelativePath(EngineSettings.RootAssetDirectoryPath, loadpath);
+        return await GetFinalAssetBytes<T>(await AcquireAssetByteStream(relativePath).GetArray(), relativePath);
+    }
 
 
+    /// <summary>
+    /// Caches and/or fetches an asset file's final bytes, assuming the asset file's contents are <paramref name="unconvertedData"/>, and its path on disk is <paramref name="relativePath"/>.
+    /// <br/> Parts of that assumption may not be true, for example, embedded resources, which aren't truly separate, yet benefit from individual caching.
+    /// <br/> This is a development-time debug-only method and usually shouldn't be used directly.
+    /// </summary>
+    /// <typeparam name="T"></typeparam>
+    /// <param name="unconvertedData"></param>
+    /// <param name="relativePath"></param>
+    /// <returns></returns>
+    public static async Task<AssetByteStream> GetFinalAssetBytes<T>(byte[] unconvertedData, string relativePath) where T : GameResource
+    {
 
-        var loadingDbgString = $"Loading asset file '{relative}'";
-        var convertingDbgString = $"Converting/caching asset file '{relative}'";
-
+        var loadingDbgString = $"Loading asset file '{relativePath}'";
+        var convertingDbgString = $"Converting/caching asset file '{relativePath}'";
 
 
 
@@ -525,48 +577,53 @@ public static partial class Loading
 
 
 
-        loadpath = Path.GetFullPath(loadpath);
-
-
         AssetByteStream finalStream = null;
 
 
 
-        var convertcheck = typeof(T).GetMethod(nameof(GameResource.ConvertToFinalAssetBytes));
+        var convertcheck = typeof(T).IsAssignableTo(typeof(GameResource.IConverts));
 
-        if (convertcheck != null)
+
+        if (convertcheck)
         {
 
 
-            var cachedFileDir = Path.Combine(EngineSettings.AssetCachePath, Path.GetRelativePath(EngineSettings.RootAssetDirectoryPath, loadpath) + ".cached");
+            var cachedFileDir = Path.Combine(AssetCachePath, relativePath + ".cached");
 
 
             Directory.CreateDirectory(Directory.GetParent(cachedFileDir).FullName);
 
-
-            var load = await AcquireAssetByteStream(loadpath).GetArray();
 
 
             uint crc = 0;
 
             if (FileExistsCaseSensitive(cachedFileDir))
             {
-                crc = Crc32.HashToUInt32(load);
+                crc = Crc32.HashToUInt32(unconvertedData);
 
 
                 var filestream = new FileStream(cachedFileDir, FileMode.Open, FileAccess.Read);
 
 
 
-                uint storedCrc = filestream.ReadUnmanagedType<uint>();
+                uint storedCrc = filestream.DeserializeType<uint>();
 
                 if (storedCrc == crc)
                 {
-                    statusPrint("Cached file found");
+                    statusPrint($"Cached file found for asset '{relativePath}'");
 
                     int remaining = (int)(filestream.Length - filestream.Position);
 
                     finalStream = new AssetByteStream(filestream, remaining);
+
+
+                    //forced reconversion?
+                    if ((bool) typeof(T).GetMethod(nameof(GameResource.IConverts.ForceReconversion), BindingFlags.Static | BindingFlags.Public, [typeof(byte[]), typeof(byte[])]).Invoke(null, [null]))
+                    {
+                        crc = 0;
+                        filestream.Dispose();
+                    }
+
                 }
                 else
                 {
@@ -574,27 +631,24 @@ public static partial class Loading
                     filestream.Dispose();
                 }
 
-
             }
 
 
             //cached file wasnt found or doesn't match
             if (crc == 0)
             {
-
-
-                statusPrint($"Required cache missing or out of date for asset '{relative}', converting...");
+                statusPrint($"Required cache missing or out of date for asset '{relativePath}', converting...");
 
 
                 liststatusChange(assetloadingstatusForDebugMsg.Converting);
 
 
-                var finalBytes = await (Task<byte[]>)typeof(T).GetMethod(nameof(GameResource.ConvertToFinalAssetBytes), BindingFlags.Static | BindingFlags.Public, [typeof(byte[]), typeof(string)]).Invoke(null, [load, loadpath]);
+                var finalBytes = await (Task<byte[]>)typeof(T).GetMethod(nameof(GameResource.IConverts.ConvertToFinalAssetBytes), BindingFlags.Static | BindingFlags.Public, [typeof(byte[]), typeof(string)]).Invoke(null, [unconvertedData, relativePath]);
 
 
                 using (var filestream = new FileStream(cachedFileDir, FileMode.Create))
                 {
-                    await filestream.WriteAsync(Crc32.Hash(load));
+                    await filestream.WriteAsync(Crc32.Hash(unconvertedData));
                     await filestream.WriteAsync(finalBytes);
                 }
 
@@ -605,12 +659,11 @@ public static partial class Loading
         }
 
 
-        else finalStream = AcquireAssetByteStream(loadpath);
+        else finalStream = AcquireAssetByteStream(relativePath);
 
 
 
-
-        statusPrint($"Final asset bytes loaded for '{relative}'");
+        statusPrint($"Final asset bytes loaded for asset '{relativePath}'");
 
 
         liststatusChange(assetloadingstatusForDebugMsg.Done);
@@ -654,7 +707,6 @@ public static partial class Loading
                 }
             }
         }
-
     }
 
     private enum assetloadingstatusForDebugMsg
@@ -669,28 +721,7 @@ public static partial class Loading
 
 
 
-    
-/*
-    /// <summary>
-    /// Prepares a <typeparamref name="GameObjectType"/> from a final byte array (bytes already ran through the type's <see cref="GameResource.ConvertToFinalAssetBytes(byte[], string)"/> override, if there is one).
-    /// </summary>
-    /// <typeparam name="GameObjectType"></typeparam>
-    /// <param name="bytes"></param>
-    /// <param name="key"></param>
-    /// <param name="resourcePath"></param>
-    /// <returns></returns>
-    public static async Task<GameObjectType> ConstructResourceFromFinalBytes<GameObjectType>(byte[] bytes, string key, string resourcePath = null) where GameObjectType : GameResource
-    {
-        return (GameObjectType)await InternalLoadOrFetchResource(resourcePath, async () => await GameResource.__StaticVirtual_Load<GameObjectType>(bytes, key));
-    }
-*/
-
-
 #endif
-
-
-
-
 
 
 
@@ -857,13 +888,15 @@ public static partial class Loading
 
 
 
+
+
 #if DEBUG
 
     public static readonly Dictionary<string, Type> GameResourceFileAssociations = new();
 
     
     /// <summary>
-    /// Debug-only method that searches for <see cref="FileExtensionAssociationAttribute"/>s on <see cref="GameResource"/>s
+    /// Debug-only method that scans for <see cref="FileExtensionAssociationAttribute"/>s on <see cref="GameResource"/> types.
     /// </summary>
     /// <exception cref="Exception"></exception>
     [Conditional("DEBUG")]
@@ -891,4 +924,19 @@ public static partial class Loading
 
 
 }
+
+
+
+/// <summary>
+/// Indicates that this type is associated with a particular file extension at development time.
+/// </summary>
+/// <param name="extension"></param>
+/// 
+[Conditional("DEBUG")]
+[AttributeUsage(AttributeTargets.Class, Inherited = false, AllowMultiple = true)]
+public sealed class FileExtensionAssociationAttribute(string extension) : Attribute
+{
+    public readonly string Extension = $".{extension.Trim().TrimStart('.')}";
+}
+
 

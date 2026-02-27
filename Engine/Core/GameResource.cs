@@ -4,23 +4,82 @@
 namespace Engine.Core;
 
 
-using Engine.Attributes;
+using Engine.GameResources;
 using static Loading;
 
 
 
 
+
 /// <summary>
-/// An abstract resource capable of being parsed and loaded. See <see cref="LoadResource{T}(string)"/> and <see cref="ConvertToFinalAssetBytes(byte[], string)"/>.
+/// An abstract resource.
 /// <br/>
-/// <br/> GameResources do not need to support loading/deserialization, but should they, they must implement a method with the same signature as <see cref="Load"/>.
+/// <br/> <inheritdoc cref="ILoads"/>
 /// <br/>
-/// <br/> GameResources are also capable of supporting debug-time / release-compile-time pre-processing, for example texture compression. To implement that, a method with the same signature <see cref="ConvertToFinalAssetBytes(byte[], string)"/> must be implemented.
-/// <br/>
-/// <br/> To associate a GameResource with one or more file types in a way that the engine recognises, one or more <see cref="FileExtensionAssociationAttribute"/>s can be added to it.
+/// <br/> <inheritdoc cref="IConverts"/>
 /// </summary>
-public abstract partial class GameResource(string key) : RefCounted
+/// 
+public abstract partial class GameResource(string key) : RefCounted,
+    IBinarySerializeableOverride<uint>
 {
+
+    static object IBinarySerializeableOverride<uint>.Deserialize(uint reference, object context)
+        => ((SceneResource.SceneBinaryDeserializationContext)context).Resources[(int)reference];
+
+    object IBinarySerializeableOverride<uint>.Serialize(uint data, object context)
+        => throw new NotImplementedException();
+
+
+
+
+
+
+    /// <summary>
+    /// Given a <see cref="GameResource"/> implements <see cref="ILoads"/>, and has one or more <see cref="FileExtensionAssociationAttribute"/>s, it can be loaded via <see cref="LoadResource{T}(string)"/>.
+    /// </summary>
+    public interface ILoads
+    {
+		/// <summary>
+		/// <inheritdoc cref="ILoads"/>
+		/// </summary>
+		/// <param name="stream"></param>
+		/// <param name="key"></param>
+		/// <returns></returns>
+		public static abstract Task<GameResource> Load(AssetByteStream stream, string key);
+    }
+
+
+#if DEBUG
+
+    /// <summary>
+    /// <see cref="GameResource"/>s can implement development-time preprocessing via <see cref="IConverts"/>, for example to facilitate texture compression, and should they, the conversion will be cached in <see cref="AssetCachePath"/>.
+    /// <br/> The result will then be fed into <see cref="ILoads.Load(AssetByteStream, string)"/>.
+    /// <br/> The cache will only be used if the md5 hash of the asset file matches the hash of the asset file at the time it was cached and <see cref="ForceReconversion(byte[], byte[])"/> returns false.
+    /// <br/>
+    /// <br/> <b> ! ! ! Implementation of <see cref="IConverts"/> must be excluded from release builds via preprocessor directives or similar. For release builds, <see cref="IConverts"/> will be invoked at compile/asset compression time instead. ! ! ! </b>
+    /// </summary>
+    public interface IConverts
+    {
+		/// <summary>
+		/// <inheritdoc cref="IConverts"/>
+		/// </summary>
+		/// <param name="bytes"></param>
+		/// <param name="filePath"></param>
+		/// <returns></returns>
+		public static abstract Task<byte[]> ConvertToFinalAssetBytes(byte[] bytes, string filePath);
+
+        /// <summary>
+        /// An extra layer of control over whether to reuse a seemingly valid found cache file or not. See <see cref="IConverts"/> 
+        /// </summary>
+        /// <param name="bytes"></param>
+        /// <param name="currentCache"></param>
+        /// <returns></returns>
+        public static abstract bool ForceReconversion(byte[] bytes, byte[] currentCache);
+    }
+
+#endif
+
+
 
 
 
@@ -32,38 +91,11 @@ public abstract partial class GameResource(string key) : RefCounted
 
 
 
-    /// <summary>
-    /// The loading method template. See <see cref="GameResource"/>.
-    /// </summary>
-    /// <param name="stream"></param>
-    /// <param name="key"></param>
-    /// <returns></returns>
-    /// <exception cref="Exception"></exception>
-    public static async Task<GameResource> Load(AssetByteStream stream, string key)
-        => throw new Exception();
-
-
-#if DEBUG
-
-    /// <summary>
-    /// The pre-processing method template. See <see cref="GameResource"/>.
-    /// </summary>
-    /// <param name="bytes"></param>
-    /// <param name="filePath"></param>
-    /// <returns></returns>
-    public static async Task<byte[]> ConvertToFinalAssetBytes(byte[] bytes, string filePath) 
-        => bytes;
-
-#endif
-
 
 
     private bool NotifyLoadedCalled = false;
 
-    /// <summary>
-    /// Calls <see cref="PostInit"/> and <see cref="Loading.SetResourceLoaded(GameResource)"/>. 
-    /// </summary>
-    public void Init()
+    public void Register()
     {
         lock (this)
         {
@@ -71,20 +103,10 @@ public abstract partial class GameResource(string key) : RefCounted
             {
                 NotifyLoadedCalled = true;
 
-                PostInit();
-
                 if (Key != null) Loading.SetResourceLoaded(this);
-
             }
         }
     }
-
-
-
-
-    [PartialDefaultReturn]
-    protected virtual partial void PostInit();
-
 
 
 
@@ -92,12 +114,5 @@ public abstract partial class GameResource(string key) : RefCounted
     {
         if (Key != null) Loading.SetResourceUnloaded(this);
     }
-
-
-
-
-
-
-
 
 }

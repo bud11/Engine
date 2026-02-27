@@ -14,20 +14,11 @@ using static Engine.Core.EngineMath;
 
 
 
-public class CollisionObject : AABBObject
+public partial class CollisionObject : AABBObject
 {
     protected override AABB BaseAABB => Shape.BaseAABB;
 
     public CollisionShape Shape;
-
-
-    
-    public void Init(CollisionShape shape, string Name = null, Matrix4x4 Transform = default)
-    {
-        Shape = shape;
-
-        base.Init(Name, Transform);
-    }
 
 
 }

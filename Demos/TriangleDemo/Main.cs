@@ -31,23 +31,42 @@ using Engine.Stripped;
 
 
 
+
+
+// -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+// To start, an application needs to partialy extend Entry.
+
+
+
 public static partial class Entry
 {
 
 
-    private static RenderingBackend.BackendVertexBufferAllocationReference TriangleVertPos;
-    private static UnmanagedKeyValueHandleCollectionOwner<string, RenderingBackend.VertexAttributeDefinitionPlusBufferClass> TriangleAttributes;
 
-    private const string ShaderName = "TriangleShader";
+    // -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 
-
-
+    // EngineInit allows you to control the settings the engine starts with. new() gives sane defaults.
 
 
     /// <summary>
     /// <inheritdoc cref="_EngineInitSummary"/>
     /// </summary>
     public static partial EngineSettings.EngineInitSettings EngineInit() => new();
+
+
+
+
+
+    // -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+    // We need a shader to draw the triangle. 
+    // Shaders are always written as full sets of stages.
+    // Shaders can only be registered in one of these two methods. See their summaries for more info.
+
+
+
+    private const string ShaderName = "TriangleShader";
 
 
 
@@ -59,21 +78,19 @@ public static partial class Entry
     public static partial void InitShaders()
     {
 
-        //First we need a shader to draw the triangle. This is a simple red NDC coordinate shader.
-        //Shaders are always written as full sets of stages.
-        //Shaders can only be registered in this one method - see the method summary for more info.
+        //This is a simple red NDC coordinate shader.
 
 
         ShaderCompilation.RegisterShader(
 
             ShaderName: ShaderName,
 
-            ResourceSets: [],
+            ResourceSets: null,
 
             Attributes: new()
             {
-                { "Position", new(Rendering.ShaderAttributeBufferFinalFormat.Vec2, ShaderCompilation.ShaderAttributeStageMask.VertexIn) },     //our float vector2 position input.
-                { "FinalColor", new(Rendering.ShaderAttributeBufferFinalFormat.Vec4, ShaderCompilation.ShaderAttributeStageMask.FragmentOut) }   //our final fragment output.
+                { "Position", new ShaderCompilation.ShaderAttributeDefinition(RenderingBackend.ShaderAttributeBufferFinalFormat.Vec2, ShaderCompilation.ShaderAttributeStageMask.VertexIn) },     //our float vector2 position input.
+                { "FinalColor", new ShaderCompilation.ShaderAttributeDefinition(RenderingBackend.ShaderAttributeBufferFinalFormat.Vec4, ShaderCompilation.ShaderAttributeStageMask.FragmentOut) }   //our final fragment output.
             },
 
             //here we can write direct glsl method bodies referencing the declared attributes and resources.
@@ -86,10 +103,30 @@ public static partial class Entry
         );
     }
 
+
+
+
+    /// <summary>
+    /// <inheritdoc cref="_InitDebugShadersSummary"/>
+    /// </summary>
+    public static partial void InitDebugShaders() { }
+
 #endif
 
 
 
+
+
+
+    // -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+    // Next up is creating a vertex buffer, and a collection to hold/interpret it.
+    
+
+
+
+    private static RenderingBackend.BackendVertexBufferAllocationReference TriangleVertPos;
+    private static UnmanagedKeyValueHandleCollectionOwner<string, RenderingBackend.VertexAttributeDefinitionPlusBufferClass> TriangleAttributes;
 
 
 
@@ -99,8 +136,6 @@ public static partial class Entry
     public static partial async Task Init()
     {
 
-        //Next up is creating vertex buffers. here we only need one, and a collection to hold it and define its usage.
-
         TriangleVertPos = RenderingBackend.BackendVertexBufferAllocationReference.Create(
              [
                 -0.5f, -0.5f,
@@ -109,9 +144,6 @@ public static partial class Entry
              ],
              writeable: false);
 
-
-
-        //If any buffer keys are missing or dont match in the context of later draw calls, thats okay, they'll either be ignored or internally filled in with dummy buffers that meet shader specifications at draw time.
 
         TriangleAttributes = new()
         {
@@ -124,10 +156,10 @@ public static partial class Entry
 
                     new(         //and this is how the GPU should interpret the buffer.
                             
-                        Rendering.VertexAttributeBufferComponentFormat.Float,
+                        RenderingBackend.VertexAttributeBufferComponentFormat.Float,
                         Stride: sizeof(float) * 2,
                         Offset: 0,
-                        Scope: Rendering.VertexAttributeScope.PerVertex
+                        Scope: RenderingBackend.VertexAttributeScope.PerVertex
                     )
                 )
 
@@ -138,6 +170,12 @@ public static partial class Entry
 
 
 
+    // -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+    // This is the main engine loop, which runs on the main logic thread.
+    // All threads can push rendering commands to the render thread for it to consume in the upcoming frame.
+
+
 
     /// <summary>
     /// <inheritdoc cref="_LoopSummary"/>
@@ -145,41 +183,35 @@ public static partial class Entry
     public static unsafe partial void Loop()
     {
 
-        //Heres the main engine loop, which runs on the logic thread, but can push rendering commands to the render thread to consume.
-        //In this case we just want to draw the triangle to screen, so all we need to do is this.
+        //In this case, we just want to draw the triangle to screen, so all we need to do is this.
+
+        //The Rendering class is a slight abstraction over RenderingBackend, and by default handles things like command deferral, fetching certain resources from caches, etc.
+        
+
+        Rendering.StartDrawToScreen();
 
 
-        Rendering.PushDeferredRenderThreadCommand(new StartDrawToScreenStruct());
-
-
-
-        Rendering.PushDeferredRenderThreadCommand(new SetScissorStruct(
-            default,
-            RenderingBackend.CurrentSwapchainDetails.Size
-        ));
+        
+        Rendering.SetScissor(new (0,0), RenderingBackend.CurrentSwapchainDetails.Size);   //The scissor state needs to be manually maintained.
 
 
 
-        Rendering.PushDeferredRenderThreadCommand(
+        Rendering.Draw(
+            Attributes: TriangleAttributes.GetUnderlyingCollection(),
+            ResourceSets: default,             
+            Shader: RenderingBackend.BackendShaderReference.Get(ShaderName),
 
-            new DrawStruct(
+            //the rasterization, blending and depth stencil structs already have sane new()s/defaults that we can use here.
+            Rasterization: new(),
+            Blending: new(),
+            DepthStencil: default,
 
-                attributeCollection: TriangleAttributes.GetUnderlyingCollection(),
-                resourceSetCollection: default,             //no resource sets needed here
-                shader: RenderingBackend.GetShader(ShaderName),
-
-                //the rasterization, blending and depth stencil structs already have sane defaults that we can use here.
-                rasterization: new(),
-                blending: new(),
-                depthStencil: default,
-
-                indexBuffer: null,      //no index buffer needed either here
-                drawRange: new(Start: 0, End: 3, BaseVertex: 0, InstanceCount: 1)
-            )
+            IndexBuffer: null,     
+            IndexingDetails: new(Start: 0, End: 3, BaseVertex: 0, InstanceCount: 1)
         );
 
 
-        Rendering.PushDeferredRenderThreadCommand(new EndDrawToScreenStruct());
+        Rendering.EndDrawToScreen();
 
 
     }

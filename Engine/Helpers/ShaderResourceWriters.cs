@@ -84,7 +84,7 @@ public static partial class ShaderResourceWriters
         /// <exception cref="Exception"></exception>
         public unsafe void PushWrite(void* dataPtr, uint size, uint offset, ReadOnlySpan<ContiguousRegion> regions = default)
         {
-            var dst = AllocateRenderTemporaryUnmanaged((int)size);
+            var dst = RenderThread.AllocateRenderTemporaryUnmanaged((int)size);
 
             if (regions.IsEmpty)
                 Unsafe.CopyBlockUnaligned(dst, (byte*)dataPtr, size);
@@ -250,8 +250,18 @@ public static partial class ShaderResourceWriters
                 PushWrite(Set.Metadata.Textures[name].Binding, resource);
             }
 
-            else if (resource is BackendUniformBufferAllocationReference) PushWrite(Set.Metadata.UniformBuffers[name].Binding, resource == null ? DummyUBO : resource);
-            else if (resource is BackendStorageBufferAllocationReference) PushWrite(Set.Metadata.StorageBuffers[name].Binding, resource == null ? DummySSBO : resource);
+            else if (resource is BackendUniformBufferAllocationReference)
+            {
+                var get = Set.Metadata.UniformBuffers[name];
+                PushWrite(get.Binding, resource ??GetDummyUBO(get.Metadata.SizeRequirement));
+            }
+
+            else if (resource is BackendStorageBufferAllocationReference)
+            {
+                var get = Set.Metadata.StorageBuffers[name];
+                PushWrite(get.Binding, resource ??GetDummySSBO(get.Metadata.SizeRequirement));
+            }
+
             else throw new Exception();
         }
 

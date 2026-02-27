@@ -11,14 +11,8 @@ using static Engine.Core.EngineMath;
 /// <summary>
 /// A <see cref="GameObject"/> with a global <see cref="AABB"/>. The AABB is cached where possible.
 /// </summary>
-public abstract class AABBObject : GameObject
+public abstract partial class AABBObject : GameObject
 {
-
-    public void Init(string Name = default, Transform transform = default)
-    {
-        base.Init(Name, transform);
-    }
-
 
 
 

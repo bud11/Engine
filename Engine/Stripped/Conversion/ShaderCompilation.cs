@@ -245,7 +245,7 @@ public static class ShaderCompilation
 #if ENGINE_BUILD_PASS
                 EngineBuildProcess.ShaderSources[CurrentBackend].Add(ShaderName, src);                
 #else
-                CreateShader(ShaderName, src);
+                BackendShaderReference.Create(ShaderName, src);
 #endif
 
             }
@@ -280,7 +280,7 @@ public static class ShaderCompilation
 #if ENGINE_BUILD_PASS
                 EngineBuildProcess.ComputeShaderSources[CurrentBackend].Add(ShaderName, src);                
 #else
-                CreateComputeShader(ShaderName, src);
+                BackendComputeShaderReference.Create(ShaderName, src);
 #endif
             }
         }

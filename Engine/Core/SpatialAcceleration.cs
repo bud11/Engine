@@ -256,7 +256,7 @@ public class BVH
 
     }
 
-
+/*
 
 #if DEBUG
 
@@ -269,8 +269,8 @@ public class BVH
 
         static void push(BVHNode node, List<byte> final)
         {
-            final.AddRange(Parsing.StructToBytes(node.Bounds.Min));
-            final.AddRange(Parsing.StructToBytes(node.Bounds.Max));
+            final.AddRange(Parsing.SerializeType(node.Bounds.Min));
+            final.AddRange(Parsing.SerializeType(node.Bounds.Max));
 
             final.AddRange(BitConverter.GetBytes(node.LeafIndexIfLeaf));
 
@@ -293,7 +293,7 @@ public class BVH
 
         static BVHNode read(BinaryReader src)
         {
-            var bounds = AABB.FromMinMax(src.ReadUnmanagedType<Vector3>(), src.ReadUnmanagedType<Vector3>());
+            var bounds = AABB.FromMinMax(src.DeserializeType<Vector3>(), src.DeserializeType<Vector3>());
 
             var idx = src.ReadUInt32();
 
@@ -311,6 +311,7 @@ public class BVH
         }
 
     }
+*/
 
 
 

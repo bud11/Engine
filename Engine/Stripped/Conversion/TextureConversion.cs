@@ -10,6 +10,7 @@ using System.Runtime.InteropServices;
 using TinyEXR;
 using static Engine.Core.EngineMath;
 using static Engine.Core.Rendering;
+using static Engine.Core.RenderingBackend;
 
 
 
@@ -39,7 +40,7 @@ public static class TextureConversion
     {
 
         // Check for sRGB chunk presence in PNG bytes
-        bool HasSrgbChunk(ReadOnlySpan<byte> data)
+        static bool HasSrgbChunk(ReadOnlySpan<byte> data)
         {
             int pos = 8; 
             while (pos + 8 < data.Length)
@@ -426,7 +427,7 @@ public static class TextureConversion
 
 
             await RunProcess.Run(
-                    EngineSettings.NVTT3Path,
+                    "NVTT3",
                     $""" "{texpathtemp}" --format {f.bcFormat.ToLower()} --output "{texpathtempOut}" --mip-filter box --export-transfer-function 2"""
                 );
 

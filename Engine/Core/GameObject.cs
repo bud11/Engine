@@ -5,9 +5,8 @@ namespace Engine.Core;
 
 
 using Engine.Attributes;
-using Engine.Core;
+using Engine.GameResources;
 using System.Collections.Immutable;
-using System.Diagnostics;
 using System.Numerics;
 using System.Runtime.InteropServices;
 
@@ -19,18 +18,30 @@ using static Engine.Core.EngineMath;
 
 
 /// <summary>
-/// An object with basic parameters within the game world heirarchy.
+/// An object within the game world/heirarchy.
+/// <br/> 
+/// <br/> <see cref="GameObject"/> types must be public and expose a parameterless constructor.
 /// <br/>
-/// <br/> GameObjects are required to implement a public, non-abstract, non-virtual, non-static, constructor-style method named Init, with any number of arguments and any kind of return type. 
-/// <br/> This Init method must also call its direct ancestor's Init. 
-/// <br/>
-/// <br/> GameObjects cannot implement any actual C# constructor arguments.
+/// <br/> To allow fields/properties to be set via data, see <see cref="BinarySerializableTypeAttribute"/> and <see cref="DataValueAttribute"/>.
 /// </summary>
-public partial class GameObject : Freeable
+public partial class GameObject : Freeable,
+    IBinarySerializeableOverride<uint>
 {
 
 
+    static object IBinarySerializeableOverride<uint>.Deserialize(uint reference, object context)
+        => ((SceneResource.SceneBinaryDeserializationContext)context).Objects[(int)reference];
 
+    object IBinarySerializeableOverride<uint>.Serialize(uint data, object context)
+        => throw new NotImplementedException();
+
+
+
+
+
+
+
+    [DataValue]
     /// <summary>
     /// The name of this object. <br/> <b>! ! ! Names are not automatically made unique in any context. ! ! ! </b> 
     /// </summary>
@@ -70,6 +81,10 @@ public partial class GameObject : Freeable
 
     private bool _toplevel = false;
 
+
+
+
+    [DataValue]
     /// <summary>
     /// Whether the object should inherit transforms from its ancestors or not. <br />
     /// When setting, the existing global transform of the object will be maintained.
@@ -129,6 +144,7 @@ public partial class GameObject : Freeable
     }
 
 
+    [DataValue]
     public Transform Transform
     {
         get => _transform;
@@ -238,7 +254,10 @@ public partial class GameObject : Freeable
 
     public bool IsSceneInstanceRoot;
 
+
+    [DataValue]
     public bool Visible = true;
+
 
 
 
@@ -251,7 +270,7 @@ public partial class GameObject : Freeable
         return check(this);
 
 
-        bool check(GameObject obj)
+        static bool check(GameObject obj)
         {
             if (obj.Parent != null) return obj.Visible && check(obj.Parent);
             return obj.Visible;
@@ -259,6 +278,9 @@ public partial class GameObject : Freeable
     }
 
 
+
+
+    [DataValue]
     public bool EnableCameraCulling = true;
 
     /// <summary>
@@ -270,7 +292,7 @@ public partial class GameObject : Freeable
         return check(this);
 
 
-        bool check(GameObject obj)
+        static bool check(GameObject obj)
         {
             if (obj.Parent != null) return obj.EnableCameraCulling && check(obj.Parent);
             return obj.EnableCameraCulling;
@@ -300,6 +322,8 @@ public partial class GameObject : Freeable
 
         for (int i1 = 0; i1 < array.Length; i1++)
             array[i1].Free();
+
+
 
     }
 
@@ -338,7 +362,7 @@ public partial class GameObject : Freeable
         if (includeself) list.Add(this);
         return list;
 
-        List<GameObject> getchildren(GameObject root)
+        static List<GameObject> getchildren(GameObject root)
         {
             var children = new List<GameObject>();
 
@@ -380,28 +404,6 @@ public partial class GameObject : Freeable
         return null;
     }
 
-
-
-    /// <summary>
-    /// Recursively finds all children within the group of a given name.
-    /// </summary>
-    /// <typeparam name="T"></typeparam>
-    /// <param name="groupName"></param>
-    /// <returns></returns>
-    public List<T> FindChildrenInGroupRecursive<T>(string groupName) where T : GameObject
-    {
-        List<T> final = new();
-
-        for (int i = 0; i < Children.Count; i++)
-        {
-            GameObject? child = Children[i];
-            if (ObjectIsInGroup(child, groupName) && child is T c) final.Add(c);
-
-            if (child.Children.Count != 0) final.AddRange(child.FindChildrenInGroupRecursive<T>(groupName));
-        }
-
-        return final;
-    }
 
 
 
@@ -471,38 +473,15 @@ public partial class GameObject : Freeable
 
 
     /// <summary>
-    /// The base initialization method for an object.
+    /// The base initialization method for an object. Must be called for the object to function correctly.
     /// </summary>
-
-    
-    public void Init(string Name = default, Matrix4x4 Transform = default)
+    public virtual void Init()
     {
-        this.Name = Name;
-        this.Transform = Transform == default ? EngineMath.Transform.Identity : Transform;
-
         AllGameObjects.Add(this);
 
         if (Name != null)
             NamedGameObjects.TryAdd(Name, this);
-
-
-        PostInit();
     }
-
-
-
-    /// <summary>
-    /// Runs at the end of <see cref="Init"/>.
-    /// </summary>
-
-    [PartialDefaultReturn]
-    protected virtual partial void PostInit();
-
-
-
-
-
-
 
 
 
@@ -512,98 +491,9 @@ public partial class GameObject : Freeable
     public static readonly List<GameObject> AllGameObjects = new();
 
     /// <summary>
-    /// Contains every <see cref="GameObject"/> with a name. <br/> <b>! ! ! Objects will replace each other if they have the same name. This is only reliably useful for objects you know have unique names. ! ! !</b>
+    /// Contains every <see cref="GameObject"/> with a name. <br/> <b>! ! ! Objects will replace each other if they have the same name. This is only reliably useful for objects with globally unique names. ! ! !</b>
     /// </summary>
     public static readonly Dictionary<string, GameObject> NamedGameObjects = new();
-
-    private static readonly Dictionary<string, HashSet<GameObject>> ObjectGroups = new();
-
-
-
-
-    /// <summary>
-    /// Adds this object to a global group and creates that group if it doesn't exist.
-    /// </summary>
-    /// <param name="obj"></param>
-    /// <param name="groupName"></param>
-    public static void AddToGroup(GameObject obj, string groupName)
-    {
-        if (obj.Valid)
-        {
-            if (!ObjectGroups.TryGetValue(groupName, out var v)) v = ObjectGroups[groupName] = new();
-
-            v.Add(obj);
-
-            CleanGroup(groupName);
-        }
-    }
-
-
-
-    /// <summary>
-    /// Removes this object from a global group if that group exists and that object is within it.
-    /// </summary>
-    /// <param name="obj"></param>
-    /// <param name="groupName"></param>
-    public static void RemoveFromGroup(GameObject obj, string groupName)
-    {
-        if (ObjectGroups.TryGetValue(groupName, out var v))
-        {
-            v.Remove(obj);
-
-            CleanGroup(groupName);
-        }
-    }
-
-
-    /// <summary>
-    /// Returns a hashset of objects within a group if that group exists, otherwise null.
-    /// </summary>
-    /// <param name="groupName"></param>
-    /// <returns></returns>
-    public static ImmutableArray<GameObject>? GetGroupObjects(string groupName)
-    {
-        CleanGroup(groupName);
-        if (ObjectGroups.TryGetValue(groupName, out var v)) return ImmutableArray.ToImmutableArray(v);
-        return null;
-    }
-
-
-    public static bool ObjectIsInGroup(GameObject obj, string groupName)
-        => ObjectGroups[groupName].Contains(obj);
-
-
-
-    /// <summary>
-    /// If a group exists, remove any stale/invalid objects, and remove the group entirely if empty.
-    /// </summary>
-    /// <param name="groupName"></param>
-    private static void CleanGroup(string groupName)
-    {
-        if (ObjectGroups.TryGetValue(groupName, out var v))
-        {
-            if (v.Count == 0)
-            {
-                ObjectGroups.Remove(groupName);
-                return;
-            }
-
-            TempGroup.Clear();
-
-            foreach (var obj in v)
-            {
-                if (obj != null && obj.Valid)
-                    TempGroup.Add(obj);
-            }
-
-            if (TempGroup.Count != 0) ObjectGroups[groupName] = TempGroup;
-            else ObjectGroups.Remove(groupName);
-        }
-    }
-
-    private static HashSet<GameObject> TempGroup = new();
-
-
 
 
 

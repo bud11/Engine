@@ -61,6 +61,12 @@ Then open some of the demo projects to get a fundamental grasp of the engine, or
 
 
 
+# Tools:
+
+A blender addon is avaliable here: https://github.com/bud11/Engine-Blender-Tools
+
+
+
 # Demo images
 
 This section will be further populated with more advanced demos as they become avaliable within the demos folder.

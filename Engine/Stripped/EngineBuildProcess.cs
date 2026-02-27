@@ -37,8 +37,13 @@ public static class EngineBuildProcess
 
 
 
-    private static async Task Main()
+    private static async Task Main(string[] args)
     {
+
+        var compressionQuality = int.Parse(args[0]);
+
+
+
 
 
         CleanAssetCache();
@@ -50,7 +55,7 @@ public static class EngineBuildProcess
 
 
 
-        Directory.CreateDirectory(EngineSettings.ReleaseRootAssetArchivePath);
+        Directory.CreateDirectory(Loading.ReleaseRootAssetArchivePath);
 
 
         foreach (var v in Enum.GetValues<RenderingBackendEnum>())
@@ -74,13 +79,13 @@ public static class EngineBuildProcess
         List<string> AssetArchiveNames = new();
 
 
-        if (Directory.Exists(EngineSettings.RootAssetDirectoryPath))
+        if (Directory.Exists(Loading.AssetRootDirectoryPath))
         {
 
             List<Task> archiveCompletionTasks = new();
 
 
-            foreach (var archiveAbsolutePath in Directory.GetDirectories(EngineSettings.RootAssetDirectoryPath))
+            foreach (var archiveAbsolutePath in Directory.GetDirectories(Loading.AssetRootDirectoryPath))
             {
 
 
@@ -118,7 +123,7 @@ public static class EngineBuildProcess
 
 
 
-                        var tempPath = Path.Combine(EngineSettings.ReleaseRootAssetArchivePath, archiveName + "_temp");
+                        var tempPath = Path.Combine(Loading.ReleaseRootAssetArchivePath, archiveName + "_temp");
 
                         uint actualFiles = 0;
 
@@ -161,7 +166,7 @@ public static class EngineBuildProcess
 
 
                                         Print($"File detected as {AssetFoundType.FullName}: {relativePath}");
-                                        rawBytes = await (await (Task<AssetByteStream>)typeof(Loading).GetMethod(nameof(GetFinalAssetBytes)).MakeGenericMethod(AssetFoundType).Invoke(null, [assetAbsolutePath])).GetArray();
+                                        rawBytes = await (await (Task<AssetByteStream>)typeof(Loading).GetMethod(nameof(GetFinalAssetBytes), [typeof(string)]).MakeGenericMethod(AssetFoundType).Invoke(null, [relativePath])).GetArray();
                                         Print($"File processed successfully: {relativePath}");
                                     }
                                     else
@@ -172,7 +177,7 @@ public static class EngineBuildProcess
                                     }
 
 
-                                    using var compressor = new Compressor(int.Clamp(EngineSettings.ReleaseZStdCompressionQuality, 1, 22));
+                                    using var compressor = new Compressor(int.Clamp(compressionQuality, 1, 22));
 
                                     return new AssetTaskData(Path.ChangeExtension(relativePath, null), AssetFoundType, compressor.Wrap(rawBytes).ToArray(), (uint)rawBytes.Length);
 
@@ -206,7 +211,7 @@ public static class EngineBuildProcess
 
                                     header.AddRange(BitConverter.GetBytes((ulong)currentOffset));
                                     header.AddRange(BitConverter.GetBytes((ulong)result.uncompressedLength));
-                                    header.AddRange(Parsing.GetUintLengthPrefixedUTF8StringAsBytes(result.path));
+                                    header.AddRange(Parsing.SerializeType(result.path, false));
                                     header.AddRange(BitConverter.GetBytes(Parsing.GetGameResourceTypeID(result.type)));
 
 
@@ -243,7 +248,7 @@ public static class EngineBuildProcess
 
 
 
-                        using (var outStream = new FileStream(Path.Combine(EngineSettings.ReleaseRootAssetArchivePath, archiveName), FileMode.Create, FileAccess.Write))
+                        using (var outStream = new FileStream(Path.Combine(Loading.ReleaseRootAssetArchivePath, archiveName), FileMode.Create, FileAccess.Write))
                         {
                             outStream.Write(BitConverter.GetBytes(actualFiles));
 

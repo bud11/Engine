@@ -75,76 +75,13 @@ public static partial class EngineSettings
         /// <summary>
         /// <inheritdoc cref="EngineSettings.LogicRateTarget"/>
         /// </summary>
-        public readonly ushort LogicRateTarget = 120;
+        public readonly ushort LogicRateTarget = 60;
 
         /// <summary>
         /// <inheritdoc cref="EngineSettings.RenderRateTarget"/>
         /// </summary>
-        public readonly ushort RenderRateTarget = 120;
+        public readonly ushort RenderRateTarget = 60;
     }
-
-
-
-
-
-
-    public static readonly string ReleaseRootAssetArchivePath =
-
-#if ENGINE_BUILD_PASS && IS_PUBLISH
-        Path.Combine(Directory.GetCurrentDirectory(), "publish");
-#else
-        Directory.GetCurrentDirectory();
-#endif
-
-
-
-
-
-
-#if DEBUG
-
-
-
-    /// <summary>
-    /// The path to the base asset folder.
-    /// <br/> Each immediate sub folder contained within will be compressed into its own separate archive. For example, if this directory contains two folders, One and Two, then release builds will feature two archives respectively named One and Two.
-    /// <br/> <b>This directory cannot directly contain assets.</b>
-    /// </summary>
-    public static readonly string RootAssetDirectoryPath = Path.GetFullPath("../../../../Assets");
-
-
-    /// <summary>
-    /// The directory used to cache final asset data that has undergone load-time conversion.
-    /// </summary>
-    public static readonly string AssetCachePath = Path.GetFullPath("../../../../AssetCache");
-
-
-
-
-    /// <summary>
-    /// The path pointing to Nvidia Texture Tools 3's nvtt_export.exe.
-    /// </summary>
-    public const string NVTT3Path = "C:\\Program Files\\NVIDIA Corporation\\NVIDIA Texture Tools\\nvtt_export.exe";
-
-
-
-
-    /// <summary>
-    /// The quality used to compress the asset directory. Ranges from 1 to 22. Set lower for faster to compress but less effective compression.
-    /// </summary>
-    public static readonly byte ReleaseZStdCompressionQuality =
-
-#if IS_PUBLISH
-        22
-#else
-        1
-#endif
-        ;
-
-
-
-#endif
-
 
 
 }

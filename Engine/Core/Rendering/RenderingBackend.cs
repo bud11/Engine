@@ -12,18 +12,20 @@ using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using static Comparisons;
 using static EngineMath;
-using static Rendering;
-using static RenderingBackend.DrawPipelineDetails;
 using static RenderingBackend.ResourceSetResourceDeclaration;
+using static RenderThread;
 
 
 
 
 /// <summary>
-/// Provides direct or near direct access to the rendering backend. Also see <seealso cref="Rendering"/> and/or <seealso cref="IDeferredCommand"/>
+/// Provides near direct immediate access to the rendering backend. Also see <seealso cref="Rendering"/> and/or <seealso cref="IDeferredCommand"/>
 /// </summary>
 public static partial class RenderingBackend
 {
+
+
+
 
 
 
@@ -36,6 +38,8 @@ public static partial class RenderingBackend
         => RenderingBackendData[Backend.ToString()].RequiredShaderFormat;
 
 
+
+
     public static void CreateBackend(RenderingBackendEnum Backend, nint sdlwindow)
     {
         var get = RenderingBackendData[Backend.ToString()];
@@ -43,8 +47,26 @@ public static partial class RenderingBackend
         RenderingBackend.Backend = get.Constructor.Invoke(sdlwindow);
         CurrentBackend = Backend;
 
-        RenderingInit();
+
+
+
+        CreateBasicObjects();
+
+
+#if RELEASE 
+        foreach (var kv in ShaderSources[RenderingBackendEnum.Vulkan])
+            Shaders[kv.Key] = new BackendShaderReference(kv.Value.Metadata, CreateShader(kv.Value));
+
+        foreach (var kv in ComputeShaderSources[RenderingBackendEnum.Vulkan])
+            ComputeShaders[kv.Key] = new BackendComputeShaderReference(kv.Value.Metadata, CreateComputeShader(kv.Value));
+#endif
+
+
+        ConfigureSwapchain(Window.GetWindowClientArea(), EngineSettings.HDR);
+
     }
+
+
 
 
 
@@ -79,29 +101,74 @@ public static partial class RenderingBackend
     private static Dictionary<ShaderMetadata.ShaderResourceSetMetadata, BackendResourceSetReference> DummyResourceSets = new();
 
 
-
     public static BackendTextureAndSamplerReferencesPair Dummy2DTextureSamplerPair { get; private set; }
     public static BackendTextureAndSamplerReferencesPair Dummy2DShadowTextureSamplerPair { get; private set; }
     public static BackendTextureAndSamplerReferencesPair DummyCubeTextureSamplerPair { get; private set; }
     public static BackendTextureAndSamplerReferencesPair Dummy3DTextureSamplerPair { get; private set; }
 
     public static BackendVertexBufferAllocationReference DummyVertex { get; private set; }
-    public static BackendUniformBufferAllocationReference DummyUBO { get; private set; }
-    public static BackendStorageBufferAllocationReference DummySSBO { get; private set; }
 
 
 
 
-    /// <summary>
-    /// Creates dummy resources (resource sets and pipelines need to be fully populated, so these are internally used in any empty slots found)
-    /// </summary>
-    public static unsafe void CreateDummyObjects()
+    private static SortedDictionary<uint, BackendUniformBufferAllocationReference> DummyUBOs = new();
+
+    public static BackendUniformBufferAllocationReference GetDummyUBO(uint sizeReq)
+    {
+        lock (DummyUBOs)
+        {
+            foreach (var kv in DummyUBOs)
+                if (kv.Value.Size >= sizeReq) 
+                    return kv.Value;
+
+
+            var ret = DummyUBOs[sizeReq] = BackendUniformBufferAllocationReference.Create(sizeReq, false);
+
+            return ret;
+        }
+    }
+
+
+    private static SortedDictionary<uint, BackendStorageBufferAllocationReference> DummySSBOs = new();
+
+    public static BackendStorageBufferAllocationReference GetDummySSBO(uint sizeReq)
+    {
+        lock (DummySSBOs)
+        {
+            foreach (var kv in DummySSBOs)
+                if (kv.Value.Size >= sizeReq)
+                    return kv.Value;
+
+
+            var ret = DummySSBOs[sizeReq] = BackendStorageBufferAllocationReference.Create(sizeReq, false);
+
+            return ret;
+        }
+    }
+
+
+    public static bool IsResourceDummy(IResourceSetResource res)
+    {
+        if (res == Dummy2DTextureSamplerPair) return true;
+        if (res == Dummy2DShadowTextureSamplerPair) return true;
+        if (res == Dummy3DTextureSamplerPair) return true;
+        if (res == DummyCubeTextureSamplerPair) return true;
+
+        if (DummyUBOs.Values.Contains(res)) return true;
+        if (DummySSBOs.Values.Contains(res)) return true;
+
+        return false;
+    }
+
+
+
+
+
+
+    public static unsafe void CreateBasicObjects()
     {
 
         DummyVertex = BackendVertexBufferAllocationReference.Create(1, false);
-
-        DummyUBO = BackendUniformBufferAllocationReference.Create(1, false);
-        DummySSBO = BackendStorageBufferAllocationReference.Create(1, false);
 
 
 
@@ -140,8 +207,14 @@ public static partial class RenderingBackend
             BackendTextureReference.Create(new Vector3<uint>(1), TextureTypes.Texture3D, TextureFormats.RGB8_UNORM, FramebufferAttachmentCompatible: false, Mips: [[255, 255, 255]]),
             BackendSamplerReference.Get(new(TextureWrapModes.Repeat, TextureFilters.Nearest, TextureFilters.Nearest, TextureFilters.Nearest, EnableDepthComparison: false)));
 
-
     }
+
+
+
+
+
+
+
 
 
 
@@ -204,14 +277,36 @@ public static partial class RenderingBackend
         public readonly bool Writeable;
 
 
-        public BackendBufferAllocationReference(uint size, bool writeable, object backendRef) : base(backendRef)
+        protected BackendBufferAllocationReference(uint size, bool writeable, object backendRef) : base(backendRef)
         {
             Size = size;
             Writeable = writeable;
 
-
             Logic.AppendPermanentEndOfFrameAction(() => WritesThisFrame = 0);
         }
+
+
+
+
+
+        private static unsafe void WriteToBuffer(BackendBufferAllocationReference buffer, ReadOnlySpan<WriteRange> writes, uint idx)
+        {
+            CheckOutsideOfRendering();
+            Backend.WriteToBuffer(buffer, writes, idx);
+        }
+
+
+        private static unsafe void AdvanceActiveBufferWrite(BackendBufferAllocationReference buffer, uint idx)
+        {
+            if (idx != 0) CheckDuringRendering();
+            Backend.AdvanceActiveBufferWrite(buffer, idx);
+        }
+
+
+
+
+
+
 
 
 
@@ -297,10 +392,9 @@ public static partial class RenderingBackend
         }
 
 
-
         protected override void OnFree()
         {
-            PushRenderThreadAction(() => { DestroyBuffer(this); return null; });
+            PushRenderThreadAction(() => { Backend.DestroyBuffer(this); return null; });
         }
 
     }
@@ -320,7 +414,7 @@ public static partial class RenderingBackend
             fixed (void* c = initialcontent)
             {
                 var size = (uint)(initialcontent.Length * sizeof(T));
-                var obj = CreateVertexBuffer(size, writeable, c);
+                var obj = Backend.CreateVertexBuffer(size, writeable, c);
 
                 return new(size, writeable, obj);
             }
@@ -328,7 +422,7 @@ public static partial class RenderingBackend
 
         public static BackendVertexBufferAllocationReference Create(uint length, bool writeable)
         {
-            var obj = CreateVertexBuffer(length, writeable, (void*)0);
+            var obj = Backend.CreateVertexBuffer(length, writeable, (void*)0);
             return new(length, writeable, obj);
         }
 
@@ -347,7 +441,7 @@ public static partial class RenderingBackend
             fixed (void* c = initialcontent)
             {
                 var size = (uint)(initialcontent.Length * sizeof(uint));
-                var obj = CreateIndexBuffer(size, writeable, c);
+                var obj = Backend.CreateIndexBuffer(size, writeable, c);
 
                 return new(size, writeable, obj);
             }
@@ -355,7 +449,7 @@ public static partial class RenderingBackend
         }
         public static BackendIndexBufferAllocationReference Create(uint length, bool writeable)
         {
-            var obj = CreateIndexBuffer(length, writeable, (void*)0);
+            var obj = Backend.CreateIndexBuffer(length, writeable, (void*)0);
             return new(length, writeable, obj);
         }
     }
@@ -427,8 +521,8 @@ public static partial class RenderingBackend
         }
 
 
-        private static object create(uint length, bool writeable, void* initialcontent) 
-            => CreateUniformBuffer(length, writeable, initialcontent);
+        private static object create(uint length, bool writeable, void* initialcontent)
+            => Backend.CreateUniformBuffer(length, writeable, initialcontent);
 
     }
 
@@ -475,7 +569,7 @@ public static partial class RenderingBackend
         }
 
         private static object create(uint length, bool writeable, void* initialcontent)
-            => CreateStorageBuffer(length, writeable, initialcontent);
+            => Backend.CreateStorageBuffer(length, writeable, initialcontent);
 
     }
 
@@ -513,7 +607,7 @@ public static partial class RenderingBackend
 
 
 
-        public BackendResourceSetReference(ShaderMetadata.ShaderResourceSetMetadata metadata, object backendResource) : base(backendResource)
+        private BackendResourceSetReference(ShaderMetadata.ShaderResourceSetMetadata metadata, object backendResource) : base(backendResource)
         {
             Metadata = metadata;
             Contents = new IResourceSetResource[metadata.UniformBuffers.Count + metadata.StorageBuffers.Count + metadata.Textures.Count];
@@ -521,6 +615,23 @@ public static partial class RenderingBackend
 
             Logic.AppendPermanentEndOfFrameAction(() => WritesThisFrame = 0);
         }
+
+
+
+
+        private static void WriteToResourceSet(BackendResourceSetReference set, ReadOnlySpan<ResourceSetResourceBind> contents, uint idx)
+        {
+            CheckOutsideOfRendering();
+            Backend.WriteToResourceSet(set, contents, idx);
+        }
+
+
+        private static void AdvanceActiveResourceSetWrite(BackendResourceSetReference set, uint idx)
+        {
+            if (idx != 0) CheckDuringRendering();
+            Backend.AdvanceActiveResourceSetWrite(set, idx);
+        }
+
 
 
 
@@ -618,6 +729,13 @@ public static partial class RenderingBackend
 
 
 
+        /// <summary>
+        /// <inheritdoc cref="CreateFromMetadata(ShaderMetadata.ShaderResourceSetMetadata, string[], Dictionary{string, IResourceSetResource})"/>
+        /// </summary>
+        public static BackendResourceSetReference CreateFromMetadata(BackendShaderReference Shader, string SetName, string[] createInitialBuffers = null, Dictionary<string, IResourceSetResource> setInitial = null)
+            => CreateFromMetadata(Shader.Metadata.ResourceSets[SetName].Metadata, createInitialBuffers, setInitial);
+
+
 
         /// <summary>
         /// Creates a <see cref="BackendResourceSetReference"/> according to <paramref name="Metadata"/>'s spec.
@@ -629,7 +747,7 @@ public static partial class RenderingBackend
         /// <exception cref="Exception"></exception>
         public static BackendResourceSetReference CreateFromMetadata(ShaderMetadata.ShaderResourceSetMetadata Metadata, string[] createInitialBuffers = null, Dictionary<string, IResourceSetResource> setInitial = null)
         {
-            var inst = new BackendResourceSetReference(Metadata, CreateResourceSet(Metadata.Declaration.AsSpan()));
+            var inst = new BackendResourceSetReference(Metadata, Backend.CreateResourceSet(Metadata.Declaration.AsSpan()));
 
 
             var setWriteHandle = inst.StartWrite(true);
@@ -659,11 +777,11 @@ public static partial class RenderingBackend
 
 
             foreach (var v in Metadata.UniformBuffers)
-                setWriteHandle.PushWrite(v.Value.Binding, createInitialBuffers != null && createInitialBuffers.Contains(v.Key) ? BackendUniformBufferAllocationReference.CreateFromMetadata(v.Value.Metadata, true) : DummyUBO);
+                setWriteHandle.PushWrite(v.Value.Binding, createInitialBuffers != null && createInitialBuffers.Contains(v.Key) ? BackendUniformBufferAllocationReference.CreateFromMetadata(v.Value.Metadata, true) : GetDummyUBO(v.Value.Metadata.SizeRequirement));
 
 
             foreach (var v in Metadata.StorageBuffers)
-                setWriteHandle.PushWrite(v.Value.Binding, createInitialBuffers != null && createInitialBuffers.Contains(v.Key) ? BackendStorageBufferAllocationReference.CreateFromMetadata(v.Value.Metadata, true) : DummySSBO);
+                setWriteHandle.PushWrite(v.Value.Binding, createInitialBuffers != null && createInitialBuffers.Contains(v.Key) ? BackendStorageBufferAllocationReference.CreateFromMetadata(v.Value.Metadata, true) : GetDummySSBO(v.Value.Metadata.SizeRequirement));
 
 
             if (setInitial != null)
@@ -687,7 +805,7 @@ public static partial class RenderingBackend
 
         protected override void OnFree()
         {
-            PushRenderThreadAction(() => { DestroyResourceSet(this); return null; });
+            PushRenderThreadAction(() => { Backend.DestroyResourceSet(this); return null; });
         }
 
 
@@ -763,11 +881,6 @@ public static partial class RenderingBackend
 
 
 
-
-
-
-
-
     }
 
 
@@ -804,41 +917,139 @@ public static partial class RenderingBackend
             Dimensions = dimensions;
             TextureType = type;
             TextureFormat = textureFormat;
-            MipCount=mipCount;
+            MipCount = mipCount;
         }
 
 
-        public static BackendTextureReference Create(Vector3<uint> Dimensions, TextureTypes Type, TextureFormats Format, bool FramebufferAttachmentCompatible, byte[][] Mips = default)
+
+
+
+        public static BackendTextureReference Create(Vector3<uint> dimensions, TextureTypes type, TextureFormats format, bool FramebufferAttachmentCompatible, byte[][] Mips = null)
         {
+
 #if DEBUG
-            if (Type == TextureTypes.TextureCubeMap && Dimensions.X != Dimensions.Y) throw new Exception();
+            if (type == TextureTypes.TextureCubeMap && dimensions.X != dimensions.Y) throw new Exception();
 #endif
 
-            return new(CreateTexture(Dimensions, Type, Format, FramebufferAttachmentCompatible, Mips), Dimensions, Type, Format, Mips == null ? 1 : (uint)Mips.Length);
+
+            if (Mips != default)
+            {
+                ulong totalSize = 0;
+                byte[][] convertedMips = new byte[Mips.Length][];
+                ulong[] mipOffsets = new ulong[Mips.Length];
+
+                for (byte mip = 0; mip < Mips.Length; mip++)
+                {
+                    byte[] mipData = Mips[mip];
+
+                    if (format == TextureFormats.RGB8_UNORM)
+                        mipData = ConvertRGB8ToRGBA8(mipData, uint.Max(1, dimensions.X >> mip), uint.Max(1, dimensions.Y >> mip));
+                    else if (format == TextureFormats.RGB16_SFLOAT)
+                        mipData = ConvertRGB16ToRGBA16(mipData, uint.Max(1, dimensions.X >> mip), uint.Max(1, dimensions.Y >> mip));
+
+                    convertedMips[mip] = mipData;
+
+                    mipOffsets[mip] = totalSize;
+                    totalSize += (ulong)mipData.Length;
+                }
+
+                Mips = convertedMips;
+            }
+
+
+            format = format switch
+            {
+                TextureFormats.RGB8_UNORM => TextureFormats.RGBA8_UNORM,
+                TextureFormats.RGB16_SFLOAT => TextureFormats.RGBA16_SFLOAT,
+                _ => format
+            };
+
+
+
+            return new BackendTextureReference(Backend.CreateTexture(dimensions, type, format, FramebufferAttachmentCompatible, Mips), dimensions, type, format, Mips == null ? 1 : (uint)Mips.Length);
+
+
+
+
+            static byte[] ConvertRGB8ToRGBA8(byte[] rgbData, uint width, uint height, byte alpha = 255)
+            {
+                uint pixelCount = width * height;
+                byte[] rgbaData = new byte[pixelCount * 4];
+                int rgbIndex = 0;
+                int rgbaIndex = 0;
+                for (int i = 0; i < pixelCount; i++)
+                {
+                    rgbaData[rgbaIndex++] = rgbData[rgbIndex++];
+                    rgbaData[rgbaIndex++] = rgbData[rgbIndex++];
+                    rgbaData[rgbaIndex++] = rgbData[rgbIndex++];
+                    rgbaData[rgbaIndex++] = alpha;
+                }
+                return rgbaData;
+            }
+
+            static byte[] ConvertRGB16ToRGBA16(byte[] rgbData, uint width, uint height, ushort alpha = 65535)
+            {
+                uint pixelCount = width * height;
+                byte[] rgbaData = new byte[pixelCount * 8];
+                int rgbIndex = 0;
+                int rgbaIndex = 0;
+                byte alphaLow = (byte)(alpha & 0xFF);
+                byte alphaHigh = (byte)(alpha >> 8);
+                for (int i = 0; i < pixelCount; i++)
+                {
+                    rgbaData[rgbaIndex++] = rgbData[rgbIndex++];
+                    rgbaData[rgbaIndex++] = rgbData[rgbIndex++];
+                    rgbaData[rgbaIndex++] = rgbData[rgbIndex++];
+                    rgbaData[rgbaIndex++] = rgbData[rgbIndex++];
+                    rgbaData[rgbaIndex++] = rgbData[rgbIndex++];
+                    rgbaData[rgbaIndex++] = rgbData[rgbIndex++];
+                    rgbaData[rgbaIndex++] = alphaLow;
+                    rgbaData[rgbaIndex++] = alphaHigh;
+                }
+                return rgbaData;
+            }
         }
 
+
+
+
+        public void GenerateMipmaps() 
+            => Backend.GenerateMipmaps(this);
 
 
 
         protected override void OnFree()
         {
-            PushRenderThreadAction(() => { DestroyTexture(this); return null; });
+            PushRenderThreadAction(() => { Backend.DestroyTexture(this); return null; });
         }
 
     }
 
 
 
-    public class BackendSamplerReference(object backendRef) : BackendReference(backendRef)
+
+
+    public class BackendSamplerReference : BackendReference
     {
+        public readonly SamplerDetails Details;
+
+        private BackendSamplerReference(SamplerDetails details, object backendRef) : base(backendRef)
+        {
+            Details = details;
+        }
+
         protected override void OnFree()
         {
-            PushRenderThreadAction(() => { DestroyTextureSampler(this); return null; });
+            PushRenderThreadAction(() => { Backend.DestroyTextureSampler(this); return null; });
         }
 
 
+
+
+        private static Dictionary<SamplerDetails, BackendSamplerReference> SamplerCache = CreateUnsafeStructKeyComparisonDictionary<SamplerDetails, BackendSamplerReference>();
+
         /// <summary>
-        /// Fetches and/or creates a sampler of the required spec from the global backend sampler cache.
+        /// Fetches or creates a <see cref="BackendSamplerReference"/> from the cache, according to a given specification.
         /// </summary>
         /// <param name="spec"></param>
         /// <returns></returns>
@@ -850,7 +1061,7 @@ public static partial class RenderingBackend
                 if (!SamplerCache.TryGetValue(spec, out var get))
                 {
                     //creation
-                    get = new BackendSamplerReference(CreateTextureSampler(spec));
+                    get = new BackendSamplerReference(spec, Backend.CreateTextureSampler(spec));
                     SamplerCache.Add(spec, get);
 
 
@@ -870,10 +1081,19 @@ public static partial class RenderingBackend
 
 
 
-    public class BackendTextureAndSamplerReferencesPair(BackendTextureReference texture, BackendSamplerReference sampler) : RefCounted, IResourceSetResource
+    public class BackendTextureAndSamplerReferencesPair : RefCounted, IResourceSetResource
     {
-        public readonly BackendTextureReference Texture = texture;
-        public readonly BackendSamplerReference Sampler = sampler;
+        public readonly BackendTextureReference Texture;
+        public readonly BackendSamplerReference Sampler;
+
+        public BackendTextureAndSamplerReferencesPair(BackendTextureReference texture, BackendSamplerReference sampler)
+        {
+            Texture = texture;
+            Sampler = sampler;
+
+            texture.AddUser();
+            sampler.AddUser();
+        }
 
         protected override void OnFree()
         {
@@ -881,6 +1101,7 @@ public static partial class RenderingBackend
             Sampler.RemoveUser();
         }
     }
+
 
 
     public class BackendTextureAndSamplerReferencesPairsArray(BackendTextureAndSamplerReferencesPair[] array) : RefCounted, IResourceSetResource
@@ -900,130 +1121,126 @@ public static partial class RenderingBackend
 
 
 
+    private static RefCountCollections.RefCountedDictionary<string, BackendShaderReference> Shaders = new();
+    private static RefCountCollections.RefCountedDictionary<string, BackendComputeShaderReference> ComputeShaders = new();
 
 
-#if DEBUG
 
-
-
-    /// <summary>
-    /// Actually uploads a shader to the gpu under a given name in order to be later fetched via <see cref="GetShader(string)"/>. Will replace and free an existing shader of the same name if found.
-    /// </summary>
-    /// <param name="name"></param>
-    /// <param name="src"></param>
-    public static void CreateShader(string name, ShaderSource src)
+    public class BackendShaderReference : BackendReference
     {
-        var shader = new BackendShaderReference(src.Metadata, CreateShader(src));
+        public readonly ShaderMetadata Metadata;
 
-        lock (Shaders)
-            Shaders.AddRefCountedReference(name, shader);
+        /// <summary>
+        /// Contains dummy resource sets with dummy resource assignments which this shader can use.
+        /// </summary>
+        public readonly ImmutableArray<BackendResourceSetReference> DefaultResourceSets;
 
-    }
-
-    /// <summary>
-    /// Actually uploads a shader to the gpu under a given name in order to be later fetched via <see cref="GetShader(string)"/>. Will replace and free an existing shader of the same name if found.
-    /// </summary>
-    /// <param name="name"></param>
-    /// <param name="src"></param>
-    public static void CreateComputeShader(string name, ComputeShaderSource src)
-    {
-        var shader = new BackendComputeShaderReference(src.Metadata, CreateComputeShader(src));
-
-
-        lock (ComputeShaders)
-            ComputeShaders.AddRefCountedReference(name, shader);
-
-
-    }
-
-#endif
-
-
-
-
-#if RELEASE
-
-    public static void CreateShaders()
-    {
-        foreach (var kv in ShaderSources[RenderingBackendEnum.Vulkan])
-            Shaders[kv.Key] = new BackendShaderReference(kv.Value.Metadata, CreateShader(kv.Value));
-
-        foreach (var kv in ComputeShaderSources[RenderingBackendEnum.Vulkan])
-            ComputeShaders[kv.Key] = new BackendComputeShaderReference(kv.Value.Metadata, CreateComputeShader(kv.Value));
-    }
-
-#endif
-
-
-
-
-
-
-    /// <summary>
-    /// Fetches a precompiled shader <see cref="BackendShaderReference"/> from the backend. 
-    /// </summary>
-    /// <param name="name"></param>
-    /// <returns></returns>
-    /// <exception cref="Exception"></exception>
-    public static BackendShaderReference GetShader(string name)
-    {
-
-#if DEBUG
-        lock (Shaders)
-#endif
-            return Shaders[name];
-
-    }
-
-
-
-    /// <summary>
-    /// Fetches a precompiled compute shader <see cref="BackendComputeShaderReference"/> from the backend. 
-    /// </summary>
-    /// <param name="name"></param>
-    /// <returns></returns>
-    /// <exception cref="Exception"></exception>
-    public static BackendComputeShaderReference GetComputeShader(string name)
-    {
-
-#if DEBUG
-        lock (ComputeShaders)
-#endif
-            return ComputeShaders[name];
-
-    }
-
-
-
-
-
-
-
-
-    public class BackendShaderReference(ShaderMetadata metadata, object backendRef) : BackendReference(backendRef)
-    {
-        public readonly ShaderMetadata Metadata = metadata;
-
-        public readonly ImmutableArray<BackendResourceSetReference> DefaultResourceSets = CreateDefaultResourceSets(metadata.ResourceSets);
+        private BackendShaderReference(ShaderMetadata metadata, object backendRef) : base(backendRef)
+        {
+            Metadata = metadata;
+            DefaultResourceSets = CreateDefaultResourceSets(metadata.ResourceSets);
+        }
 
         protected override void OnFree()
         {
-            PushRenderThreadAction(() => { DestroyShader(this); return null; });
+            PushRenderThreadAction(() => { Backend.DestroyShader(this); return null; });
         }
+
+
+
+#if DEBUG
+        /// <summary>
+        /// Debug only development-time method which compiles and uploads a shader under a given name, such that it can be fetched in future via <see cref="Get"/>.
+        /// </summary>
+        /// <param name="name"></param>
+        /// <param name="src"></param>
+        public static void Create(string name, ShaderSource src)
+        {
+            var shader = new BackendShaderReference(src.Metadata, Backend.CreateShader(src));
+
+            lock (Shaders)
+                Shaders[name] = shader;
+        }
+#endif
+
+
+        /// <summary>
+        /// Fetches a preexisting precompiled <see cref="BackendShaderReference"/>. 
+        /// </summary>
+        /// <param name="name"></param>
+        /// <returns></returns>
+        /// <exception cref="Exception"></exception>
+        public static BackendShaderReference Get(string name)
+        {
+#if DEBUG
+            lock (Shaders)
+#endif
+                return Shaders[name];
+
+        }
+
     }
 
 
-    public class BackendComputeShaderReference(ComputeShaderMetadata metadata, object backendRef) : BackendReference(backendRef)
-    {
-        public readonly ComputeShaderMetadata Metadata = metadata;
 
-        public readonly ImmutableArray<BackendResourceSetReference> DefaultResourceSets = CreateDefaultResourceSets(metadata.ResourceSets);
+
+
+
+    public class BackendComputeShaderReference : BackendReference
+    {
+        public readonly ComputeShaderMetadata Metadata;
+
+        public readonly ImmutableArray<BackendResourceSetReference> DefaultResourceSets;
+
+        private BackendComputeShaderReference(ComputeShaderMetadata metadata, object backendRef) : base(backendRef)
+        {
+            Metadata= metadata;
+            DefaultResourceSets= CreateDefaultResourceSets(metadata.ResourceSets);
+        }
 
         protected override void OnFree()
         {
-            PushRenderThreadAction(() => { DestroyComputeShader(this); return null; });
+            PushRenderThreadAction(() => { Backend.DestroyComputeShader(this); return null; });
         }
+
+
+
+
+
+#if DEBUG
+        /// <summary>
+        /// Debug only development-time method which compiles and uploads a shader under a given name, such that it can be fetched in future via <see cref="Get"/>.
+        /// </summary>
+        /// <param name="name"></param>
+        /// <param name="src"></param>
+        public static void Create(string name, ComputeShaderSource src)
+        {
+            var shader = new BackendComputeShaderReference(src.Metadata, Backend.CreateComputeShader(src));
+
+            lock (ComputeShaders)
+                ComputeShaders[name] = shader;
+        }
+#endif
+
+
+        /// <summary>
+        /// Fetches a preexisting precompiled <see cref="BackendComputeShaderReference"/>. 
+        /// </summary>
+        /// <param name="name"></param>
+        /// <returns></returns>
+        /// <exception cref="Exception"></exception>
+        public static BackendComputeShaderReference Get(string name)
+        {
+#if DEBUG
+            lock (ComputeShaders)
+#endif
+                return ComputeShaders[name];
+
+        }
+
     }
+
+
 
 
 
@@ -1197,16 +1414,58 @@ public static partial class RenderingBackend
 
 
 
-    public class BackendDrawPipelineReference(object backendRef, DrawPipelineDetails details) : BackendReference(backendRef)
+    public class BackendDrawPipelineReference : BackendReference
     {
-        public readonly DrawPipelineDetails Details = details;
+        public readonly DrawPipelineDetails Details;
+
+        private BackendDrawPipelineReference(object backendRef, DrawPipelineDetails details) : base(backendRef)
+        {
+            Details = details;
+        }
 
         protected override void OnFree()
         {
-            PushRenderThreadAction(() => { DestroyDrawPipeline(this); return null; });
+            PushRenderThreadAction(() => { Backend.DestroyDrawPipeline(this); return null; });
         }
 
 
+
+
+
+        private static Dictionary<DrawPipelineDetails, BackendDrawPipelineReference> DrawPipelineCache = CreateUnsafeStructKeyComparisonDictionary<DrawPipelineDetails, BackendDrawPipelineReference>();
+
+        /// <summary>
+        /// Fetches or creates a <see cref="BackendDrawPipelineReference"/> from the cache, according to a given specification.
+        /// </summary>
+        /// <param name="spec"></param>
+        /// <returns></returns>
+        public static BackendDrawPipelineReference Get(DrawPipelineDetails spec)
+        {
+            lock (DrawPipelineCache)
+            {
+                if (!DrawPipelineCache.TryGetValue(spec, out var get))
+                {
+                    get = new BackendDrawPipelineReference(Backend.CreateDrawPipeline(spec), spec);
+
+                    GCHandle<BackendShaderReference>.FromIntPtr(spec.ShaderHandle).Target.OnFreeEvent.Add(get.Free);
+
+                    get.OnFreeEvent.Add(() =>
+                    {
+                        lock (DrawPipelineCache)
+                            DrawPipelineCache.Remove(spec);
+                    });
+
+
+                    if (CurrentBackendRenderProgress != BackendRenderProgress.DrawingToScreen)
+                        ActiveFramebufferPipeline.OnFreeEvent.Add(get.Free);
+
+
+                    DrawPipelineCache.Add(spec, get);
+                }
+
+                return get;
+            }
+        }
     }
 
 
@@ -1435,321 +1694,95 @@ public static partial class RenderingBackend
 
 
 
-
-
-
-
-
-
-
-
-    public ref struct FrameBufferPipelineStateOperator
+    public class BackendFrameBufferPipelineReference : BackendReference
     {
-        private readonly BackendFrameBufferPipelineReference Ref;
-        private readonly LogicalFrameBuffer FBO;
+        public readonly FrameBufferPipelineDetails Details;
 
-        private readonly byte StageCount;
-
-        private byte Stage;
-
-
-        public FrameBufferPipelineStateOperator(LogicalFrameBuffer fbo, BackendFrameBufferPipelineReference obj)
+        private BackendFrameBufferPipelineReference(object backendRef, FrameBufferPipelineDetails details) : base(backendRef)
         {
-            Ref = obj;
-            FBO = fbo;
-
-            StageCount = Ref.Details.StageCount;
-
-            PushDeferredRenderThreadCommand(new BeginSt(fbo.GetGenericGCHandle(), obj.GetGenericGCHandle()));
+            Details = details;
         }
-
-
-        /// <summary>
-        /// Advances the underlying pipeline to the next stage, or ends it if there are no more stages.
-        /// </summary>
-        /// <exception cref="Exception"></exception>
-        public unsafe void Advance()
-        {
-            if (Stage < StageCount - 1)
-            {
-                PushDeferredRenderThreadCommand(
-                    new AdvanceSt(FBO.GetGenericGCHandle(), Ref.GetGenericGCHandle(), Stage)
-                );
-            }
-            else
-            {
-                PushDeferredRenderThreadCommand(
-                    new EndSt(FBO.GetGenericGCHandle())
-                );
-            }
-
-            Stage++;
-        }
-
-
-        private unsafe readonly record struct BeginSt(GCHandle<LogicalFrameBuffer> fbo, GCHandle<BackendFrameBufferPipelineReference> pipeline) : IDeferredCommand
-        {
-            public static unsafe void Execute(void* self)
-            {
-                var ptr = (BeginSt*)self;
-                BeginFrameBufferPipeline(ptr->fbo.Target, ptr->pipeline.Target);
-            }
-        }
-
-        private unsafe readonly record struct AdvanceSt(GCHandle<LogicalFrameBuffer> fbo, GCHandle<BackendFrameBufferPipelineReference> pipeline, byte stage) : IDeferredCommand
-        {
-            public static unsafe void Execute(void* self)
-            {
-                var ptr = (AdvanceSt*)self;
-                AdvanceFrameBufferPipeline(ptr->fbo.Target, ptr->pipeline.Target, ptr->stage);
-            }
-        }
-
-
-        private unsafe readonly record struct EndSt(GCHandle<LogicalFrameBuffer> fbo) : IDeferredCommand
-        {
-            public static unsafe void Execute(void* self)
-            {
-                var ptr = (EndSt*)self;
-                EndFrameBufferPipeline(ptr->fbo.Target);
-            }
-        }
-
-
-    }
-
-
-
-
-
-    /// <summary>
-    /// Starts a pipeline generated from <paramref name="stages"/>, using <paramref name="framebuffer"/>.
-    /// <br /> There cannot be more than 8 stages in <paramref name="stages"/>.
-    /// <br /> Excess or erroneous stage details will be safely ignored, for example requesting a depth stencil clear when <paramref name="framebuffer"/> has no depth stencil attachment.
-    /// </summary>
-    /// <param name="framebuffer"></param>
-    /// <param name="stages"></param>
-    /// <returns></returns>
-    /// <exception cref="Exception"></exception>
-    public static unsafe FrameBufferPipelineStateOperator StartFrameBufferPipeline(LogicalFrameBuffer framebuffer, ReadOnlySpan<FrameBufferPipelineStage> stages)
-    {
-
-#if DEBUG
-        if (stages.Length > 8 || stages.Length == 0) throw new Exception();
-#endif
-
-
-        var details = new FrameBufferPipelineDetails()
-        {
-            ColorAttachmentCount = (byte)framebuffer.ColorAttachments.Length,
-            HasDepthStencil = framebuffer.DepthStencil != null,
-        };
-
-
-        fixed (FrameBufferPipelineStage* p = stages)
-            Unsafe.CopyBlockUnaligned(&details.Stages, p, (uint)sizeof(FrameBufferPipelineDetails.InlineStageArray));
-
-
-
-        details.StageCount = (byte)stages.Length;
-
-
-        for (int i = 0; i < framebuffer.ColorAttachments.Length; i++)
-            details.ColorFormats[i] = (byte)framebuffer.ColorAttachments[i].TextureFormat;
-
-
-
-
-        lock (FrameBufferPipelineCache)
-        {
-            if (!FrameBufferPipelineCache.TryGetValue(details, out var get))
-            {
-                get = new BackendFrameBufferPipelineReference(CreateFrameBufferPipeline(details), details);
-
-                var d = details;
-                FrameBufferPipelineCache.Add(d, get);
-                get.OnFreeEvent.Add(() =>
-                {
-                    lock (FrameBufferPipelineCache)
-                        FrameBufferPipelineCache.Remove(d);
-                });
-            }
-
-
-
-            if (framebuffer.GetFramebuffer(get) == null)
-            {
-                bool depthUsed = false;
-                bool stencilUsed = false;
-                int specifiedColorAttachments = 0;
-
-                for (int i = 0; i < stages.Length; i++)
-                {
-                    var st = stages[i];
-
-                    if (st.SpecifiedColorAttachments != 0)
-                    {
-                        int highest = 31 - BitOperations.LeadingZeroCount(st.SpecifiedColorAttachments);
-                        specifiedColorAttachments = Math.Max(specifiedColorAttachments, highest + 1);
-                    }
-
-
-                    depthUsed = depthUsed || st.SpecifiedDepth;
-                    stencilUsed = stencilUsed || st.SpecifiedStencil;
-
-                }
-
-
-                framebuffer.AddFramebuffer(get, new BackendFrameBufferObjectReference(Backend.CreateFrameBufferObject(framebuffer.ColorAttachments.AsSpan()[..int.Min(framebuffer.ColorAttachments.Length, specifiedColorAttachments)], depthUsed ? framebuffer.DepthStencil : null, get, framebuffer.Dimensions)));
-            }
-
-
-            return new FrameBufferPipelineStateOperator(framebuffer, get);
-        }
-
-    }
-
-
-
-
-
-
-
-    public class BackendFrameBufferPipelineReference(object backendRef, FrameBufferPipelineDetails details) : BackendReference(backendRef)
-    {
-        public readonly FrameBufferPipelineDetails Details = details;
 
         protected override void OnFree()
         {   
-            PushRenderThreadAction(() => { DestroyFrameBufferPipeline(this); return null; });
+            PushRenderThreadAction(() => { Backend.DestroyFrameBufferPipeline(this); return null; });
         }
-    }
 
 
 
 
 
+        private static Dictionary<FrameBufferPipelineDetails, BackendFrameBufferPipelineReference> FrameBufferPipelineCache = CreateUnsafeStructKeyComparisonDictionary<FrameBufferPipelineDetails, BackendFrameBufferPipelineReference>();
 
-
-    public class BackendFrameBufferObjectReference(object backendRef) : BackendReference(backendRef)
-    {
-        protected override void OnFree()
+        /// <summary>
+        /// Fetches or creates a <see cref="BackendFrameBufferPipelineReference"/> from the cache, according to a given specification.
+        /// </summary>
+        /// <param name="spec"></param>
+        /// <returns></returns>
+        public static BackendFrameBufferPipelineReference Get(FrameBufferPipelineDetails spec)
         {
-            PushRenderThreadAction(() => { DestroyFrameBufferObject(this); return null; });
+            lock (FrameBufferPipelineCache)
+            {
+                if (!FrameBufferPipelineCache.TryGetValue(spec, out var get))
+                {
+                    get = new BackendFrameBufferPipelineReference(Backend.CreateFrameBufferPipeline(spec), spec);
+
+                    var d = spec;
+                    FrameBufferPipelineCache.Add(d, get);
+                    get.OnFreeEvent.Add(() =>
+                    {
+                        lock (FrameBufferPipelineCache)
+                            FrameBufferPipelineCache.Remove(d);
+                    });
+                }
+
+                return get;
+            }
         }
     }
 
 
 
-    /// <summary>
-    /// A collection of attachments to render to.
-    /// <br /> Internally, this creates and manages multiple <see cref="BackendFrameBufferObjectReference"/>s on demand to allow usage of any <see cref="BackendFrameBufferPipelineReference"/>.
-    /// </summary>
-    public class LogicalFrameBuffer : Freeable
+
+
+    public class BackendFrameBufferObjectReference : BackendReference
     {
 
         public readonly ImmutableArray<BackendTextureReference> ColorAttachments;
-        public readonly BackendTextureReference DepthStencil;
+        public readonly BackendTextureReference DepthStencilAttachment;
+        public readonly BackendFrameBufferPipelineReference Pipeline;
 
         public readonly Vector2<uint> Dimensions;
 
-        public readonly TextureTypes Type;
+        private BackendFrameBufferObjectReference(ImmutableArray<BackendTextureReference> colorAttachments,
 
+                                                       BackendTextureReference depthstencil,
 
-        private readonly Dictionary<BackendFrameBufferPipelineReference, BackendFrameBufferObjectReference> Framebuffers = new(); 
+                                                       BackendFrameBufferPipelineReference pipeline,
 
-
-        public void AddFramebuffer(BackendFrameBufferPipelineReference renderpass, BackendFrameBufferObjectReference fbo)
-        {
-            renderpass.AddUser();
-            fbo.AddUser();
-
-            if (!Framebuffers.TryAdd(renderpass, fbo)) throw new Exception();
-        }
-
-
-        public void RemoveFramebuffer(BackendFrameBufferPipelineReference renderpass)
-        {
-            if (!Framebuffers.TryGetValue(renderpass, out var fbo))
-                throw new Exception();
-
-            Framebuffers.Remove(renderpass);
-
-            renderpass.RemoveUser();
-
-            fbo.RemoveUser();
-        }
-
-        public BackendFrameBufferObjectReference GetFramebuffer(BackendFrameBufferPipelineReference renderpass)
-        {
-            if (!Framebuffers.TryGetValue(renderpass, out var get)) return null;
-
-            return get;
-        }
-
-
-
-
-
-
-        private LogicalFrameBuffer(ImmutableArray<BackendTextureReference> colorAttachments, BackendTextureReference depthstencil, Vector2<uint> dimensions, TextureTypes type)
+                                                       Vector2<uint> dimensions,
+                                                       
+                                                       object backendRef) : base(backendRef)
         {
             ColorAttachments = colorAttachments;
-            DepthStencil = depthstencil;
+            DepthStencilAttachment = depthstencil;
+            Pipeline = pipeline;
             Dimensions = dimensions;
-            Type= type;
+        }
+
+
+        public static unsafe BackendFrameBufferObjectReference Create(ReadOnlySpan<BackendTextureReference> colorTargets, BackendTextureReference depthStencilTarget, BackendFrameBufferPipelineReference pipeline, Vector2<uint> dimensions)
+        {
+            return new BackendFrameBufferObjectReference(colorTargets.ToImmutableArray(), depthStencilTarget, pipeline, dimensions, Backend.CreateFrameBufferObject(colorTargets, depthStencilTarget, pipeline, dimensions));
         }
 
 
 
         protected override void OnFree()
         {
-            foreach (var kv in Framebuffers)
-            {
-                kv.Key.Free();
-                kv.Value.Free();
-            }
-
-            for (int i = 0; i < ColorAttachments.Length; i++)
-                ColorAttachments[i]?.Free();
-
-
-            DepthStencil?.Free();
-
+            PushRenderThreadAction(() => { Backend.DestroyFrameBufferObject(this); return null; });
         }
-
-
-
-        public static unsafe LogicalFrameBuffer Create(ReadOnlySpan<BackendTextureReference> colorTargets, BackendTextureReference depthStencilTarget)
-        {
-
-#if DEBUG
-            var chk = colorTargets.ToArray().ToList();
-            if (depthStencilTarget != null) chk.Add(depthStencilTarget);
-
-            if (chk.Count == 0)
-                throw new Exception("no attachments given");
-
-            foreach (var k in chk)
-            {
-                if ((!k.Valid) || k.Dimensions != chk[0].Dimensions)
-                    throw new Exception("attachment sizes dont match");
-            }
-#endif
-
-
-            //at least one color attachment or a depth stencil target needs to be given
-            var onecommon = colorTargets.Length != 0 ? colorTargets[0] : depthStencilTarget;
-
-            return new LogicalFrameBuffer(ImmutableArray.Create(colorTargets), depthStencilTarget, new Vector2<uint>(onecommon.Dimensions.X, onecommon.Dimensions.Y), onecommon.TextureType);
-        }
-
-
-
     }
-
-
-
 
 
 
@@ -1769,12 +1802,10 @@ public static partial class RenderingBackend
 
 
 
+    public static BackendFrameBufferObjectReference ActiveFrameBufferObject { get; private set; }
+    public static BackendFrameBufferPipelineReference ActiveFramebufferPipeline { get; private set; }
+    public static uint ActiveFrameBufferPipelineStage { get; private set; }
 
-
-
-    private static BackendFrameBufferPipelineReference ActiveFramebufferPipeline;
-    private static uint ActiveFrameBufferPipelineStage;
-    private static LogicalFrameBuffer ActiveFrameBuffer;
 
 
 
@@ -1793,7 +1824,7 @@ public static partial class RenderingBackend
     /// <summary>
     /// Describes the current state of the render thread's rendering execution.
     /// </summary>
-    public enum BackendRenderProgress
+    private enum BackendRenderProgress
     {
         /// <summary>
         /// No rendering is happening whatsoever. That isn't to say the render thread is guaranteed to be doing absolutely nothing, but it isn't actively rendering a frame.
@@ -1818,22 +1849,13 @@ public static partial class RenderingBackend
 
 
 
-    public static BackendRenderProgress CurrentBackendRenderProgress { get; private set; }
+    private static BackendRenderProgress CurrentBackendRenderProgress;
 
 
 
 
 
 
-
-
-    private static Dictionary<DrawPipelineDetails, BackendDrawPipelineReference> DrawPipelineCache = CreateUnsafeStructKeyComparisonDictionary<DrawPipelineDetails, BackendDrawPipelineReference>();
-    private static Dictionary<SamplerDetails, BackendSamplerReference> SamplerCache = CreateUnsafeStructKeyComparisonDictionary<SamplerDetails, BackendSamplerReference>();
-    private static Dictionary<FrameBufferPipelineDetails, BackendFrameBufferPipelineReference> FrameBufferPipelineCache = CreateUnsafeStructKeyComparisonDictionary<FrameBufferPipelineDetails, BackendFrameBufferPipelineReference>();
-
-
-    private static Dictionary<string, BackendShaderReference> Shaders = new();
-    private static Dictionary<string, BackendComputeShaderReference> ComputeShaders = new();
 
 
 
@@ -1868,402 +1890,9 @@ public static partial class RenderingBackend
 
 
 
-    // ================================================================
-    // ======================= DATA / RESOURCE MANAGEMENT ============
-    // ================================================================
 
 
 
-    // ---------------- Buffers ----------------
-
-
-    /// <summary>
-    /// <inheritdoc cref="_callonanythread"/>
-    /// </summary>
-    /// <param name="length"></param>
-    /// <param name="writeable"></param>
-    /// <param name="initialContent"></param>
-    /// <returns></returns>
-    public static unsafe object CreateVertexBuffer(uint length, bool writeable, void* initialContent)
-    {
-        return Backend.CreateVertexBuffer(length, writeable, initialContent);
-    }
-
-    /// <summary>
-    /// <inheritdoc cref="_callonanythread"/>
-    /// </summary>
-    /// <param name="length"></param>
-    /// <param name="writeable"></param>
-    /// <param name="initialContent"></param>
-    /// <returns></returns>
-    public static unsafe object CreateIndexBuffer(uint length, bool writeable, void* initialContent)
-    {
-        return Backend.CreateIndexBuffer(length, writeable, initialContent);
-    }
-
-    /// <summary>
-    /// <inheritdoc cref="_callonanythread"/>
-    /// </summary>
-    /// <param name="length"></param>
-    /// <param name="writeable"></param>
-    /// <param name="initialContent"></param>
-    /// <returns></returns>
-    public static unsafe object CreateUniformBuffer(uint length, bool writeable, void* initialContent)
-    {
-        return Backend.CreateUniformBuffer(length, writeable, initialContent);
-    }
-
-
-    /// <summary>
-    /// <inheritdoc cref="_callonanythread"/>
-    /// </summary>
-    /// <param name="length"></param>
-    /// <param name="writeable"></param>
-    /// <param name="initialContent"></param>
-    /// <returns></returns>
-    public static unsafe object CreateStorageBuffer(uint length, bool writeable, void* initialContent)
-    {
-        return Backend.CreateStorageBuffer(length, writeable, initialContent);
-    }
-
-
-    /// <summary>
-    /// <inheritdoc cref="_callonanythreadoutsideofrendering"/>
-    /// </summary>
-    /// <param name="buffer"></param>
-    /// <param name="writes"></param>
-    public static unsafe void WriteToBuffer(BackendBufferAllocationReference buffer, ReadOnlySpan<WriteRange> writes, uint idx)
-    {
-        CheckOutsideOfRendering();
-        Backend.WriteToBuffer(buffer, writes, idx);
-    }
-
-
-    /// <summary>
-    /// Advances/commits writes pushed prior via <see cref="WriteToBuffer(BackendBufferAllocationReference, ReadOnlySpan{WriteRange}, uint)"/>.
-    /// <inheritdoc cref="_callonrenderthread"/>
-    /// </summary>
-    /// <param name="buffer"></param>
-    /// <param name="writes"></param>
-    public static unsafe void AdvanceActiveBufferWrite(BackendBufferAllocationReference buffer, uint idx)
-    {
-        if (idx != 0) CheckDuringRendering();
-        Backend.AdvanceActiveBufferWrite(buffer, idx);
-    }
-
-
-
-    /// <summary>
-    /// <inheritdoc cref="_callonanythreadoutsideofrendering"/>
-    /// </summary>
-    /// <param name="buffer"></param>
-    public static void DestroyBuffer(BackendBufferAllocationReference buffer)
-    {
-        CheckOutsideOfRendering();
-        Backend.DestroyBuffer(buffer);
-    }
-
-
-
-
-
-    // ---------------- Resource Sets ----------------
-
-    /// <summary>
-    /// <inheritdoc cref="_callonanythread"/>
-    /// </summary>
-    /// <param name="definition"></param>
-    /// <returns></returns>
-    public static object CreateResourceSet(ReadOnlySpan<ResourceSetResourceDeclaration> definition)
-    {
-        return Backend.CreateResourceSet(definition);
-    }
-
-    /// <summary>
-    /// <inheritdoc cref="_callonanythreadoutsideofrendering"/>
-    /// </summary>
-    /// <param name="set"></param>
-    /// <param name="contents"></param>
-    public static void WriteToResourceSet(BackendResourceSetReference set, ReadOnlySpan<ResourceSetResourceBind> contents, uint idx)
-    {
-        CheckOutsideOfRendering();
-        Backend.WriteToResourceSet(set, contents, idx);
-    }
-
-
-    /// <summary>
-    /// Advances/commits writes pushed prior via <see cref="WriteToResourceSet(BackendResourceSetReference, ReadOnlySpan{ResourceSetResourceBind}, uint)"/>.
-    /// <inheritdoc cref="_callonrenderthread"/>
-    /// </summary>
-    /// <param name="set"></param>
-    /// <param name="contents"></param>
-    public static void AdvanceActiveResourceSetWrite(BackendResourceSetReference set, uint idx)
-    {
-        if (idx != 0) CheckDuringRendering();
-        Backend.AdvanceActiveResourceSetWrite(set, idx);
-    }
-
-
-
-
-    /// <summary>
-    /// <inheritdoc cref="_callonanythreadoutsideofrendering"/>
-    /// </summary>
-    /// <param name="set"></param>
-    public static void DestroyResourceSet(BackendResourceSetReference set)
-    {
-        CheckOutsideOfRendering();
-        Backend.DestroyResourceSet(set);
-    }
-
-
-
-
-
-    // ---------------- Textures ----------------
-
-    /// <summary>
-    /// <inheritdoc cref="_callonanythread"/>
-    /// </summary>
-    /// <param name="Dimensions"></param>
-    /// <param name="type"></param>
-    /// <param name="format"></param>
-    /// <param name="FramebufferAttachmentCompatible"></param>
-    /// <param name="texturemips"></param>
-    /// <returns></returns>
-    public static object CreateTexture(Vector3<uint> Dimensions, TextureTypes type, TextureFormats format, bool FramebufferAttachmentCompatible, byte[][] texturemips = default)
-    {
-
-
-        if (texturemips != default)
-        {
-            ulong totalSize = 0;
-            byte[][] convertedMips = new byte[texturemips.Length][];
-            ulong[] mipOffsets = new ulong[texturemips.Length];
-
-            for (byte mip = 0; mip < texturemips.Length; mip++)
-            {
-                byte[] mipData = texturemips[mip];
-
-                if (format == TextureFormats.RGB8_UNORM)
-                    mipData = ConvertRGB8ToRGBA8(mipData, uint.Max(1, Dimensions.X >> mip), uint.Max(1, Dimensions.Y >> mip));
-                else if (format == TextureFormats.RGB16_SFLOAT)
-                    mipData = ConvertRGB16ToRGBA16(mipData, uint.Max(1, Dimensions.X >> mip), uint.Max(1, Dimensions.Y >> mip));
-
-                convertedMips[mip] = mipData;
-
-                mipOffsets[mip] = totalSize;
-                totalSize += (ulong)mipData.Length;
-            }
-
-            texturemips = convertedMips;
-        }
-
-
-        format = format switch
-        {
-            TextureFormats.RGB8_UNORM => TextureFormats.RGBA8_UNORM,
-            TextureFormats.RGB16_SFLOAT => TextureFormats.RGBA16_SFLOAT,
-            _ => format
-        };
-
-        return Backend.CreateTexture(Dimensions, type, format, FramebufferAttachmentCompatible, texturemips);
-
-        static byte[] ConvertRGB8ToRGBA8(byte[] rgbData, uint width, uint height, byte alpha = 255)
-        {
-            uint pixelCount = width * height;
-            byte[] rgbaData = new byte[pixelCount * 4];
-            int rgbIndex = 0;
-            int rgbaIndex = 0;
-            for (int i = 0; i < pixelCount; i++)
-            {
-                rgbaData[rgbaIndex++] = rgbData[rgbIndex++];
-                rgbaData[rgbaIndex++] = rgbData[rgbIndex++];
-                rgbaData[rgbaIndex++] = rgbData[rgbIndex++];
-                rgbaData[rgbaIndex++] = alpha;
-            }
-            return rgbaData;
-        }
-
-        static byte[] ConvertRGB16ToRGBA16(byte[] rgbData, uint width, uint height, ushort alpha = 65535)
-        {
-            uint pixelCount = width * height;
-            byte[] rgbaData = new byte[pixelCount * 8];
-            int rgbIndex = 0;
-            int rgbaIndex = 0;
-            byte alphaLow = (byte)(alpha & 0xFF);
-            byte alphaHigh = (byte)(alpha >> 8);
-            for (int i = 0; i < pixelCount; i++)
-            {
-                rgbaData[rgbaIndex++] = rgbData[rgbIndex++];
-                rgbaData[rgbaIndex++] = rgbData[rgbIndex++];
-                rgbaData[rgbaIndex++] = rgbData[rgbIndex++];
-                rgbaData[rgbaIndex++] = rgbData[rgbIndex++];
-                rgbaData[rgbaIndex++] = rgbData[rgbIndex++];
-                rgbaData[rgbaIndex++] = rgbData[rgbIndex++];
-                rgbaData[rgbaIndex++] = alphaLow;
-                rgbaData[rgbaIndex++] = alphaHigh;
-            }
-            return rgbaData;
-        }
-    }
-
-
-    /// <summary>
-    /// <inheritdoc cref="_callonanythreadoutsideofrendering"/>
-    /// </summary>
-    /// <param name="texture"></param>
-    public static void GenerateMipmaps(BackendTextureReference texture)
-    {
-        CheckOutsideOfRendering();
-        Backend.GenerateMipmaps(texture);
-    }
-
-    /// <summary>
-    /// <inheritdoc cref="_callonanythreadoutsideofrendering"/>
-    /// </summary>
-    /// <param name="tex"></param>
-    /// <param name="level"></param>
-    /// <param name="offsetX"></param>
-    /// <param name="offsetY"></param>
-    /// <param name="offsetZ"></param>
-    /// <param name="sizeX"></param>
-    /// <param name="sizeY"></param>
-    /// <param name="sizeZ"></param>
-    /// <returns></returns>
-    public static ReadOnlySpan<byte> ReadTexturePixels(BackendTextureReference tex, uint level, Vector3<uint> offset, Vector3<uint> size)
-    {
-        CheckOutsideOfRendering();
-        return Backend.ReadTexturePixels(tex, level, offset, size);
-    }
-
-    /// <summary>
-    /// <inheritdoc cref="_callonanythreadoutsideofrendering"/>
-    /// </summary>
-    /// <param name="tex"></param>
-    /// <param name="level"></param>
-    /// <param name="offsetX"></param>
-    /// <param name="offsetY"></param>
-    /// <param name="offsetZ"></param>
-    /// <param name="sizeX"></param>
-    /// <param name="sizeY"></param>
-    /// <param name="sizeZ"></param>
-    /// <param name="content"></param>
-    public static void WriteTexturePixels(BackendTextureReference tex, uint level, Vector3<uint> offset, Vector3<uint> size, ReadOnlySpan<byte> content)
-    {
-        CheckOutsideOfRendering();
-        Backend.WriteTexturePixels(tex, level, offset, size, content);
-    }
-
-    /// <summary>
-    /// <inheritdoc cref="_callonanythreadoutsideofrendering"/>
-    /// </summary>
-    /// <param name="texture"></param>
-    public static void DestroyTexture(BackendTextureReference texture)
-    {
-        CheckOutsideOfRendering();
-        Backend.DestroyTexture(texture);
-    }
-
-    /// <summary>
-    /// <inheritdoc cref="_callonanythread"/>
-    /// </summary>
-    /// <param name="details"></param>
-    /// <returns></returns>
-    public static object CreateTextureSampler(SamplerDetails details)
-    {
-        return Backend.CreateTextureSampler(details);
-    }
-
-    /// <summary>
-    /// <inheritdoc cref="_callonanythreadoutsideofrendering"/>
-    /// </summary>
-    /// <param name="texture"></param>
-    public static void DestroyTextureSampler(BackendSamplerReference texture)
-    {
-        CheckOutsideOfRendering();
-        Backend.DestroyTextureSampler(texture);
-    }
-
-
-
-
-
-    // ---------------- FrameBuffer Objects ----------------
-
-    /// <summary>
-    /// <inheritdoc cref="_callonanythread"/>
-    /// </summary>
-    /// <param name="colorTargets"></param>
-    /// <param name="depthStencilTarget"></param>
-    /// <param name="pipeline"></param>
-    /// <param name="resolutionX"></param>
-    /// <param name="resolutionY"></param>
-    /// <returns></returns>
-    public static unsafe object CreateFrameBufferObject(ReadOnlySpan<BackendTextureReference> colorTargets, BackendTextureReference depthStencilTarget, BackendFrameBufferPipelineReference pipeline, Vector2<uint> dimensions)
-    {
-        return Backend.CreateFrameBufferObject(colorTargets, depthStencilTarget, pipeline, dimensions);
-    }
-
-    /// <summary>
-    /// <inheritdoc cref="_callonanythreadoutsideofrendering"/>
-    /// </summary>
-    /// <param name="buffer"></param>
-    public static void DestroyFrameBufferObject(BackendFrameBufferObjectReference buffer)
-    {
-        CheckOutsideOfRendering();
-        Backend.DestroyFrameBufferObject(buffer);
-    }
-
-
-
-
-
-
-    // ---------------- Shaders / Compute ----------------
-
-    /// <summary>
-    /// <inheritdoc cref="_callonanythread"/>
-    /// </summary>
-    /// <param name="ShaderSource"></param>
-    /// <returns></returns>
-    public static object CreateShader(ShaderSource ShaderSource)
-    {
-        return Backend.CreateShader(ShaderSource);
-    }
-
-    /// <summary>
-    /// <inheritdoc cref="_callonanythreadoutsideofrendering"/>
-    /// </summary>
-    /// <param name="shader"></param>
-    public static void DestroyShader(BackendShaderReference shader)
-    {
-        CheckOutsideOfRendering();
-        Backend.DestroyShader(shader);
-    }
-
-    /// <summary>
-    /// <inheritdoc cref="_callonanythread"/>
-    /// </summary>
-    /// <param name="ShaderSource"></param>
-    /// <returns></returns>
-    public static object CreateComputeShader(ComputeShaderSource ShaderSource)
-    {
-        return Backend.CreateComputeShader(ShaderSource);
-    }
-
-    /// <summary>
-    /// <inheritdoc cref="_callonanythreadoutsideofrendering"/>
-    /// </summary>
-    /// <param name="shader"></param>
-    /// <param name="groupCountX"></param>
-    /// <param name="groupCountY"></param>
-    /// <param name="groupCountZ"></param>
-    public static void DispatchComputeShader(BackendComputeShaderReference shader, uint groupCountX, uint groupCountY, uint groupCountZ)
-    {
-        CheckOutsideOfRendering();
-        Backend.DispatchComputeShader(shader, groupCountX, groupCountY, groupCountZ);
-    }
 
     /// <summary>
     /// <inheritdoc cref="_callonanythreadoutsideofrendering"/>
@@ -2274,60 +1903,6 @@ public static partial class RenderingBackend
         Backend.WaitForAllComputeShaders();
     }
 
-    /// <summary>
-    /// <inheritdoc cref="_callonanythreadoutsideofrendering"/>
-    /// </summary>
-    /// <param name="shader"></param>
-    public static void DestroyComputeShader(BackendComputeShaderReference shader)
-    {
-        CheckOutsideOfRendering();
-        Backend.DestroyComputeShader(shader);
-    }
-
-
-
-
-    // ---------------- Pipelines ----------------
-
-    /// <summary>
-    /// <inheritdoc cref="_callonanythread"/>
-    /// </summary>
-    /// <param name="details"></param>
-    /// <returns></returns>
-    public static object CreateDrawPipeline(DrawPipelineDetails details)
-    {
-        return Backend.CreateDrawPipeline(details);
-    }
-
-    /// <summary>
-    /// <inheritdoc cref="_callonanythreadoutsideofrendering"/>
-    /// </summary>
-    /// <param name="pipeline"></param>
-    public static void DestroyDrawPipeline(BackendDrawPipelineReference pipeline)
-    {
-        CheckOutsideOfRendering();
-        Backend.DestroyDrawPipeline(pipeline);
-    }
-
-    /// <summary>
-    /// <inheritdoc cref="_callonanythread"/>
-    /// </summary>
-    /// <param name="details"></param>
-    /// <returns></returns>
-    public static object CreateFrameBufferPipeline(FrameBufferPipelineDetails details)
-    {
-        return Backend.CreateFrameBufferPipeline(details);
-    }
-
-    /// <summary>
-    /// <inheritdoc cref="_callonanythreadoutsideofrendering"/>
-    /// </summary>
-    /// <param name="backendRenderPassReference"></param>
-    public static void DestroyFrameBufferPipeline(BackendFrameBufferPipelineReference backendRenderPassReference)
-    {
-        CheckOutsideOfRendering();
-        Backend.DestroyFrameBufferPipeline(backendRenderPassReference);
-    }
 
 
 
@@ -2386,21 +1961,17 @@ public static partial class RenderingBackend
         CurrentBackendRenderProgress = BackendRenderProgress.Downtime;
     }
 
+
     /// <summary>
     /// <inheritdoc cref="_callonrenderthread"/>
     /// </summary>
     public static void EndFrameRendering()
     {
         CheckDuringRendering();
-
-#if DEBUG
-        if (CurrentBackendRenderProgress != BackendRenderProgress.Downtime) 
-            throw new Exception();
-#endif
-
         Backend.EndFrameRendering();
         CurrentBackendRenderProgress = BackendRenderProgress.NotRendering;
     }
+
 
 
 
@@ -2412,7 +1983,7 @@ public static partial class RenderingBackend
     /// </summary>
     /// <param name="fbo"></param>
     /// <param name="pipeline"></param>
-    public static void BeginFrameBufferPipeline(LogicalFrameBuffer fbo, BackendFrameBufferPipelineReference pipeline)
+    public static void BeginFrameBufferPipeline(BackendFrameBufferObjectReference fbo, BackendFrameBufferPipelineReference pipeline)
     {
         CheckDuringRendering();
 
@@ -2422,7 +1993,7 @@ public static partial class RenderingBackend
 #endif
 
         ActiveFramebufferPipeline = pipeline;
-        ActiveFrameBuffer = fbo;
+        ActiveFrameBufferObject = fbo;
         ActiveFrameBufferPipelineStage = 0;
         CurrentBackendRenderProgress = BackendRenderProgress.DrawingViaFramebufferPipeline;
         Backend.BeginFrameBufferPipeline(fbo, pipeline);
@@ -2436,7 +2007,7 @@ public static partial class RenderingBackend
     /// <param name="fbo"></param>
     /// <param name="pipeline"></param>
     /// <param name="stageIndex"></param>
-    public static void AdvanceFrameBufferPipeline(LogicalFrameBuffer fbo, BackendFrameBufferPipelineReference pipeline, byte stageIndex)
+    public static void AdvanceFrameBufferPipeline(BackendFrameBufferObjectReference fbo, BackendFrameBufferPipelineReference pipeline, byte stageIndex)
     {
         CheckDuringRendering();
         ActiveFrameBufferPipelineStage++;
@@ -2447,8 +2018,8 @@ public static partial class RenderingBackend
     /// <summary>
     /// <inheritdoc cref="_callonrenderthread"/>
     /// </summary>
-    /// <param name="Framebuffer"></param>
-    public static void EndFrameBufferPipeline(LogicalFrameBuffer Framebuffer)
+    /// <param name="fbo"></param>
+    public static void EndFrameBufferPipeline(BackendFrameBufferObjectReference fbo)
     {
 #if DEBUG
         if (CurrentBackendRenderProgress != BackendRenderProgress.DrawingViaFramebufferPipeline)
@@ -2456,9 +2027,9 @@ public static partial class RenderingBackend
 #endif
 
         CheckDuringRendering();
-        Backend.EndFrameBufferPipeline(Framebuffer);
+        Backend.EndFrameBufferPipeline(fbo);
         ActiveFramebufferPipeline = null;
-        ActiveFrameBuffer = null;
+        ActiveFrameBufferObject = null;
         ActiveFrameBufferPipelineStage = 0;
         CurrentBackendRenderProgress = BackendRenderProgress.Downtime;
     }
@@ -2486,214 +2057,7 @@ public static partial class RenderingBackend
     }
 
 
-    public static unsafe void Draw(
 
-
-        ref UnmanagedKeyValueHandleCollection<string, VertexAttributeDefinitionPlusBufferClass> Attributes,
-        ref UnmanagedKeyValueHandleCollection<string, BackendResourceSetReference> ResourceSets,
-        BackendShaderReference Shader,
-
-        ref RasterizationDetails Rasterization,
-        ref BlendState Blending,
-        ref DepthStencilState DepthStencil,
-
-        BackendIndexBufferAllocationReference IndexBuffer,
-        ref IndexingDetails IndexingDetails
-
-        )
-
-    {
-
-        CheckDuringRendering();
-
-
-
-        if (IndexingDetails.End == IndexingDetails.Start) return;
-
-
-#if DEBUG
-        if (IndexingDetails.End < IndexingDetails.Start) 
-            throw new Exception();
-#endif
-
-
-
-
-
-
-#if DEBUG
-        if (ActiveFramebufferPipeline == null && CurrentBackendRenderProgress != BackendRenderProgress.DrawingToScreen)
-            throw new Exception("no active framebuffer pipeline");  
-#endif
-
-
-
-
-
-
-        Span<VertexAttributeDefinitionPlusBufferStruct> attrs = stackalloc VertexAttributeDefinitionPlusBufferStruct[Shader.Metadata.VertexInputAttributes.Count];
-
-
-
-        PipelineAttributeDetails layoutdetails = new();
-        byte count = 0;
-
-        foreach (var kv in Shader.Metadata.VertexInputAttributes)
-        {
-            var ShaderAttributeLocation = kv.Value.Location;
-            var ShaderDataFormat = kv.Value.Metadata.Format;
-
-            var buf = Attributes[kv.Key];
-
-
-
-
-            if (buf.IsAllocated)
-            {
-                var val = buf.Target;
-
-
-#if DEBUG
-                //if (val.Definition.Stride % 4 != 0) 
-                //    throw new Exception("Strides must be power of 4");       some kind of checking needs to happen here for compatibility, but Im not sure what to enforce yet.
-#endif
-
-
-                layoutdetails.Attributes[count] = new PipelineAttributeDetails.PipelineAttributeSpec(location: ShaderAttributeLocation,
-                                                                                                     sourceFormat: val.Definition.ComponentFormat,
-                                                                                                     finalFormat: ShaderDataFormat,
-                                                                                                     stride: val.Definition.Stride,
-                                                                                                     offset: val.Definition.Offset,
-                                                                                                     scope: val.Definition.Scope);
-
-
-                attrs[count] = new VertexAttributeDefinitionPlusBufferStruct(val.Buffer.GetGenericGCHandle(), val.Definition);
-            }
-
-            else
-            {
-                // dummy filler
-                layoutdetails.Attributes[count] = new PipelineAttributeDetails.PipelineAttributeSpec(location: ShaderAttributeLocation,
-                                                                                                     sourceFormat: VertexAttributeBufferComponentFormat.Byte,
-                                                                                                     finalFormat: ShaderDataFormat,
-                                                                                                     stride: 0,
-                                                                                                     offset: 0,
-                                                                                                     scope: VertexAttributeScope.PerVertex);
-
-                attrs[count] = new VertexAttributeDefinitionPlusBufferStruct(DummyVertex.GetGenericGCHandle(), new());
-            }
-
-
-
-
-            count++;
-        }
-
-        layoutdetails.AttributeCount = count;
-
-
-
-
-
-
-        Span<GCHandle<BackendResourceSetReference>> sets = stackalloc GCHandle<BackendResourceSetReference>[Shader.Metadata.ResourceSets.Count];
-
-        foreach (var kv in Shader.Metadata.ResourceSets)
-        {
-            var idx = (int)kv.Value.Binding;
-            var setGet = ResourceSets[kv.Key];
-            sets[idx] = setGet.IsAllocated ? setGet : Shader.DefaultResourceSets[idx].GetGenericGCHandle();
-        }
-
-
-
-
-
-        DrawPipelineDetails pipelinerequest = new()
-        {
-            //derived from buffer definition + shader attributes
-            Attributes = layoutdetails,
-
-            ShaderHandle = GCHandle.ToIntPtr(Shader.GCHandle),
-            FrameBufferPipelineHandle = CurrentBackendRenderProgress == BackendRenderProgress.DrawingToScreen ? 0 : GCHandle.ToIntPtr(ActiveFramebufferPipeline.GCHandle),
-
-            //derived from draw call/material specifics
-            Rasterization = Rasterization,
-            Blending = Blending,
-            DepthStencil = DepthStencil,
-
-        };
-
-
-
-
-        //find or create a pipeline according to that spec
-
-        lock (DrawPipelineCache)
-        {
-
-            if (!DrawPipelineCache.TryGetValue(pipelinerequest, out var get))
-            {
-                //creation
-                get = new BackendDrawPipelineReference(CreateDrawPipeline(pipelinerequest), pipelinerequest);
-
-                //destroys this pipeline if the shader or render pass it relies on are destroyed
-                Shader.OnFreeEvent.Add(get.Free);
-
-
-                get.OnFreeEvent.Add(() => 
-                { 
-                    lock (DrawPipelineCache) 
-                        DrawPipelineCache.Remove(pipelinerequest); 
-                });
-
-
-                if (CurrentBackendRenderProgress != BackendRenderProgress.DrawingToScreen) 
-                    ActiveFramebufferPipeline.OnFreeEvent.Add(get.Free);
-
-
-                DrawPipelineCache.Add(pipelinerequest, get);
-            }
-
-            Backend.Draw(attrs, sets, get, IndexBuffer, 0, IndexingDetails);
-
-        }
-
-    }
-
-
-
-
-
-
-
-
-
-    // ---------------- FrameBuffer Manipulation ----------------
-
-    /// <summary>
-    /// <inheritdoc cref="_callonrenderthread"/>
-    /// </summary>
-    /// <param name="framebuffer"></param>
-    /// <param name="CubemapFaceIfCubemap"></param>
-    public static void ClearFramebufferDepthStencil(LogicalFrameBuffer framebuffer, byte CubemapFaceIfCubemap = 0)
-    {
-        CheckDuringRendering();
-        Backend.ClearFramebufferDepthStencil(framebuffer, CubemapFaceIfCubemap);
-    }
-
-    /// <summary>
-    /// <inheritdoc cref="_callonrenderthread"/>
-    /// </summary>
-    /// <param name="framebuffer"></param>
-    /// <param name="color"></param>
-    /// <param name="idx"></param>
-    /// <param name="CubemapFaceIfCubemap"></param>
-    public static void ClearFramebufferColorAttachment(LogicalFrameBuffer framebuffer, Vector4 color, byte idx = 0, byte CubemapFaceIfCubemap = 0)
-    {
-        CheckDuringRendering();
-        Backend.ClearFramebufferColorAttachment(framebuffer, color, idx, CubemapFaceIfCubemap);
-    }
 
 
 
@@ -2725,26 +2089,14 @@ public static partial class RenderingBackend
     }
 
 
-
-
-    // ---------------- Scissor ----------------
-
     /// <summary>
     /// <inheritdoc cref="_callonrenderthread"/>
     /// </summary>
-    /// <param name="offsetX"></param>
-    /// <param name="offsetY"></param>
-    /// <param name="sizeX"></param>
-    /// <param name="sizeY"></param>
     public static void SetScissor(Vector2<uint> offset, Vector2<uint> size)
     {
         CheckDuringRendering();
         Backend.SetScissor(offset, size);
     }
-
-
-
-
 
 
 
@@ -2855,9 +2207,9 @@ public static partial class RenderingBackend
 
 
         // ---------------- FrameBuffer / Pipeline Control ----------------
-        public void BeginFrameBufferPipeline(LogicalFrameBuffer fbo, BackendFrameBufferPipelineReference pipeline);
-        public void AdvanceFrameBufferPipeline(LogicalFrameBuffer fbo, BackendFrameBufferPipelineReference pipeline, byte stageIndex);
-        public void EndFrameBufferPipeline(LogicalFrameBuffer fbo);
+        public void BeginFrameBufferPipeline(BackendFrameBufferObjectReference fbo, BackendFrameBufferPipelineReference pipeline);
+        public void AdvanceFrameBufferPipeline(BackendFrameBufferObjectReference fbo, BackendFrameBufferPipelineReference pipeline, byte stageIndex);
+        public void EndFrameBufferPipeline(BackendFrameBufferObjectReference fbo);
         public void StartDrawToScreen();
         public void EndDrawToScreen();
 
@@ -2869,8 +2221,8 @@ public static partial class RenderingBackend
 
 
         // ---------------- FrameBuffer Manipulation ----------------
-        public void ClearFramebufferDepthStencil(LogicalFrameBuffer framebuffer, byte CubemapFaceIfCubemap = 0);
-        public void ClearFramebufferColorAttachment(LogicalFrameBuffer framebuffer, Vector4 color, byte idx = 0, byte CubemapFaceIfCubemap = 0);
+        public void ClearFramebufferDepthStencil(BackendFrameBufferObjectReference framebuffer, byte CubemapFaceIfCubemap = 0);
+        public void ClearFramebufferColorAttachment(BackendFrameBufferObjectReference framebuffer, Vector4 color, byte idx = 0, byte CubemapFaceIfCubemap = 0);
         public void SetScissor(Vector2<uint> offset, Vector2<uint> size);
     }
 

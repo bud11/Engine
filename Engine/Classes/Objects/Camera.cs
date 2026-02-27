@@ -64,7 +64,7 @@ public partial class Camera : GameObject
 
 
 
-    public LogicalFrameBuffer FrameBuffer { get; private set; }
+    public LogicalFrameBufferObject FrameBuffer { get; private set; }
     public BackendTextureAndSamplerReferencesPair[] ColorBufferTextures { get; private set; }   //plural for mrt, not for cubemap
     public BackendTextureAndSamplerReferencesPair DepthStencilBufferTexture { get; private set; }
 
@@ -94,7 +94,7 @@ public partial class Camera : GameObject
         private Vector2 ResolutionOrFactor;
 
 
-        public LogicalFrameBuffer FrameBuffer { get; private set; }
+        public LogicalFrameBufferObject FrameBuffer { get; private set; }
         public BackendTextureAndSamplerReferencesPair TexturePlusSampler { get; private set; }
 
 
@@ -123,12 +123,12 @@ public partial class Camera : GameObject
                 TexturePlusSampler = new BackendTextureAndSamplerReferencesPair(
 
                     BackendTextureReference.Create(new Vector3<uint>(requiredRes.X, requiredRes.Y, 1),
-                                  owner.useCubeMap ? TextureTypes.TextureCubeMap : TextureTypes.Texture2D,
+                                  owner.UseCubeMap ? TextureTypes.TextureCubeMap : TextureTypes.Texture2D,
                                   TextureFormats.RGBA16_SFLOAT,
                                   true),
                     BackendSamplerReference.Get(new(TextureWrapModes.ClampToEdge, TextureFilters.Linear, TextureFilters.Linear, TextureFilters.Linear, false)));
 
-                FrameBuffer = LogicalFrameBuffer.Create([TexturePlusSampler.Texture], null);
+                FrameBuffer = LogicalFrameBufferObject.Create([TexturePlusSampler.Texture], null);
             }
         }
     }
@@ -143,7 +143,7 @@ public partial class Camera : GameObject
 
 
     /// <summary>
-    /// Creates a fixed size color buffer that will be used for post processing. The buffer will use <see cref="useCubeMap"/> and <see cref="useHDRColorBuffers"/>.
+    /// Creates a fixed size color buffer that will be used for post processing. The buffer will use <see cref="UseCubeMap"/> and <see cref="UseHDRColorBuffers"/>.
     /// </summary>
     public unsafe void CreateFixedSizePostProcessBuffer(string Name, Vector2<uint> Resolution)
     {
@@ -154,7 +154,7 @@ public partial class Camera : GameObject
     }
 
     /// <summary>
-    /// Creates a color buffer that will be used for post processing, which will automatically resize according to <see cref="Resolution"/> * <paramref name="ScalingFactor"/>. The buffer will use <see cref="useCubeMap"/> and <see cref="useHDRColorBuffers"/>.
+    /// Creates a color buffer that will be used for post processing, which will automatically resize according to <see cref="Resolution"/> * <paramref name="ScalingFactor"/>. The buffer will use <see cref="UseCubeMap"/> and <see cref="UseHDRColorBuffers"/>.
     /// </summary>
     /// <param name="Name"></param>
     /// <param name="ResolutionMode"></param>
@@ -181,44 +181,11 @@ public partial class Camera : GameObject
 
 
 
-    public byte ColorBuffersCount { get; private set; }
-
-    public bool useDepthStencilBuffer { get; private set; }
-
-    public bool useCubeMap { get; private set; }
-
-    public bool useHDRColorBuffers { get; private set; }
-
-    public bool useShadowSample { get; private set; }
-
-
-
-    public void Init(
-        Vector2<uint> Resolution,
-        byte ColorBuffersCount = 1,       //this can be more than 1 for MRT
-        bool useDepthStencilBuffer = true,
-        bool useHDRColorBuffers = true,           //this actually renders six faces into a cubemap all with their own depth and stencil and mrts if applicable
-        bool useShadowSample = false,
-        bool useCubeMap = false)
-    {
-        this.ColorBuffersCount = ColorBuffersCount;
-        this.useDepthStencilBuffer = useDepthStencilBuffer;
-
-        this.useHDRColorBuffers = useHDRColorBuffers;
-
-        this.useShadowSample = useShadowSample;
-
-
-        this.useCubeMap = useCubeMap;
-
-
-        // !!!! this automatically calls setup !!!!
-        this.Resolution = Resolution;
-
-
-        base.Init();
-    }
-
+    public byte ColorBuffersCount = 1;
+    public bool UseDepthStencilBuffer = true;
+    public bool UseCubeMap = false;
+    public bool UseHDRColorBuffers = true;
+    public bool EnableDepthComparison = false;
 
 
 
@@ -263,7 +230,7 @@ public partial class Camera : GameObject
                 ColorBufferTextures = new BackendTextureAndSamplerReferencesPair[ColorBuffersCount];
 
             ColorBufferTextures[i] = new BackendTextureAndSamplerReferencesPair(
-                BackendTextureReference.Create(new Vector3<uint>(Resolution.X, Resolution.Y, 1), useCubeMap ? TextureTypes.TextureCubeMap : TextureTypes.Texture2D, useHDRColorBuffers ? TextureFormats.RGBA16_SFLOAT : TextureFormats.RGBA8_UNORM, true),
+                BackendTextureReference.Create(new Vector3<uint>(Resolution.X, Resolution.Y, 1), UseCubeMap ? TextureTypes.TextureCubeMap : TextureTypes.Texture2D, UseHDRColorBuffers ? TextureFormats.RGBA16_SFLOAT : TextureFormats.RGBA8_UNORM, true),
 
                 BackendSamplerReference.Get(new() { MinFilter = TextureFilters.Linear, MagFilter = TextureFilters.Linear, EnableDepthComparison = false, WrapMode = TextureWrapModes.ClampToEdge, MipmapFilter = TextureFilters.Linear })
                 );
@@ -271,12 +238,12 @@ public partial class Camera : GameObject
         }
 
 
-        if (useDepthStencilBuffer)
+        if (UseDepthStencilBuffer)
         {
             DepthStencilBufferTexture = new BackendTextureAndSamplerReferencesPair(
-                BackendTextureReference.Create(new Vector3<uint>(Resolution.X, Resolution.Y, 1), useCubeMap ? TextureTypes.TextureCubeMap : TextureTypes.Texture2D, TextureFormats.DepthStencil, true),
+                BackendTextureReference.Create(new Vector3<uint>(Resolution.X, Resolution.Y, 1), UseCubeMap ? TextureTypes.TextureCubeMap : TextureTypes.Texture2D, TextureFormats.DepthStencil, true),
 
-                BackendSamplerReference.Get(new() { MinFilter = TextureFilters.Linear, MagFilter = TextureFilters.Linear, EnableDepthComparison = useShadowSample, WrapMode = TextureWrapModes.ClampToEdge, MipmapFilter = TextureFilters.Linear })
+                BackendSamplerReference.Get(new() { MinFilter = TextureFilters.Linear, MagFilter = TextureFilters.Linear, EnableDepthComparison = EnableDepthComparison, WrapMode = TextureWrapModes.ClampToEdge, MipmapFilter = TextureFilters.Linear })
                 );
         }
 
@@ -291,7 +258,7 @@ public partial class Camera : GameObject
 
 
 
-        FrameBuffer = LogicalFrameBuffer.Create(ColorBufferTextures == null ? null : ColorBufferTextures.Select(x => x.Texture).ToArray(), DepthStencilBufferTexture == null ? null : DepthStencilBufferTexture.Texture);
+        FrameBuffer = LogicalFrameBufferObject.Create(ColorBufferTextures == null ? null : ColorBufferTextures.Select(x => x.Texture).ToArray(), DepthStencilBufferTexture == null ? null : DepthStencilBufferTexture.Texture);
 
     }
 
@@ -327,9 +294,9 @@ public partial class Camera : GameObject
 
         public readonly GCHandle<IList<DrawObject>> ObjectWhiteList;
 
-        public readonly delegate*<DrawObject, MaterialResource, MaterialResource.MaterialDefinition> MaterialDefinitionMutator;
+        public readonly delegate*<MaterialResource, MaterialResource.MaterialResolution> MaterialResolver;
 
-        public readonly delegate*<ReadOnlySpan<(DrawObject obj, float distance)>, delegate*<DrawObject, MaterialResource, MaterialResource.MaterialDefinition>, void> DrawCallIssuer;
+        public readonly delegate*<ReadOnlySpan<(DrawObject obj, float distance)>, delegate*<MaterialResource, MaterialResource.MaterialResolution>, void> DrawCallIssuer;
 
 
 
@@ -340,9 +307,9 @@ public partial class Camera : GameObject
 
             IList<DrawObject> objectWhiteList,
 
-            delegate*<DrawObject, MaterialResource, MaterialResource.MaterialDefinition> materialDefinitionMutator = null,
+            delegate*<MaterialResource, MaterialResource.MaterialResolution> materialResolver = null,
 
-            delegate*<ReadOnlySpan<(DrawObject obj, float distance)>, delegate*<DrawObject, MaterialResource, MaterialResource.MaterialDefinition>, void> drawCallIssuer = null
+            delegate*<ReadOnlySpan<(DrawObject obj, float distance)>, delegate*<MaterialResource, MaterialResource.MaterialResolution>, void> drawCallIssuer = null
 
             )
         {
@@ -352,7 +319,7 @@ public partial class Camera : GameObject
 
             ObjectWhiteList = GCHandle<IList<DrawObject>>.Alloc(objectWhiteList, GCHandleType.Normal);
 
-            MaterialDefinitionMutator = materialDefinitionMutator;
+            MaterialResolver = materialResolver;
 
             DrawCallIssuer = drawCallIssuer;
         }
@@ -380,11 +347,13 @@ public partial class Camera : GameObject
     public unsafe void Render(ReadOnlySpan<CameraSubpassDefinition> subpasses, MaterialResource? forceOneMaterial = null)
     {
 
+        
+
         ///////////////////////////////////////////////////////////////////////////////////////
         //for each internal logical framebuffer, call MainRenderLogic. cubemaps cameras have 6, other cameras just have 1
 
 
-        if (useCubeMap)
+        if (UseCubeMap)
         {
             var t = GlobalTransform;
 
@@ -479,12 +448,12 @@ public partial class Camera : GameObject
 
 
 
-                if (subpass.DrawCallIssuer != null) subpass.DrawCallIssuer(objs, subpass.MaterialDefinitionMutator);
+                if (subpass.DrawCallIssuer != null) subpass.DrawCallIssuer(objs, subpass.MaterialResolver);
 
                 else
                 {
                     for (int i = 0; i < objs.Length; i++)
-                        objs[i].Item1.Draw(subpass.MaterialDefinitionMutator);
+                        objs[i].Item1.Draw(subpass.MaterialResolver);
                 }
 
 
@@ -507,7 +476,7 @@ public partial class Camera : GameObject
 
 
 
-        bool IsAABBInFrustum(AABB bounds, Span<Plane> frustumPlanes)
+        static bool IsAABBInFrustum(AABB bounds, Span<Plane> frustumPlanes)
         {
 
             if (bounds == AABB.MaxValue) return true;
@@ -551,7 +520,7 @@ public partial class Camera : GameObject
 
 
 
-        void ExtractFrustumPlanes(Matrix4x4 viewProj, Span<Plane> frustumPlanes)
+        static void ExtractFrustumPlanes(Matrix4x4 viewProj, Span<Plane> frustumPlanes)
         {
 
             // Left Plane

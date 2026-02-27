@@ -5,7 +5,7 @@ namespace Engine.Core;
 using System;
 
 
-public static partial class Rendering
+public static partial class RenderingBackend
 {
 
     public enum ShaderFormat : byte
@@ -89,10 +89,11 @@ public static partial class Rendering
 
     public enum CullMode : byte
     {
-        Front,
+        Disabled,
         Back,
-        Disabled
+        Front,
     }
+
 
     public enum PrimitiveType : byte
     {
@@ -102,14 +103,15 @@ public static partial class Rendering
 
     public enum PolygonMode : byte
     {
+        Fill,
         Point,
         Line,
-        Fill,
     }
 
 
     public enum DepthOrStencilFunction : byte
     {
+        Always,
         Never,
         Less,
         Equal,
@@ -117,7 +119,6 @@ public static partial class Rendering
         Greater,
         NotEqual,
         GreaterOrEqual,
-        Always,
     }
 
 
@@ -220,42 +221,6 @@ public static partial class Rendering
 
 
 
-    public static uint GetBytesPerLayer(
-        TextureFormats format,
-        uint width,
-        uint height)
-    {
-        return format switch
-        {
-            TextureFormats.R8_UNORM => width * height * 1,
-            TextureFormats.RG8_UNORM => width * height * 2,
-            TextureFormats.RGB8_UNORM or TextureFormats.RGBA8_UNORM => width * height * 4,
-            TextureFormats.R16_SFLOAT => width * height * 2,
-            TextureFormats.RG16_SFLOAT => width * height * 4,
-            TextureFormats.RGB16_SFLOAT or TextureFormats.RGBA16_SFLOAT => width * height * 8,
-
-            TextureFormats.DepthStencil => width * height * 4,
-                                                              
-            TextureFormats.BC4 => GetBCSize(width, height, 8),
-            TextureFormats.BC5 or TextureFormats.BC6H_SFLOAT or TextureFormats.BC7 => GetBCSize(width, height, 16),
-            _ => throw new Exception(),
-        };
-
-        static uint GetBCSize(uint width, uint height, uint bytesPerBlock)
-        {
-            uint blocksX = (width  + 3) / 4;
-            uint blocksY = (height + 3) / 4;
-            return blocksX * blocksY * bytesPerBlock;
-        }
-    }
-
-
-
-
-
-
-
-
 
     /// <summary>
     /// MSAA sample counts.
@@ -268,8 +233,6 @@ public static partial class Rendering
         Sample8,
         Sample16
     }
-
-
 
 
 

@@ -26,43 +26,45 @@ public partial class Skeleton : GameObject
 
 
 
-    
-    public new void Init(GameObject[] Bones, string Name = default, Matrix4x4 Transform = default)
+    [DataValue]
+    public GameObject[] BoneObjects
     {
-
-        var arr = new Bone[Bones.Length];
-        var dict = new Dictionary<string, Bone>();
-
-        var thisinv = GlobalTransform.Matrix;
-
-        for (ushort i = 0; i < Bones.Length; i++)
+        set
         {
-            var b = Bones[i];
+            var arr = new Bone[value.Length];
+            var dict = new Dictionary<string, Bone>();
 
-            OnGlobalTransformChangedEvent.Add(BoneTransformChanged);
+            var thisinv = GlobalTransform.Matrix;
 
-            var inst = new Bone(i, b, b.Transform.Matrix, thisinv * b.GlobalTransform.AffineInverse().Matrix);
-
-            dict[b.Name] = arr[i] = inst;
-
-
-            if (b.Parent == this)
+            for (ushort i = 0; i < value.Length; i++)
             {
-                if (RootBone != null) throw new Exception("More than one root bone");
+                var b = value[i];
 
-                RootBone = inst;
+                OnGlobalTransformChangedEvent.Add(BoneTransformChanged);
+
+                var inst = new Bone(i, b, b.Transform.Matrix, thisinv * b.GlobalTransform.AffineInverse().Matrix);
+
+                dict[b.Name] = arr[i] = inst;
+
+
+                if (b.Parent == this)
+                {
+                    if (RootBone != null) throw new Exception("More than one root bone");
+
+                    RootBone = inst;
+                }
             }
+
+
+            FinalBoneMatrices = new Matrix4x4[value.Length];
+
+
+            BonesByIndex = ImmutableArray.Create(arr);
+            Bones = ImmutableDictionary.ToImmutableDictionary(dict);
         }
-
-
-        FinalBoneMatrices = new Matrix4x4[Bones.Length];
-
-
-        BonesByIndex = ImmutableArray.Create(arr);
-        this.Bones = ImmutableDictionary.ToImmutableDictionary(dict);
-
-        base.Init(Name, Transform);
     }
+    
+
 
 
 
@@ -73,7 +75,7 @@ public partial class Skeleton : GameObject
 
     protected Matrix4x4[] FinalBoneMatrices;
 
-    public void RecalculateAndUploadSkinningDataIfNeeded()
+    public void ReuploadSkinningDataIfNeeded()
     {
         if (NeedsSkeletonRecalc)
         {

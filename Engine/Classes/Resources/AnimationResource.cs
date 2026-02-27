@@ -22,7 +22,7 @@ using System.Text.Json;
 
 
 [FileExtensionAssociation(".anim")]
-public class AnimationResource : GameResource
+public class AnimationResource : GameResource, GameResource.ILoads, GameResource.IConverts
 {
 
 
@@ -55,8 +55,11 @@ public class AnimationResource : GameResource
 #if DEBUG
 
 
-    
-    public static new async Task<byte[]> ConvertToFinalAssetBytes(byte[] bytes, string filePath)
+
+    public static bool ForceReconversion(byte[] bytes, byte[] currentCache) => false;
+
+
+    public static async Task<byte[]> ConvertToFinalAssetBytes(byte[] bytes, string filePath)
     {
 
         var s = new JsonSerializerOptions() { PropertyNameCaseInsensitive = true };
@@ -82,7 +85,7 @@ public class AnimationResource : GameResource
             var keys = track.GetProperty("keys");
 
 
-            bw.Write(Parsing.GetUintLengthPrefixedUTF8StringAsBytes(id));
+            bw.Write(Parsing.SerializeType(id, false));
             bw.Write((byte)type);
             bw.Write((uint)keys.GetArrayLength());
 
@@ -134,11 +137,11 @@ public class AnimationResource : GameResource
     
     public static new async Task<GameResource> Load(Loading.AssetByteStream stream, string key)
     {
-        var length = stream.ReadUnmanagedType<float>();
+        var length = stream.DeserializeType<float>();
         var loops = stream.ReadByte() == 1;
 
 
-        var trackcount = stream.ReadUnmanagedType<uint>();
+        var trackcount = stream.DeserializeType<uint>();
 
 
 
@@ -147,15 +150,13 @@ public class AnimationResource : GameResource
 
         for (uint tr = 0; tr < trackcount; tr++)
         {
-            var identifier = stream.ReadUintLengthPrefixedUTF8String();
+            var identifier = stream.DeserializeType<string>();
 
 
             var tracktype = (TrackTypes)stream.ReadByte();
 
-            var trackvaluescount = stream.ReadUnmanagedType<uint>();
 
-
-            var timesarray = stream.ReadUnmanagedTypeArray<float>(trackvaluescount);
+            var timesarray = stream.DeserializeType<float[]>();
 
             object contentarray = null;
 
@@ -164,19 +165,19 @@ public class AnimationResource : GameResource
                 case TrackTypes.Position:
                 case TrackTypes.Scale:
 
-                    contentarray = stream.ReadUnmanagedTypeArray<Vector3>(trackvaluescount);
+                    contentarray = stream.DeserializeType<Vector3[]>();
 
                     break;
 
                 case TrackTypes.Rotation:
 
-                    contentarray = stream.ReadUnmanagedTypeArray<Quaternion>(trackvaluescount);
+                    contentarray = stream.DeserializeType<Quaternion[]>();
 
                     break;
 
                 case TrackTypes.Value:
 
-                    contentarray = stream.ReadUnmanagedTypeArray<float>(trackvaluescount);
+                    contentarray = stream.DeserializeType<float[]>();
 
                     break;
 
@@ -276,4 +277,5 @@ public class AnimationResource : GameResource
 
 
     protected override void OnFree() { }
+
 }

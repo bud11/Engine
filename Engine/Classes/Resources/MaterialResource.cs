@@ -23,125 +23,129 @@ using System.Text.Json;
 
 
 [FileExtensionAssociation(".mat")]
-public partial class MaterialResource : GameResource
+
+public class MaterialResource :
+
+    GameResource, GameResource.ILoads, GameResource.IConverts
 {
 
-    /// <summary>
-    /// Encapsulates material resources and fixed pipeline state that the rendering backend will consume.
-    /// <br/> Can be freely modified in any way at any point.
-    /// </summary>
-    public struct MaterialDefinition
-    {
-        //resources
-
-        public BackendShaderReference Shader;
-        public UnmanagedKeyValueHandleCollection<string, BackendResourceSetReference> MaterialResourceSets;
-
-
-        //drawing pipeline
-
-        public RasterizationDetails Rasterization;
-        public BlendState Blending;
-        public DepthStencilState DepthStencil;
-
-    }
-
-
-
-    /// <summary>
-    /// <inheritdoc cref="MaterialDefinition"/>
-    /// <br/> <b> See <see cref="MaterialResourceSets"/> to modify sets returned by this property. </b>
-    /// </summary>
-    public MaterialDefinition Definition
-    {
-        get => _definition with { MaterialResourceSets = MaterialResourceSets == null ? default : MaterialResourceSets.GetUnderlyingCollection() };
-        set => _definition = value;
-    }
-
-    private MaterialDefinition _definition;
 
 
     public readonly UnmanagedKeyValueHandleCollectionOwner<string, BackendResourceSetReference> MaterialResourceSets = new();
+    
+    public readonly BackendShaderReference Shader;
 
-
-    private Dictionary<string, object> Arguments;
-
-    public void SetArgument(string name, object value)
-    {
-        if (Arguments == null) Arguments = new();
-
-
-        bool changed = (!Arguments.TryGetValue(name, out var get)) || get != value;
-        Arguments[name] = value;
-
-        if (changed)
-            OnArgumentChangeEvent.Invoke((name, value));
-    }
-    public object GetArgument(string name) => Arguments == null ? null : (Arguments.TryGetValue(name, out var get) ? get : null);
-
-
-    public ImmutableDictionary<string, object> GetArguments()
-        => Arguments == null ? ImmutableDictionary<string, object>.Empty : ImmutableDictionary.ToImmutableDictionary(Arguments);
-
-
-
-
-    /// <summary>
-    /// Called when <see cref="SetArgument"/> results in a change.
-    /// </summary>
-    public static readonly ThreadSafeEventAction<(string argumentName, object newValue)> OnArgumentChangeEvent = new();
-
+    public readonly RefCountCollections.RefCountedDictionary<string, BackendTextureAndSamplerReferencesPair> Textures;
+    public readonly Dictionary<string, object> Parameters;
 
 
 
     public MaterialResource(BackendShaderReference shader,
 
-                            RasterizationDetails rasterization,
-                            BlendState blending,
-                            DepthStencilState depthStencil,
-
-                            Dictionary<string, object> arguments,
+                            Dictionary<string, object> parameters,
+                            RefCountCollections.RefCountedDictionary<string, BackendTextureAndSamplerReferencesPair> textures,
 
                             string key = null) : base(key)
-    {
-
-
-        Definition = Definition with
-        {
-            Shader = shader,
-
-            Rasterization = rasterization,
-            Blending = blending,
-            DepthStencil = depthStencil,
-        };
-
-        Arguments = arguments;
-    }
-
-
-
-
-
     
-    public static new async Task<GameResource> Load(Loading.AssetByteStream stream, string key)
     {
-        var Shader = GetShader(stream.ReadUintLengthPrefixedUTF8String());
+        Shader = shader;
+        Textures = textures;
+        Parameters = parameters;
 
-        RasterizationDetails rasterization = stream.ReadUnmanagedType<RasterizationDetails>();
-        BlendState blending = stream.ReadUnmanagedType<BlendState>();
-        DepthStencilState depthStencil = stream.ReadUnmanagedType<DepthStencilState>();
-
-
-        return new MaterialResource(Shader, rasterization, blending, depthStencil, Parsing.ReadArgumentBytes(stream, await Parsing.LoadResourceBytes(stream, key)), key);
+        Shader?.AddUser();
+        Textures?.AddUser();
     }
+
+    protected override void OnFree()
+    {
+        Shader?.RemoveUser();
+        Textures?.RemoveUser();
+
+        base.OnFree();
+    }
+
+
+
+
+
+    public static async Task<GameResource> Load(Loading.AssetByteStream stream, string key)
+    {
+
+        // --- reads ---
+
+        var Shader = BackendShaderReference.Get(stream.DeserializeType<string>());
+
+        var textures = Parsing.DeserializeType<Dictionary<string, MaterialTextureDefinition>>(stream);
+
+        var arguments = Parsing.ReadArgumentBytes<string>(stream, null);  
+
+
+
+        // --- load textures ---
+
+        var texturetasks = new Dictionary<string, Task<TextureResource>>(textures.Count);
+
+        foreach (var kv in textures)
+            texturetasks[kv.Key] = Loading.LoadResource<TextureResource>(kv.Value.Path);
+
+
+
+        // --- collect textures ---
+
+        var finaltextures = new RefCountCollections.RefCountedDictionary<string, BackendTextureAndSamplerReferencesPair>(textures.Count);
+
+        foreach (var tex in texturetasks)
+            finaltextures[tex.Key] = new BackendTextureAndSamplerReferencesPair((await tex.Value).BackendReference, BackendSamplerReference.Get(textures[tex.Key].SamplerDetails));
+
+
+
+        return new MaterialResource(Shader, arguments, finaltextures, key);
+    }
+
+
+
+    /// <summary>
+    /// Represents expanded details to be used for a material-driven draw call, derived from a <see cref="MaterialResource"/>.
+    /// </summary>
+    public struct MaterialResolution
+    {
+        public BackendShaderReference Shader;
+
+        public RasterizationDetails RasterizationDetails;
+        public BlendState BlendState;
+        public DepthStencilState DepthStencilState;
+
+        public UnmanagedKeyValueHandleCollection<string, BackendResourceSetReference> MaterialResourceSets;
+
+        public MaterialResolution(BackendShaderReference shader, RasterizationDetails rasterizationDetails, BlendState blendState, DepthStencilState depthStencilState, UnmanagedKeyValueHandleCollection<string, BackendResourceSetReference> materialResourceSets)
+        {
+            Shader=shader;
+            RasterizationDetails=rasterizationDetails;
+            BlendState=blendState;
+            DepthStencilState=depthStencilState;
+            MaterialResourceSets=materialResourceSets;
+        }
+    }
+
+
+
+
+    [BinarySerializableType]
+    public struct MaterialTextureDefinition
+    {
+        public string Path;
+        public string Name;
+        public SamplerDetails SamplerDetails;
+    }
+
+
 
 
 #if DEBUG
 
+    public static bool ForceReconversion(byte[] bytes, byte[] currentCache) => false;
 
-
-    
-    public static new async Task<byte[]> ConvertToFinalAssetBytes(byte[] bytes, string filePath)
+    public static async Task<byte[]> ConvertToFinalAssetBytes(byte[] bytes, string filePath)
     {
 
 
@@ -154,49 +158,24 @@ public partial class MaterialResource : GameResource
 
 
 
-        RasterizationDetails rasterization = default;
-        BlendState blending = default;
-        DepthStencilState depthStencil = default;
-
-
-
-        if (dict.TryGetValue("Rasterization", out var raster))
-            rasterization = JsonSerializer.Deserialize<RasterizationDetails>(raster);
-
-
-        if (dict.TryGetValue("DepthStencil", out var depth))
-            depthStencil = JsonSerializer.Deserialize<DepthStencilState>(depth);
-
-
-        if (dict.TryGetValue("BlendState", out var blend))
-            blending = JsonSerializer.Deserialize<BlendState>(blend);
-
-
-
         List<byte> finalbytes = [
-            .. Parsing.GetUintLengthPrefixedUTF8StringAsBytes(shaderName),
-
-                .. Parsing.StructToBytes(rasterization),
-                .. Parsing.StructToBytes(blending),
-                .. Parsing.StructToBytes(depthStencil)
-
+            .. Parsing.SerializeType(shaderName, false),
             ];
 
 
 
-        if (dict.TryGetValue("Resources", out var resget))
-            await Parsing.WriteResourceBytes(finalbytes, JsonSerializer.Deserialize<JsonElement[]>(resget), filePath);
-
-        else finalbytes.AddRange(BitConverter.GetBytes(0u));
-
-
+        if (dict.TryGetValue("Textures", out var resget))
+            finalbytes.AddRange(Parsing.SerializeType(resget.Deserialize<Dictionary<string, MaterialTextureDefinition>>(), false));
+        else 
+            finalbytes.AddRange(Parsing.WriteVarUInt64(0));
 
 
-        if (dict.TryGetValue("Arguments", out var argsGet))
+
+        if (dict.TryGetValue("Parameters", out var argsGet))
             finalbytes.AddRange(Parsing.WriteArgumentBytes(argsGet));
 
-        else 
-            finalbytes.Add(0);
+        else
+            finalbytes.AddRange(Parsing.WriteVarUInt64(0));
 
 
 

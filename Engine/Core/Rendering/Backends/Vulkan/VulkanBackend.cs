@@ -17,12 +17,10 @@ using Silk.NET.Core.Native;
 using Silk.NET.Vulkan;
 using Silk.NET.Vulkan.Extensions.EXT;
 using Silk.NET.Vulkan.Extensions.KHR;
-using System.Diagnostics;
 using System.Numerics;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using static Engine.Core.EngineMath;
-using static Rendering;
 
 
 
@@ -37,9 +35,6 @@ public static partial class RenderingBackend
 
     private unsafe class VulkanBackend : IRenderingBackend
     {
-
-        public ShaderFormat RequiredShaderFormat => ShaderFormat.SPIRV;
-
 
 
 
@@ -1652,6 +1647,7 @@ public static partial class RenderingBackend
 
                 else if (resource is BackendBufferAllocationReference ubo)
                 {
+                    
                     bufferInfos[writeIndex] = new DescriptorBufferInfo
                     {
                         Buffer = ((VulkanBufferAndMemory)ubo.BackendRef).Buffer,
@@ -2521,13 +2517,13 @@ public static partial class RenderingBackend
 
 
 
-        public static Silk.NET.Vulkan.PolygonMode ConvertPolygonModes(Rendering.PolygonMode v)
+        public static Silk.NET.Vulkan.PolygonMode ConvertPolygonModes(RenderingBackend.PolygonMode v)
         {
             return v switch
             {
-                Rendering.PolygonMode.Fill => Silk.NET.Vulkan.PolygonMode.Fill,
-                Rendering.PolygonMode.Line => Silk.NET.Vulkan.PolygonMode.Line,
-                Rendering.PolygonMode.Point => Silk.NET.Vulkan.PolygonMode.Point,
+                RenderingBackend.PolygonMode.Fill => Silk.NET.Vulkan.PolygonMode.Fill,
+                RenderingBackend.PolygonMode.Line => Silk.NET.Vulkan.PolygonMode.Line,
+                RenderingBackend.PolygonMode.Point => Silk.NET.Vulkan.PolygonMode.Point,
                 _ => throw new NotImplementedException(),
             };
         }
@@ -3455,7 +3451,7 @@ public static partial class RenderingBackend
 
 
         public void BeginFrameBufferPipeline(
-            LogicalFrameBuffer fbo,
+            BackendFrameBufferObjectReference fbo,
             BackendFrameBufferPipelineReference pipelineRef)
         {
             var p = (VulkanFramebufferPipeline)pipelineRef.BackendRef;
@@ -3465,13 +3461,13 @@ public static partial class RenderingBackend
 
             StartRenderPass(
                 fbo.Dimensions,
-                ((VulkanIndividualFramebufferDetails[])fbo.GetFramebuffer(pipelineRef).BackendRef)[s.RenderPass].Framebuffer,
+                ((VulkanIndividualFramebufferDetails[])fbo.BackendRef)[s.RenderPass].Framebuffer,
                 pass);
         }
 
 
         public void AdvanceFrameBufferPipeline(
-            LogicalFrameBuffer fbo,
+            BackendFrameBufferObjectReference fbo,
             BackendFrameBufferPipelineReference pipelineRef,
             byte stageIndex)
         {
@@ -3492,13 +3488,12 @@ public static partial class RenderingBackend
 
             StartRenderPass(
                 fbo.Dimensions,
-                ((VulkanIndividualFramebufferDetails[])
-                    fbo.GetFramebuffer(pipelineRef).BackendRef)[curr.RenderPass].Framebuffer,
+                ((VulkanIndividualFramebufferDetails[])fbo.BackendRef)[curr.RenderPass].Framebuffer,
                 pass);
         }
 
 
-        public void EndFrameBufferPipeline(LogicalFrameBuffer fbo)
+        public void EndFrameBufferPipeline(BackendFrameBufferObjectReference fbo)
         {
             VK.CmdEndRenderPass(RenderThreadCommandBuffer);
         }
@@ -3668,8 +3663,6 @@ public static partial class RenderingBackend
                     {
                         dynamicOffsets[dynamicOffsetCount++] = ((VulkanBufferAndMemory)ssbo.BackendRef).CurrentConsumingWriteIndex * AlignUp(ssbo.Size, (uint)physicalDeviceProperties.Limits.MinStorageBufferOffsetAlignment);
                     }
-
-
                 }
 
 
@@ -3696,7 +3689,7 @@ public static partial class RenderingBackend
 
 
             // Set viewport and scissor
-            var dims = ActiveFrameBuffer == null ? CurrentSwapchainDetails.Size : ActiveFrameBuffer.Dimensions;
+            var dims = ActiveFrameBufferObject == null ? CurrentSwapchainDetails.Size : ActiveFrameBufferObject.Dimensions;
 
             Viewport viewport = new()
             {
@@ -3857,18 +3850,15 @@ public static partial class RenderingBackend
 
 
 
-        public void ClearFramebufferDepthStencil(LogicalFrameBuffer framebuffer, byte CubemapFaceIfCubemap = 0)
+        public void ClearFramebufferDepthStencil(BackendFrameBufferObjectReference framebuffer, byte CubemapFaceIfCubemap = 0)
         {
             throw new NotImplementedException();
         }
 
-        public void ClearFramebufferColorAttachment(LogicalFrameBuffer framebuffer, Vector4 color, byte idx = 0, byte CubemapFaceIfCubemap = 0)
+        public void ClearFramebufferColorAttachment(BackendFrameBufferObjectReference framebuffer, Vector4 color, byte idx = 0, byte CubemapFaceIfCubemap = 0)
         {
             throw new NotImplementedException();
         }
-
-
-
 
 
 

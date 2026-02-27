@@ -23,28 +23,28 @@ public static class MeshGeneration
                 {
                     positionBufferName,
                     VertexAttributeDefinitionPlusData.CreateFromArray(
-                        new RenderingBackend.VertexAttributeDefinition(Rendering.VertexAttributeBufferComponentFormat.Float,
+                        new RenderingBackend.VertexAttributeDefinition(RenderingBackend.VertexAttributeBufferComponentFormat.Float,
                                                                 sizeof(float)*3,
                                                                 0,
-                                                                Rendering.VertexAttributeScope.PerVertex), pos, false)
+                                                                RenderingBackend.VertexAttributeScope.PerVertex), pos, false)
                 },
 
                 {
                     normalBufferName,
                     VertexAttributeDefinitionPlusData.CreateFromArray(
-                        new RenderingBackend.VertexAttributeDefinition(Rendering.VertexAttributeBufferComponentFormat.Half,
+                        new RenderingBackend.VertexAttributeDefinition(RenderingBackend.VertexAttributeBufferComponentFormat.Half,
                                                                 (ushort)(sizeof(Half)*3),
                                                                 0,
-                                                                Rendering.VertexAttributeScope.PerVertex), normals, false)
+                                                                RenderingBackend.VertexAttributeScope.PerVertex), normals, false)
                 },
 
                 {
                     UVBufferName,
                     VertexAttributeDefinitionPlusData.CreateFromArray(
-                        new RenderingBackend.VertexAttributeDefinition(Rendering.VertexAttributeBufferComponentFormat.Half,
+                        new RenderingBackend.VertexAttributeDefinition(RenderingBackend.VertexAttributeBufferComponentFormat.Half,
                                                                 (ushort)(sizeof(Half)*2),
                                                                 0,
-                                                                Rendering.VertexAttributeScope.PerVertex), uvs, false)
+                                                                RenderingBackend.VertexAttributeScope.PerVertex), uvs, false)
                 },
             };
 

@@ -1,10 +1,11 @@
 ﻿
-namespace Engine.Core;
-
 
 
 using System.Numerics;
-using System.Runtime.InteropServices;
+
+
+
+namespace Engine.Core;
 
 
 
@@ -71,29 +72,22 @@ public static class EngineMath
 
 
 
-        // Equality implementation
+
+        public override readonly int GetHashCode() => HashCode.Combine(Min, Max, Center, Extents);
         public readonly bool Equals(AABB other) => Min.Equals(other.Min) && Max.Equals(other.Max);
 
         public override readonly bool Equals(object? obj) => obj is AABB other && Equals(other);
-
-        public override readonly int GetHashCode()
-        {
-            unchecked
-            {
-                int hash = 17;
-                hash = hash * 31 + Min.GetHashCode();
-                hash = hash * 31 + Max.GetHashCode();
-                return hash;
-            }
-        }
 
         public static bool operator ==(AABB left, AABB right) => left.Equals(right);
 
         public static bool operator !=(AABB left, AABB right) => !(left == right);
 
 
+
         public static AABB operator *(AABB left, Transform transform) 
             => new AABB(transform * left.Min, transform * left.Max);
+
+
 
 
 
@@ -119,6 +113,7 @@ public static class EngineMath
             return 2f * (size.X * size.Y + size.X * size.Z + size.Y * size.Z);
         }
 
+
     }
 
 
@@ -130,18 +125,11 @@ public static class EngineMath
     /// <summary>
     /// A wrapper over System.Numerics's <see cref="Matrix4x4"/>. Column-major.
     /// </summary>
-    public unsafe struct Transform : IEquatable<Transform>, IEquatable<Matrix4x4>
+    public unsafe struct Transform(Matrix4x4 matrix) : IEquatable<Transform>, IEquatable<Matrix4x4>
     {
         public static readonly Transform Identity = new(Matrix4x4.Identity);
 
-        public Matrix4x4 Matrix;
-
-        public Transform(Matrix4x4 matrix)
-        {
-            Matrix = matrix;
-        }
-
-
+        public Matrix4x4 Matrix = matrix;
 
         public Vector3 Origin
         {
@@ -187,9 +175,11 @@ public static class EngineMath
             Quaternion rotation;
             Vector3 origin;
             if (!Matrix4x4.Decompose(Matrix, out scale, out rotation, out origin))
-                throw new Exception("Failed to decompose matrix");
+                throw new Exception();
+
             return new PosRotScale { Origin = origin, Rotation = rotation, Scale = scale };
         }
+
 
         // ---------------------- Inverse ----------------------
         public readonly Transform Inverse()
@@ -337,9 +327,9 @@ public static class EngineMath
 
         public override readonly string ToString() => Matrix.ToString();
 
-        public bool Equals(Transform other) => Matrix == other.Matrix;
+        public readonly bool Equals(Transform other) => Matrix == other.Matrix;
 
-        public bool Equals(Matrix4x4 other) => Matrix == other;
+        public readonly bool Equals(Matrix4x4 other) => Matrix == other;
     }
 
 
@@ -347,7 +337,7 @@ public static class EngineMath
 
 
     /// <summary>
-    /// Represents a 3x3 matrix of single-precision floating-point values.
+    /// Represents a 3x3 matrix.
     /// </summary>
     public unsafe struct Matrix3x3 : IEquatable<Matrix3x3>
     {
@@ -376,7 +366,7 @@ public static class EngineMath
         public static readonly Matrix3x3 Identity = new(1f);
 
         /// <summary>Returns a new matrix that is the transpose of this matrix.</summary>
-        public Matrix3x3 Transpose() => new(
+        public readonly Matrix3x3 Transpose() => new(
             M11, M21, M31,
             M12, M22, M32,
             M13, M23, M33
@@ -425,13 +415,13 @@ public static class EngineMath
             m.M31 * v.X + m.M32 * v.Y + m.M33 * v.Z
         );
 
-        public override bool Equals(object? obj) => obj is Matrix3x3 other && Equals(other);
-        public bool Equals(Matrix3x3 other) =>
+        public override readonly bool Equals(object? obj) => obj is Matrix3x3 other && Equals(other);
+        public readonly bool Equals(Matrix3x3 other) =>
             M11 == other.M11 && M12 == other.M12 && M13 == other.M13 &&
             M21 == other.M21 && M22 == other.M22 && M23 == other.M23 &&
             M31 == other.M31 && M32 == other.M32 && M33 == other.M33;
 
-        public override int GetHashCode()
+        public override readonly int GetHashCode()
         {
             HashCode hash = new HashCode();
             hash.Add(M11);
@@ -446,7 +436,7 @@ public static class EngineMath
             return hash.ToHashCode();
         }
 
-        public override string ToString() =>
+        public override readonly string ToString() =>
             $"Matrix3x3(\n  {M11}, {M12}, {M13}\n  {M21}, {M22}, {M23}\n  {M31}, {M32}, {M33}\n)";
     }
 
@@ -471,7 +461,7 @@ public static class EngineMath
 
         public T this[int index]
         {
-            get => index == 0 ? X : index == 1 ? Y : throw new IndexOutOfRangeException();
+            readonly get => index == 0 ? X : index == 1 ? Y : throw new IndexOutOfRangeException();
             set { if (index == 0) X = value; else if (index == 1) Y = value; else throw new IndexOutOfRangeException(); }
         }
 
@@ -491,9 +481,9 @@ public static class EngineMath
         public static explicit operator Vector2<T>(Vector2 val) => new(T.CreateChecked(val.X), T.CreateChecked(val.Y));
         public static explicit operator Vector2(Vector2<T> val) => new(float.CreateChecked(val.X), float.CreateChecked(val.Y));
 
-        public T Dot(Vector2<T> other) => X * other.X + Y * other.Y;
+        public readonly T Dot(Vector2<T> other) => X * other.X + Y * other.Y;
 
-        public override bool Equals(object? obj) => obj is Vector2<T> other && Equals(other);
+        public override readonly bool Equals(object? obj) => obj is Vector2<T> other && Equals(other);
         public readonly bool Equals(Vector2<T> other) => X == other.X && Y == other.Y;
         public readonly bool Equals(Vector2 other) => float.CreateChecked(X) == other.X && float.CreateChecked(Y) == other.Y;
         public override readonly int GetHashCode() => HashCode.Combine(X, Y);
@@ -519,7 +509,7 @@ public static class EngineMath
 
         public T this[int index]
         {
-            get => index == 0 ? X : index == 1 ? Y : index == 2 ? Z : throw new IndexOutOfRangeException();
+            readonly get => index == 0 ? X : index == 1 ? Y : index == 2 ? Z : throw new IndexOutOfRangeException();
             set { if (index == 0) X = value; else if (index == 1) Y = value; else if (index == 2) Z = value; else throw new IndexOutOfRangeException(); }
         }
 
@@ -538,14 +528,14 @@ public static class EngineMath
         public static explicit operator Vector3<T>(Vector3 val) => new(T.CreateChecked(val.X), T.CreateChecked(val.Y), T.CreateChecked(val.Z));
         public static explicit operator Vector3(Vector3<T> val) => new(float.CreateChecked(val.X), float.CreateChecked(val.Y), float.CreateChecked(val.Z));
 
-        public T Dot(Vector3<T> other) => X * other.X + Y * other.Y + Z * other.Z;
-        public Vector3<T> Cross(Vector3<T> other) => new(
+        public readonly T Dot(Vector3<T> other) => X * other.X + Y * other.Y + Z * other.Z;
+        public readonly Vector3<T> Cross(Vector3<T> other) => new(
             Y * other.Z - Z * other.Y,
             Z * other.X - X * other.Z,
             X * other.Y - Y * other.X
         );
 
-        public override bool Equals(object? obj) => obj is Vector3<T> other && Equals(other);
+        public override readonly bool Equals(object? obj) => obj is Vector3<T> other && Equals(other);
         public readonly bool Equals(Vector3<T> other) => X == other.X && Y == other.Y && Z == other.Z;
         public readonly bool Equals(Vector3 other) => float.CreateChecked(X) == other.X && float.CreateChecked(Y) == other.Y && float.CreateChecked(Z) == other.Z;
         public override readonly int GetHashCode() => HashCode.Combine(X, Y, Z);
@@ -572,7 +562,7 @@ public static class EngineMath
 
         public T this[int index]
         {
-            get => index == 0 ? X : index == 1 ? Y : index == 2 ? Z : index == 3 ? W : throw new IndexOutOfRangeException();
+            readonly get => index == 0 ? X : index == 1 ? Y : index == 2 ? Z : index == 3 ? W : throw new IndexOutOfRangeException();
             set { if (index == 0) X = value; else if (index == 1) Y = value; else if (index == 2) Z = value; else if (index == 3) W = value; else throw new IndexOutOfRangeException(); }
         }
 
@@ -591,9 +581,9 @@ public static class EngineMath
         public static explicit operator Vector4<T>(Vector4 val) => new(T.CreateChecked(val.X), T.CreateChecked(val.Y), T.CreateChecked(val.Z), T.CreateChecked(val.W));
         public static explicit operator Vector4(Vector4<T> val) => new(float.CreateChecked(val.X), float.CreateChecked(val.Y), float.CreateChecked(val.Z), float.CreateChecked(val.W));
 
-        public T Dot(Vector4<T> other) => X * other.X + Y * other.Y + Z * other.Z + W * other.W;
+        public readonly T Dot(Vector4<T> other) => X * other.X + Y * other.Y + Z * other.Z + W * other.W;
 
-        public override bool Equals(object? obj) => obj is Vector4<T> other && Equals(other);
+        public override readonly bool Equals(object? obj) => obj is Vector4<T> other && Equals(other);
         public readonly bool Equals(Vector4<T> other) => X == other.X && Y == other.Y && Z == other.Z && W == other.W;
         public readonly bool Equals(Vector4 other) => float.CreateChecked(X) == other.X && float.CreateChecked(Y) == other.Y && float.CreateChecked(Z) == other.Z && float.CreateChecked(W) == other.W;
         public override readonly int GetHashCode() => HashCode.Combine(X, Y, Z, W);

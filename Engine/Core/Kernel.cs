@@ -1,16 +1,16 @@
 ﻿
 namespace Engine.Core;
 
-using Engine.Core;
 
 
 #if DEBUG
 using Engine.Stripped;
 #endif
 
-using System.Collections.Concurrent;
-using System.Diagnostics;
 using System.Runtime.CompilerServices;
+
+using static RenderThread;
+
 
 
 public static class Kernel
@@ -177,7 +177,7 @@ public static class Kernel
                     }
 
 
-                    Rendering.RenderThreadLoop();
+                    RenderThreadLoop();
                 }
             }
             );

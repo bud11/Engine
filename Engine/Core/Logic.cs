@@ -315,7 +315,7 @@ public static class Logic
 
 
 
-        Rendering.WaitForFlushing();
+        RenderThread.WaitForFlushing();
 
 
 
@@ -327,7 +327,7 @@ public static class Logic
         var time = LogicStopWatch.Elapsed.TotalSeconds;
 
 
-        Rendering.TryPushRenderCommands();
+        RenderThread.TryPushRenderCommands();
 
 
         Delta = (float)LogicStopWatch.Elapsed.TotalSeconds;

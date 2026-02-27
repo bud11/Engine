@@ -20,7 +20,7 @@ using System.Text.Json;
 
 
 [FileExtensionAssociation(".col")]
-public class CollisionMeshResource : GameResource
+public class CollisionMeshResource : GameResource, GameResource.ILoads, GameResource.IConverts
 {
 
     public readonly AABB BaseAABB;
@@ -31,7 +31,7 @@ public class CollisionMeshResource : GameResource
     public static new async Task<GameResource> Load(Loading.AssetByteStream stream, string key)
     {
 
-        uint tricount = stream.ReadUnmanagedType<uint>();
+        uint tricount = stream.DeserializeType<uint>();
 
 
         CollisionMeshTriangle[] tris = new CollisionMeshTriangle[tricount];
@@ -40,18 +40,18 @@ public class CollisionMeshResource : GameResource
         {
             tris[i] = new CollisionMeshTriangle()
             {
-                position1 = stream.ReadUnmanagedType<Vector3>(),
-                position2 = stream.ReadUnmanagedType<Vector3>(),
-                position3 = stream.ReadUnmanagedType<Vector3>(),
+                position1 = stream.DeserializeType<Vector3>(),
+                position2 = stream.DeserializeType<Vector3>(),
+                position3 = stream.DeserializeType<Vector3>(),
 
-                normal = stream.ReadUnmanagedType<Vector3>(),
+                normal = stream.DeserializeType<Vector3>(),
 
                 meta = (byte)stream.ReadByte()
             };
         }
 
-        Vector3 min = stream.ReadUnmanagedType<Vector3>();
-        Vector3 max = stream.ReadUnmanagedType<Vector3>();
+        Vector3 min = stream.DeserializeType<Vector3>();
+        Vector3 max = stream.DeserializeType<Vector3>();
 
         var aabb = AABB.FromMinMax(min, max);
 
@@ -63,9 +63,10 @@ public class CollisionMeshResource : GameResource
 
 #if DEBUG
 
+    public static bool ForceReconversion(byte[] bytes, byte[] currentCache) => false;
 
-    
-    public static new async Task<byte[]> ConvertToFinalAssetBytes(byte[] bytes, string filePath)
+
+    public static async Task<byte[]> ConvertToFinalAssetBytes(byte[] bytes, string filePath)
     {
         var dict = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(bytes);
 

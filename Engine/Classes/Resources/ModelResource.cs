@@ -27,7 +27,7 @@ using System.Text.Json;
 
 
 [FileExtensionAssociation(".mdl")]
-public class ModelResource : GameResource
+public class ModelResource : GameResource, GameResource.ILoads, GameResource.IConverts
 {
 
 
@@ -39,7 +39,7 @@ public class ModelResource : GameResource
 
     public readonly BackendIndexBufferAllocationReference IndexBuffer;
 
-    public readonly ImmutableDictionary<string, VertexAttributeDefinitionPlusBufferClass> Buffers;
+    public readonly UnmanagedKeyValueHandleCollectionOwner<string, VertexAttributeDefinitionPlusBufferClass> Buffers;
 
 
 
@@ -90,8 +90,8 @@ public class ModelResource : GameResource
 
 
         /// <summary>
-        /// Creates a single interwoven vertex buffer from multiple attribute buffers.
-        /// Original offsets and strides are ignored.
+        /// Creates a new single interwoven array from multiple existing arrays.
+        /// <br/> Original offsets and strides are ignored.
         /// </summary>
         public static unsafe Dictionary<string, VertexAttributeDefinitionPlusData> CreateInterwoven(
             Dictionary<string, VertexAttributeDefinitionPlusData> buffers,
@@ -226,16 +226,16 @@ public class ModelResource : GameResource
 
 
     
-    public static new async Task<GameResource> Load(Loading.AssetByteStream stream, string key)
+    public static async Task<GameResource> Load(Loading.AssetByteStream stream, string key)
     {
 
 
 
 
 
-        uint vertexCount = stream.ReadUnmanagedType<uint>();
-        uint attribDefCount = stream.ReadUnmanagedType<uint>();
-        uint bufferCount = stream.ReadUnmanagedType<uint>();
+        uint vertexCount = stream.DeserializeType<uint>();
+        uint attribDefCount = stream.DeserializeType<uint>();
+        uint bufferCount = stream.DeserializeType<uint>();
 
 
 
@@ -244,7 +244,7 @@ public class ModelResource : GameResource
         for (uint i = 0; i < bufferCount; i++)
         {
             bool writeable = stream.ReadByte() == 1;
-            var data = stream.ReadUnmanagedTypeArray<byte>(stream.ReadUnmanagedType<uint>());
+            var data = stream.DeserializeType<byte[]>();
 
             buffers[i] = BackendVertexBufferAllocationReference.Create<byte>(data, writeable);
         }
@@ -255,7 +255,7 @@ public class ModelResource : GameResource
 
         for (uint i = 0; i < attribDefCount; i++)
         {
-            string name = stream.ReadUintLengthPrefixedUTF8String();
+            string name = stream.DeserializeType<string>();
 
 
             var componentFormat = (VertexAttributeBufferComponentFormat)stream.ReadByte();
@@ -268,16 +268,18 @@ public class ModelResource : GameResource
         }
 
 
-        var submeshes = stream.ReadUnmanagedTypeArray<SubmeshRange>(stream.ReadUnmanagedType<uint>());
+        var submeshes = stream.DeserializeType<SubmeshRange[]>();
 
-        var idxcount = stream.ReadUnmanagedType<uint>();
+        var idxbuffer = stream.DeserializeType<uint[]>();
 
-        BackendIndexBufferAllocationReference indexbuffer = idxcount == 0 ? null : BackendIndexBufferAllocationReference.Create(stream.ReadUnmanagedTypeArray<uint>(idxcount), false);
+        BackendIndexBufferAllocationReference indexbuffer = idxbuffer == null ? null : BackendIndexBufferAllocationReference.Create(idxbuffer, false);
 
 
 
-        Vector3 min = stream.ReadUnmanagedType<Vector3>();
-        Vector3 max = stream.ReadUnmanagedType<Vector3>();
+
+
+        Vector3 min = stream.DeserializeType<Vector3>();
+        Vector3 max = stream.DeserializeType<Vector3>();
 
         var aabb = AABB.FromMinMax(min, max);
 
@@ -298,11 +300,12 @@ public class ModelResource : GameResource
 #if DEBUG
 
 
-    
-    public static new async Task<byte[]> ConvertToFinalAssetBytes(byte[] bytes, string filePath)
+    public static bool ForceReconversion(byte[] bytes, byte[] currentCache) => false;
+
+    public static async Task<byte[]> ConvertToFinalAssetBytes(byte[] bytes, string filePath)
     {
         var dict = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(bytes);
-        var attribs = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(dict["attributeData"]);
+        var attribs = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(dict["AttributeData"]);
 
 
 
@@ -313,15 +316,15 @@ public class ModelResource : GameResource
 
         foreach (var kv in attribs)
         {
-            var componentFormat = Parsing.EnumParse<VertexAttributeBufferComponentFormat>(kv.Value.GetProperty("componentFormat").GetString());
+            var componentFormat = Parsing.EnumParse<VertexAttributeBufferComponentFormat>(kv.Value.GetProperty("ComponentFormat").GetString());
 
-            var componentCount = kv.Value.GetProperty("componentCount").GetByte();
+            var componentCount = kv.Value.GetProperty("ComponentCount").GetByte();
 
 
 
-            var scope = Parsing.EnumParse<VertexAttributeScope>(kv.Value.GetProperty("scope").GetString());
+            var scope = Parsing.EnumParse<VertexAttributeScope>(kv.Value.GetProperty("Scope").GetString());
 
-            var data = Convert.FromBase64String(kv.Value.GetProperty("data").GetString());
+            var data = Convert.FromBase64String(kv.Value.GetProperty("Base64Data").GetString());
 
             buffers[kv.Key] = new VertexAttributeDefinitionPlusData(new VertexAttributeDefinition(
 
@@ -378,7 +381,7 @@ public class ModelResource : GameResource
         //attributes
         foreach (var kv in interwoven)
         {
-            final.AddRange(Parsing.GetUintLengthPrefixedUTF8StringAsBytes(kv.Key));
+            final.AddRange(Parsing.SerializeType(kv.Key, false));
 
             final.Add((byte)kv.Value.def.ComponentFormat);
             final.Add((byte)kv.Value.def.Offset);
@@ -393,7 +396,7 @@ public class ModelResource : GameResource
 
 
         // Submeshes
-        var submeshes = dict["submeshes"];
+        var submeshes = dict["SubMeshes"];
         final.AddRange(BitConverter.GetBytes((uint)submeshes.GetArrayLength()));
         foreach (var sm in submeshes.EnumerateArray())
         {
@@ -401,8 +404,9 @@ public class ModelResource : GameResource
             final.AddRange(BitConverter.GetBytes(sm[1].GetUInt32()));
         }
 
+
         // Index buffer
-        if (dict.TryGetValue("indexBufferData", out var idxbuf))
+        if (dict.TryGetValue("IndexBufferBase64Data", out var idxbuf))
         {
             var idxData = Convert.FromBase64String(idxbuf.GetString());
             final.AddRange(BitConverter.GetBytes((uint)idxData.Length / sizeof(uint)));
@@ -411,11 +415,12 @@ public class ModelResource : GameResource
         else
             final.AddRange(BitConverter.GetBytes(0u));
 
+
         // AABB
-        if (dict.TryGetValue("localAABB", out var aabb))
+        if (dict.TryGetValue("LocalAABB", out var aabb))
         {
-            var min = JsonSerializer.Deserialize<float[]>(aabb.GetProperty("min"));
-            var max = JsonSerializer.Deserialize<float[]>(aabb.GetProperty("max"));
+            var min = JsonSerializer.Deserialize<float[]>(aabb.GetProperty("Min"));
+            var max = JsonSerializer.Deserialize<float[]>(aabb.GetProperty("Max"));
 
             foreach (var f in min) final.AddRange(BitConverter.GetBytes(f));
             foreach (var f in max) final.AddRange(BitConverter.GetBytes(f));
@@ -464,7 +469,7 @@ public class ModelResource : GameResource
         }
 
 
-        Buffers = ImmutableDictionary.ToImmutableDictionary(buffersfinal);
+        Buffers = new (buffersfinal);
         VertexCount = vertexCount;
         SubMeshes = submeshes;
         BaseAABB = baseAABB;
@@ -486,7 +491,7 @@ public class ModelResource : GameResource
         string key = null) : base(key)
     {
 
-        Buffers = ImmutableDictionary.ToImmutableDictionary(buffers);
+        Buffers = new (buffers);
         VertexCount = vertexCount;
         SubMeshes = submeshes;
         BaseAABB = baseAABB;

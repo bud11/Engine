@@ -2,7 +2,6 @@
 
 
 using Engine.GameResources;
-using static Engine.Core.EngineMath;
 
 namespace Engine.GameObjects;
 
@@ -12,13 +11,8 @@ namespace Engine.GameObjects;
 /// <summary>
 /// A <see cref="Core.GameObject"/> that issues draw calls.
 /// </summary>
-public abstract class DrawObject : AABBObject
+public abstract partial class DrawObject : AABBObject
 {
-
-    public void Init(string Name = default, Transform transform = default)
-    {
-        base.Init(Name, transform);
-    }
 
 
 
@@ -33,7 +27,6 @@ public abstract class DrawObject : AABBObject
 
     public override void Loop()
     {
-
         DrawnThisFrame = false;
 
         base.Loop();
@@ -51,7 +44,7 @@ public abstract class DrawObject : AABBObject
     }
 
 
-    public unsafe abstract void Draw(delegate*<DrawObject, MaterialResource, MaterialResource.MaterialDefinition> MaterialDefinitionMutator = null);
+    public unsafe abstract void Draw(delegate*<MaterialResource, MaterialResource.MaterialResolution> resolver);
 
 
 
