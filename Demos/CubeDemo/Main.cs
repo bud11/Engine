@@ -569,28 +569,6 @@ public static unsafe partial class Entry
 
 
 
-#if DEBUG
-
-        var fb = Rendering.StartFrameBufferPipeline(Camera.FrameBuffer, [new RenderingBackend.FrameBufferPipelineStage().SpecifyColorAttachment(0, RenderingBackend.FrameBufferPipelineAttachmentAccessFlags.Write, false)]);
-
-
-        ImGUIController.BeginFrame();
-
-        ImGui.Begin("Hello");
-
-        EngineDebug.DisplayObjectHeirarchyViaImGUI();
-
-        ImGui.End();
-
-        ImGUIController.EndFrame();
-
-        fb.Advance();
-
-#endif
-
-
-
-
 
         // -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 
