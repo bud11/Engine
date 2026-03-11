@@ -17,6 +17,7 @@ using System.Reflection;
 using System.Text.Json;
 using System.Text;
 using Engine.GameObjects;
+using static Engine.Core.Loading;
 #endif
 
 
@@ -37,7 +38,11 @@ using Engine.GameObjects;
 
 
 [FileExtensionAssociation(".scn")]
-public partial class SceneResource : GameResource, GameResource.ILoads, GameResource.IConverts
+public partial class SceneResource : GameResource, GameResource.ILoads,
+
+#if DEBUG
+    GameResource.IConverts
+#endif
 {
 
 
@@ -47,13 +52,11 @@ public partial class SceneResource : GameResource, GameResource.ILoads, GameReso
     private readonly ImmutableArray<GameResource> SceneResources;
 
     private readonly SceneObjectGenData SceneRootObject;
-    private readonly SceneObjectGenData[] SceneObjects;
 
 
-    private SceneResource(GameResource[] References, SceneObjectGenData[] Objects, SceneObjectGenData RootObject, string Key) : base(Key)
+    private SceneResource(GameResource[] References, SceneObjectGenData RootObject, string Key) : base(Key)
     {
         SceneRootObject = RootObject;
-        SceneObjects = Objects;
 
         SceneResources = ImmutableArray.Create(References);
 
@@ -82,12 +85,138 @@ public partial class SceneResource : GameResource, GameResource.ILoads, GameReso
         List<byte> final = new();
 
 
-        var dict = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(bytes, new JsonSerializerOptions() { PropertyNameCaseInsensitive = true });
+        var dict = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(bytes, JsonAssetLoadingOptions);
 
 
 
         if (dict.TryGetValue("Resources", out var resget))
-            await WriteResourceBytes(final, JsonSerializer.Deserialize<JsonElement[]>(resget), filePath);
+        {
+
+            var resourcesArr = JsonSerializer.Deserialize<JsonElement[]>(resget, JsonAssetLoadingOptions);
+
+
+
+
+            final.AddRange(BitConverter.GetBytes((uint)resourcesArr.Length));
+
+            var finalResourcesArrayBytes = new List<byte>[resourcesArr.Length];
+
+
+
+            //prepare each resource in async fashion
+
+            await Parallel.ForAsync<uint>(0, (uint)resourcesArr.Length, async (rIndex, cancellation) =>
+            {
+
+                var resourceFinalBytes = new List<byte>();
+
+
+                var resource = resourcesArr[rIndex];
+
+
+                var resourceTypeName = resource.GetProperty("Type").GetString();
+
+                var resourceType = Type.GetType(resourceTypeName);
+
+
+
+                if (resourceType == null)
+                    throw new Exception($"Type '{resourceTypeName}' not found - type must be specified in full, for example '{typeof(GameResource).FullName}' ");
+
+
+
+
+                //write type
+
+                resourceFinalBytes.AddRange(BitConverter.GetBytes(GetGameResourceTypeID(resourceType)));
+
+
+
+
+
+
+                //if external, write length prefixed path
+
+                if (resource.TryGetProperty("Path", out var path))
+                {
+                    resourceFinalBytes.Add(1);
+                    resourceFinalBytes.AddRange(SerializeType(path.GetString(), false));
+                }
+
+
+
+
+                //otherwise, write length prefixed final data
+
+                else if (resource.TryGetProperty("TextData", out var textdata))
+                    await WriteEmbedded(Encoding.UTF8.GetBytes(textdata.GetRawText()), true);
+
+
+                else if (resource.TryGetProperty("Base64Data", out var base64data))
+                    await WriteEmbedded(Convert.FromBase64String(base64data.GetString()), false);
+
+
+                else
+                    throw new Exception("Could not determine resource data source");
+
+
+
+
+
+
+                async Task WriteEmbedded(byte[] data, bool plaintextwarning)
+                {
+
+                    resourceFinalBytes.Add(0);
+
+
+
+                    //find extension and get the final asset bytes
+
+                    if (resource.TryGetProperty("ExtensionHint", out var extensionHint))
+                    {
+                        var ex = $".{extensionHint.GetString().Trim().TrimStart('.')}";
+
+                        if (GameResourceFileAssociations.TryGetValue(ex, out var AssetFoundType))
+                        {
+                            data = await (await (Task<AssetByteStream>)typeof(Loading)
+                                        .GetMethod(nameof(GetFinalAssetBytes), [typeof(byte[]), typeof(string)])
+                                        .MakeGenericMethod(AssetFoundType)
+                                        .Invoke(null, [data, $"{filePath}+resource{rIndex}{ex}"])).GetArray();
+                        }
+
+                        else
+                            throw new Exception($"Extension hint '{ex}' defined in json data invalid for resource type '{resourceType.FullName}' - check type has matching {typeof(FileExtensionAssociationAttribute).FullName} attribute");
+
+                    }
+
+                    else 
+                        throw new Exception("No extension hint defined in json data for resource");
+
+
+
+
+
+                    //append final asset bytes + length
+
+                    resourceFinalBytes.AddRange(WriteVarUInt64((ulong)data.Length));
+                    resourceFinalBytes.AddRange(data);
+                }
+
+
+
+
+
+                finalResourcesArrayBytes[rIndex] = resourceFinalBytes;
+            });
+
+
+
+            //add all resources to final output
+
+            for (int i = 0; i < finalResourcesArrayBytes.Length; i++)
+                final.AddRange(finalResourcesArrayBytes[i]);
+        }
 
         else 
             final.AddRange(BitConverter.GetBytes(0u));
@@ -99,15 +228,120 @@ public partial class SceneResource : GameResource, GameResource.ILoads, GameReso
 
         var objects = dict["Objects"];
 
+
+
+
+
+        // -----------------------------------------------------------------------------------------------------------------------------------------------------------
+
+
+
+
+        int count = objects.GetArrayLength();
+
+        uint[] parents = new uint[count];
+
+        int idx = 0;
+        foreach (var obj in objects.EnumerateArray())
+        {
+            if (obj.TryGetProperty("Parent", out var parentget))
+                parents[idx] = parentget.GetUInt32();
+            else
+                parents[idx] = uint.MaxValue;
+
+            idx++;
+        }
+
+
+        // ---- validate root ----
+
+        int rootIndex = -1;
+        int rootCount = 0;
+
+        for (int i = 0; i < count; i++)
+        {
+            if (parents[i] == uint.MaxValue)
+            {
+                rootIndex = i;
+                rootCount++;
+            }
+        }
+
+        if (rootCount != 1)
+            throw new Exception($"Scene must contain exactly one root object, found {rootCount}");
+
+
+        // ---- validate parent indices ----
+
+        for (int i = 0; i < count; i++)
+        {
+            if (parents[i] != uint.MaxValue && parents[i] >= count)
+                throw new Exception($"Object {i} references invalid parent index {parents[i]}");
+        }
+
+
+        // ---- detect cycles ----
+
+        for (int i = 0; i < count; i++)
+        {
+            HashSet<int> seen = new();
+            List<int> chain = new();
+
+            int current = i;
+
+            while (parents[current] != uint.MaxValue)
+            {
+                if (!seen.Add(current))
+                {
+                    int cycleStart = chain.IndexOf(current);
+                    var cycle = chain.Skip(cycleStart).Append(current);
+
+                    throw new Exception($"Scene heirarchy cycle detected: {string.Join(" -> ", cycle)}");
+                }
+
+                chain.Add(current);
+                current = (int)parents[current];
+            }
+        }
+
+
+        // ---- detect orphans ----
+
+        bool[] visited = new bool[count];
+
+        void Visit(int i)
+        {
+            if (visited[i])
+                return;
+
+            visited[i] = true;
+
+            for (int j = 0; j < count; j++)
+                if (parents[j] == i)
+                    Visit(j);
+        }
+
+        Visit(rootIndex);
+
+        for (int i = 0; i < count; i++)
+        {
+            if (!visited[i])
+                throw new Exception($"Object {i} is orphaned (not connected to root)");
+        }
+
+
+
+        // -----------------------------------------------------------------------------------------------------------------------------------------------------------
+
+
+
+
         final.AddRange(BitConverter.GetBytes((uint)objects.GetArrayLength()));
+
 
         foreach (var obj in objects.EnumerateArray())
         {
 
-
-
-            //if this is a child of another object, write parent object index, otherwise max value   (ordering therefore relies on the order in which the children appeared within the json array)
-            //there needs to be one object without a parent (the root object)
 
 
             if (obj.TryGetProperty("Parent", out var parentget))
@@ -139,13 +373,16 @@ public partial class SceneResource : GameResource, GameResource.ILoads, GameReso
 
                 final.AddRange(BitConverter.GetBytes(uint.MaxValue));
 
+
+
+
                 objTypeName = obj.GetProperty("Type").GetString();
 
                 objType = Type.GetType(objTypeName);
 
 
                 if (objType == null)
-                    throw new Exception($"Type '{objTypeName}' not found - type must be specified in full, for example 'Engine.Core.GameObject' ");
+                    throw new Exception($"Type '{objTypeName}' not found - type must be specified in full, for example '{typeof(GameObject).FullName}' ");
 
                 final.AddRange(BitConverter.GetBytes(GetGameObjectTypeID(objType)));
 
@@ -155,8 +392,8 @@ public partial class SceneResource : GameResource, GameResource.ILoads, GameReso
 
             //write each argument
 
-            if (obj.TryGetProperty("Arguments", out var args))
-                final.AddRange(WriteArgumentBytes(args));
+            if (obj.TryGetProperty("Arguments", out var argsGet))
+                final.AddRange(WriteArgumentBytes(argsGet, objType));
             else
                 final.AddRange(WriteVarUInt64(0));
 
@@ -177,16 +414,79 @@ public partial class SceneResource : GameResource, GameResource.ILoads, GameReso
 
 
 
-    public static async Task<GameResource> Load(Loading.AssetByteStream stream, string ScenePath)
+    public static async Task<GameResource> Load(AssetByteStream stream, string FilePath)
     {
 
 
-        var SceneResources = await LoadResourceBytes(stream, ScenePath);
+        uint resourceCount = stream.DeserializeKnownType<uint>();
+
+        if (resourceCount == 0) return null;
+
+
+        GameResource[] SceneResources = new GameResource[resourceCount];
+
+        (ushort type, bool external, byte[] data)[] ress = new (ushort type, bool external, byte[] data)[resourceCount];
+        for (int r = 0; r < resourceCount; r++)
+        {
+            var type = stream.DeserializeKnownType<ushort>();
+            bool external = stream.ReadByte() == 1;
+
+            byte[] data;
+
+            if (external)
+            {
+                var path = stream.DeserializeKnownType<string>();
+                data = Encoding.UTF8.GetBytes(path);
+            }
+            else
+            {
+                data = stream.DeserializeKnownType<byte[]>();
+            }
+
+            ress[r] = (type, external, data);
+        }
 
 
 
 
-        uint objectcount = stream.DeserializeType<uint>();
+        await Parallel.ForAsync<uint>(0, resourceCount, async (rIndex, cancellation) =>
+        {
+            var resource = ress[rIndex];
+
+
+            string key = null;
+            if (resource.external) key = RelativePathToFullPath(Encoding.UTF8.GetString(resource.data), FilePath[..(FilePath.LastIndexOf('/')+1)]);
+            else key = (FilePath ?? string.Empty) + "_" + rIndex;
+
+
+            GameResource res;
+
+            if (resource.external)
+                res = SceneResources[rIndex] = await LoadGameResourceFromTypeID(resource.type, key);
+
+            else
+            {
+                using (var memstream = new AssetByteStream(new MemoryStream(resource.data), resource.data.Length))
+                    res = SceneResources[rIndex] = await InternalLoadOrFetchResource(key, async () => await ConstructGameResourceFromTypeID(resource.type, memstream, key));
+
+            }
+
+
+            res.Register();
+
+            SceneResources[rIndex].AddUser();  //this scene
+
+
+        });
+
+
+
+
+
+
+
+
+        uint objectcount = stream.DeserializeKnownType<uint>();
 
         SceneObjectGenData[] SceneObjects = new SceneObjectGenData[objectcount];
 
@@ -200,9 +500,9 @@ public partial class SceneResource : GameResource, GameResource.ILoads, GameReso
         {
 
 
-            var parent = stream.DeserializeType<uint>();
+            var parent = stream.DeserializeKnownType<uint>();
 
-            var sceneref = stream.DeserializeType<uint>();
+            var sceneref = stream.DeserializeKnownType<uint>();
 
 
 
@@ -219,7 +519,7 @@ public partial class SceneResource : GameResource, GameResource.ILoads, GameReso
             }
 
             //otherwise, make totally fresh data and read type
-            else inst = new() { GameObjectTypeID = stream.DeserializeType<ushort>() };
+            else inst = new() { GameObjectTypeID = stream.DeserializeKnownType<ushort>() };
 
 
 
@@ -229,7 +529,8 @@ public partial class SceneResource : GameResource, GameResource.ILoads, GameReso
                 parents[obj] = parent;
 
 
-            inst.ArgumentData = stream.DeserializeType<byte[]>();
+
+            inst.ArgumentData = stream.DeserializeKnownType<byte[]>();
             
 
             inst.SelfIndex = obj;
@@ -255,7 +556,8 @@ public partial class SceneResource : GameResource, GameResource.ILoads, GameReso
         }
 
 
-        return new SceneResource(SceneResources, SceneObjects, SceneRoot, ScenePath);
+
+        return new SceneResource(SceneResources, SceneRoot, FilePath);
     }
 
 
@@ -284,7 +586,6 @@ public partial class SceneResource : GameResource, GameResource.ILoads, GameReso
 
 
         public uint SelfIndex;
-
     }
 
 
@@ -339,10 +640,13 @@ public partial class SceneResource : GameResource, GameResource.ILoads, GameReso
                         args[kv.Key] = kv.Value;
             }
 
+            if (obj is ModelInstance) throw new Exception();
+
             SetDataValues(obj, args);
 
 
             obj.Init();
+
         }
     }
 
@@ -385,6 +689,7 @@ public partial class SceneResource : GameResource, GameResource.ILoads, GameReso
                     inst.AddChild(child);
                 }
             }
+
 
             return inst;
         

@@ -2,6 +2,8 @@
 using Engine.GameObjects;
 using Engine.GameResources;
 using System.Numerics;
+using ImGuiNET;
+
 
 
 #if DEBUG
@@ -86,6 +88,8 @@ public static unsafe partial class Entry
         // Resource sets are logical groups of resources, such as textures and uniform buffers, which can be shared across shaders.
 
 
+
+
         ShaderCompilation.RegisterShader(
 
             ShaderName: "exampleShader",   //the shader name so we can get the shader later.
@@ -96,7 +100,7 @@ public static unsafe partial class Entry
             ResourceSets: new Dictionary<string, ShaderCompilation.ShaderResourceSetDefinition>
             {
                 ["GlobalResources"] = new ShaderCompilation.ShaderResourceSetDefinition(
-                    new OrderedDictionary<string, ShaderCompilation.IShaderResourceSetResourceDefinition>()
+                    new OrderedDictionary<string, ShaderCompilation.IResourceSetResourceSetResourceDefinition>()
                     {
                         ["GlobalUBO"] = new ShaderCompilation.ShaderUniformBufferDefinition(
                             new OrderedDictionary<string, ShaderCompilation.IShaderBufferStructDeclaration>
@@ -109,7 +113,7 @@ public static unsafe partial class Entry
                 ),
 
                 ["ModelResources"] = new ShaderCompilation.ShaderResourceSetDefinition(
-                    new OrderedDictionary<string, ShaderCompilation.IShaderResourceSetResourceDefinition>()
+                    new OrderedDictionary<string, ShaderCompilation.IResourceSetResourceSetResourceDefinition>()
                     {
                         ["ModelUBO"] = new ShaderCompilation.ShaderUniformBufferDefinition(
                             new OrderedDictionary<string, ShaderCompilation.IShaderBufferStructDeclaration>
@@ -164,7 +168,7 @@ public static unsafe partial class Entry
             ResourceSets: new Dictionary<string, ShaderCompilation.ShaderResourceSetDefinition>
             {
                 ["TextureResources"] = new ShaderCompilation.ShaderResourceSetDefinition(
-                    new OrderedDictionary<string, ShaderCompilation.IShaderResourceSetResourceDefinition>()
+                    new OrderedDictionary<string, ShaderCompilation.IResourceSetResourceSetResourceDefinition>()
                     {
                         ["Texture"] = new ShaderCompilation.ShaderTextureDefinition(RenderingBackend.TextureSamplerTypes.Texture2D)
                     }
@@ -186,7 +190,8 @@ public static unsafe partial class Entry
 
             );
 
-        
+
+
     }
 
 
@@ -560,6 +565,33 @@ public static unsafe partial class Entry
 
 
 
+
+
+
+
+#if DEBUG
+
+        var fb = Rendering.StartFrameBufferPipeline(Camera.FrameBuffer, [new RenderingBackend.FrameBufferPipelineStage().SpecifyColorAttachment(0, RenderingBackend.FrameBufferPipelineAttachmentAccessFlags.Write, false)]);
+
+
+        ImGUIController.BeginFrame();
+
+        ImGui.Begin("Hello");
+
+        EngineDebug.DisplayObjectHeirarchyViaImGUI();
+
+        ImGui.End();
+
+        ImGUIController.EndFrame();
+
+        fb.Advance();
+
+#endif
+
+
+
+
+
         // -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 
         //And, finally, we can present to screen, like before.
@@ -593,7 +625,7 @@ public static unsafe partial class Entry
 
 #if DEBUG
 
-        // ===== ( We can also disable these debug flags after we're done. These only affect the current thread, so they can be safely used to create logical debugging ranges. ) =====
+        // ===== ( We can disable these debug flags after we're done. These only affect the current thread, so they can be safely used to create logical debugging ranges. ) =====
 
         EngineDebug.ThrowIfVertexBufferMissing = 
         EngineDebug.ThrowIfResourceSetMissing =

@@ -55,7 +55,7 @@ public static class EngineBuildProcess
 
 
 
-        Directory.CreateDirectory(Loading.ReleaseRootAssetArchivePath);
+        Directory.CreateDirectory(ReleaseRootAssetArchivePath);
 
 
         foreach (var v in Enum.GetValues<RenderingBackendEnum>())
@@ -79,13 +79,13 @@ public static class EngineBuildProcess
         List<string> AssetArchiveNames = new();
 
 
-        if (Directory.Exists(Loading.AssetRootDirectoryPath))
+        if (Directory.Exists(AssetRootDirectoryPath))
         {
 
             List<Task> archiveCompletionTasks = new();
 
 
-            foreach (var archiveAbsolutePath in Directory.GetDirectories(Loading.AssetRootDirectoryPath))
+            foreach (var archiveAbsolutePath in Directory.GetDirectories(AssetRootDirectoryPath))
             {
 
 
@@ -123,7 +123,7 @@ public static class EngineBuildProcess
 
 
 
-                        var tempPath = Path.Combine(Loading.ReleaseRootAssetArchivePath, archiveName + "_temp");
+                        var tempPath = Path.Combine(ReleaseRootAssetArchivePath, archiveName + "_temp");
 
                         uint actualFiles = 0;
 
@@ -177,7 +177,7 @@ public static class EngineBuildProcess
                                     }
 
 
-                                    using var compressor = new Compressor(int.Clamp(compressionQuality, 1, 22));
+                                    using var compressor = new Compressor(compressionQuality);
 
                                     return new AssetTaskData(Path.ChangeExtension(relativePath, null), AssetFoundType, compressor.Wrap(rawBytes).ToArray(), (uint)rawBytes.Length);
 
@@ -248,7 +248,7 @@ public static class EngineBuildProcess
 
 
 
-                        using (var outStream = new FileStream(Path.Combine(Loading.ReleaseRootAssetArchivePath, archiveName), FileMode.Create, FileAccess.Write))
+                        using (var outStream = new FileStream(Path.Combine(ReleaseRootAssetArchivePath, archiveName), FileMode.Create, FileAccess.Write))
                         {
                             outStream.Write(BitConverter.GetBytes(actualFiles));
 

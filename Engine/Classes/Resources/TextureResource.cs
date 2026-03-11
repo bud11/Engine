@@ -23,8 +23,18 @@ using Engine.Stripped;
 
 
 [FileExtensionAssociation(".png")]
+[FileExtensionAssociation(".jpg")]
+[FileExtensionAssociation(".jpeg")]
+[FileExtensionAssociation(".bmp")]
+[FileExtensionAssociation(".tga")]
+[FileExtensionAssociation(".gif")]
+[FileExtensionAssociation(".hdr")]
 [FileExtensionAssociation(".exr")]
-public class TextureResource : GameResource, GameResource.ILoads, GameResource.IConverts
+public class TextureResource : GameResource, GameResource.ILoads,
+
+#if DEBUG
+    GameResource.IConverts
+#endif
 {
 
     public readonly BackendTextureReference BackendReference;
@@ -47,13 +57,23 @@ public class TextureResource : GameResource, GameResource.ILoads, GameResource.I
         TextureConversion.TextureProcessingData dat;
 
 
-        var fileExtension = Path.GetExtension(filePath);
-
-        if (fileExtension == ".png") dat = TextureConversion.LoadPNGTextureData(bytes);
-        else if (fileExtension == ".exr") dat = TextureConversion.LoadEXRTextureData(bytes);
-        else throw new Exception();
+        var ext = Path.GetExtension(filePath);
 
 
+        //supported by StbImage
+        if (ext == ".png" || ext == ".jpg" || ext == ".jpeg" || ext == ".bmp" || ext == ".tga" || ext == ".gif" || ext == ".hdr") 
+            dat = TextureConversion.LoadSTBImageTextureData(bytes);
+
+        //other
+        else if (ext == ".exr") 
+            dat = TextureConversion.LoadEXRTextureData(bytes);
+
+
+        else 
+            throw new Exception("Unsupported texture format!");
+
+
+        
 
         var finaltexturedata = await TextureConversion.TextureToTextureRuntimeFormat(dat);
 
@@ -61,7 +81,7 @@ public class TextureResource : GameResource, GameResource.ILoads, GameResource.I
 
         List<byte> final = [
 
-            .. BitConverter.GetBytes(finaltexturedata.Dimensions.X),
+                .. BitConverter.GetBytes(finaltexturedata.Dimensions.X),
                 .. BitConverter.GetBytes(finaltexturedata.Dimensions.Y),
                 .. BitConverter.GetBytes(finaltexturedata.Dimensions.Z),
 
@@ -73,10 +93,7 @@ public class TextureResource : GameResource, GameResource.ILoads, GameResource.I
 
 
         foreach (var v in finaltexturedata.Mips)
-        {
-            final.AddRange(BitConverter.GetBytes((uint)v.Length));
-            final.AddRange(v);
-        }
+            final.AddRange(Parsing.SerializeType(v, false));
 
 
         return final.ToArray();
@@ -92,9 +109,9 @@ public class TextureResource : GameResource, GameResource.ILoads, GameResource.I
     public static async Task<GameResource> Load(Loading.AssetByteStream stream, string key)
     {
 
-        var w = stream.DeserializeType<uint>();
-        var h = stream.DeserializeType<uint>();
-        var d = stream.DeserializeType<uint>();
+        var w = stream.DeserializeKnownType<uint>();
+        var h = stream.DeserializeKnownType<uint>();
+        var d = stream.DeserializeKnownType<uint>();
 
         TextureFormats format = (TextureFormats)stream.ReadByte();
         TextureTypes type = (TextureTypes)stream.ReadByte();
@@ -103,7 +120,9 @@ public class TextureResource : GameResource, GameResource.ILoads, GameResource.I
         byte[][] mips = new byte[stream.ReadByte()][];
 
         for (int i = 0; i < mips.Length; i++)
-            mips[i] = stream.DeserializeType<byte[]>();
+            mips[i] = stream.DeserializeKnownType<byte[]>();
+
+
 
 
         return new TextureResource(BackendTextureReference.Create(new Vector3<uint>(w, h, d), type, format, false, mips), key);

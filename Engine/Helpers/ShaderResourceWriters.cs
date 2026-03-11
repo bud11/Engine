@@ -7,7 +7,6 @@ namespace Engine.Core;
 
 using System.Runtime.CompilerServices;
 using static Engine.Core.RenderingBackend;
-using static Engine.Core.Rendering;
 
 
 
@@ -28,7 +27,12 @@ public static partial class ShaderResourceWriters
     /// <param name="buffer"></param>
     /// <returns></returns>
     public static unsafe ShaderDataBufferWriteHandle StartWrite(this BackendDataBufferAllocationReference buffer, bool nessecary)
-        => new ShaderDataBufferWriteHandle(buffer, nessecary);
+    {
+#if DEBUG
+        if (buffer == null) throw new Exception();
+#endif
+        return new ShaderDataBufferWriteHandle(buffer, nessecary);
+    }
 
 
 
@@ -41,7 +45,12 @@ public static partial class ShaderResourceWriters
     /// <param name="buffer"></param>
     /// <returns></returns>
     public static unsafe ShaderBufferWriteHandle StartWrite(this BackendBufferAllocationReference buffer, bool nessecary)
-        => new ShaderBufferWriteHandle(buffer, nessecary);
+    {
+#if DEBUG
+        if (buffer == null) throw new Exception();
+#endif
+        return new ShaderBufferWriteHandle(buffer, nessecary);
+    }
 
 
 

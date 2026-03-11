@@ -4,6 +4,7 @@ using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
 using System;
 using System.Collections.Generic;
+using System.Collections.Immutable;
 using System.Linq;
 using System.Text;
 
@@ -16,33 +17,30 @@ public sealed class SerializationGenerator : IIncrementalGenerator
 
     public void Initialize(IncrementalGeneratorInitializationContext context)
     {
-        var attributeTypes =
-            context.SyntaxProvider
-                .CreateSyntaxProvider(
-                    static (node, _) =>
-                        node is MemberDeclarationSyntax m &&
-                        m.AttributeLists.Count > 0,
-                    static (ctx, _) =>
+        var attributeTypes1 = context.SyntaxProvider
+            .ForAttributeWithMetadataName(
+                typeof(BinarySerializableTypeAttribute).FullName,          
+                static (node, _) => true,           
+                static (ctx, _) => (INamedTypeSymbol)ctx.TargetSymbol);
+
+
+        var assemblyAttributes =
+            context.CompilationProvider
+            .SelectMany((compilation, _) =>
+            {
+                return compilation.Assembly
+                    .GetAttributes()
+                    .Where(a => a.AttributeClass?.ToDisplayString() == typeof(BinarySerializableTypeAssemblyLevelAttribute).FullName)
+                    .Select(a =>
                     {
-                        var symbol = ctx.SemanticModel
-                            .GetDeclaredSymbol(ctx.Node);
-
-                        if (symbol == null)
-                            return null;
-
-                        if (!symbol.GetAttributes()
-                            .Any(a => a.AttributeClass?.ToDisplayString() == typeof(BinarySerializableTypeAttribute).FullName))
-                            return null;
-
-                        return symbol switch
-                        {
-                            IFieldSymbol f => f.Type,
-                            IPropertySymbol p => p.Type,
-                            INamedTypeSymbol t => t,
-                            _ => null
-                        };
+                        var arg = a.ConstructorArguments[0];
+                        return arg.Value as ITypeSymbol;
                     })
-                .Where(static s => s is not null)!;
+                    .Where(t => t is not null)!;
+            }).Collect();
+
+
+
 
 
         var deserializeTypes =
@@ -63,7 +61,7 @@ public sealed class SerializationGenerator : IIncrementalGenerator
                         if (!method.IsGenericMethod)
                             return null;
 
-                        if (method.OriginalDefinition.ToDisplayString() != "Engine.Core.Parsing.DeserializeType<T>")
+                        if (method.OriginalDefinition.ToDisplayString() != "Engine.Core.Parsing.DeserializeKnownType<T>")
                             return null;
 
 
@@ -74,13 +72,13 @@ public sealed class SerializationGenerator : IIncrementalGenerator
 
 
 
-        var attributeCollected = attributeTypes.Collect();
+        var attribute1Collected = attributeTypes1.Collect();
         var deserializeCollected = deserializeTypes.Collect();
 
 
 
         var allTypes =
-            attributeCollected
+            attribute1Collected
                 .Combine(deserializeCollected)
                 .Select(static (pair, _) =>
                 {
@@ -96,7 +94,7 @@ public sealed class SerializationGenerator : IIncrementalGenerator
 
 
         context.RegisterSourceOutput(
-            allTypes,
+            allTypes.Combine(assemblyAttributes).Combine(context.CompilationProvider),
             static (spc, source) =>
             {
                 var sb = new StringBuilder();
@@ -119,25 +117,20 @@ public sealed class SerializationGenerator : IIncrementalGenerator
 
 
 
-                static ITypeSymbol GetSerializerOverride(ITypeSymbol t)
-                    => t.Interfaces.FirstOrDefault(x => x.OriginalDefinition.ToDisplayString() == "Engine.Core.IBinarySerializeOverride");
-
-
-                static ITypeSymbol GetDeserializerOverrideType(ITypeSymbol t)
-                    => t.Interfaces.FirstOrDefault(x => x.OriginalDefinition.ToDisplayString() == "Engine.Core.IBinaryDeserializeOverride<TFrom>")?.TypeArguments[0];
-
-
+                static ITypeSymbol GetDeserializeOverriderType(ITypeSymbol t)
+                    => t.Interfaces.FirstOrDefault(x => x.OriginalDefinition.ToDisplayString() == "Engine.Core.ISerializeOverrider<TFrom>")?.TypeArguments[0];
 
 
 
 
                 static bool CanBeBlit(ITypeSymbol type)
-                    => 
-                    type.IsUnmanagedType 
+                    =>
+                    type.IsUnmanagedType
                     &&
-                    !type.GetMembers().Any(x => x.GetAttributes()
-                    .Where(f => f is IFieldSymbol field && !field.IsStatic && !field.IsReadOnly)
-                    .Any(y => y.AttributeClass.Name == nameof(NonSerializedAttribute)));
+                    !type.GetMembers()
+                        .OfType<IFieldSymbol>()
+                            .Any(f => !f.IsStatic && f.GetAttributes()
+                                .Any(a => a.AttributeClass?.Name == nameof(NonSerializedAttribute)));
 
 
 
@@ -175,25 +168,25 @@ public sealed class SerializationGenerator : IIncrementalGenerator
                         return;
 
 
-                    if (GetDeserializerOverrideType(type) != null)
+                    if (GetDeserializeOverriderType(type) != null)
                     {
-                        EvaluateAndAdd(GetDeserializerOverrideType(type));
+                        EvaluateAndAdd(GetDeserializeOverriderType(type));
                         return;
                     }
-
-
 
 
                     if (type is IArrayTypeSymbol arr)
                         EvaluateAndAdd(arr.ElementType);
 
-                    else if (IsDictionary(type, out var key, out var value))
+
+                    if (IsDictionary(type, out var key, out var value))
                     {
                         EvaluateAndAdd(key);
                         EvaluateAndAdd(value);
                     }
 
-                    else if (type.TypeKind == TypeKind.Enum)
+
+                    if (type.TypeKind == TypeKind.Enum)
                         EvaluateAndAdd(((INamedTypeSymbol)type).EnumUnderlyingType);
 
 
@@ -212,12 +205,27 @@ public sealed class SerializationGenerator : IIncrementalGenerator
 
 
 
-                foreach (var t in source)
+                foreach (var t in source.Left.Left)
                     EvaluateAndAdd(t);
+
+                foreach (var t in source.Left.Right)
+                    EvaluateAndAdd(t);
+
+
+                
+                if (allTypes.Any(x => x.SpecialType == SpecialType.System_String))
+                    EvaluateAndAdd(source.Right.CreateArrayTypeSymbol(source.Right.GetSpecialType(SpecialType.System_Byte)));
+
+
+
+
+
 
                 var types = allTypes
                     .OrderBy(t => t.ToDisplayString())
                     .ToArray();
+
+
 
 
 
@@ -229,25 +237,26 @@ public sealed class SerializationGenerator : IIncrementalGenerator
 
                 var serialize = new StringBuilder();
 
-                var lookup = new StringBuilder();
+                var deserializeUnknown = new StringBuilder();
 
-                var generic = new StringBuilder();
+                var deserializeKnown = new StringBuilder();
 
                 
 
 
 
 
-                serialize.AppendLine("\tpublic static byte[] SerializeType<T>(T value, bool writeTypeID)");
+                serialize.AppendLine("\tpublic static byte[] SerializeType(object value, bool writeTypeID)");
                 serialize.AppendLine("\t{");
 
-                generic.AppendLine("\tpublic static unsafe T DeserializeType<T>(this Stream reader, object context = null)");
-                generic.AppendLine("\t{");
+                deserializeKnown.AppendLine("\tpublic static unsafe T DeserializeKnownType<T>(this Stream reader, object context = null)");
+                deserializeKnown.AppendLine("\t{");
 
-                lookup.AppendLine("\tpublic static object DeserializeType(this Stream reader, object context = null)");
-                lookup.AppendLine("\t{");
-                lookup.AppendLine("\t\tswitch (reader.DeserializeType<ushort>(context))");
-                lookup.AppendLine("\t\t{");
+                deserializeUnknown.AppendLine("\tpublic static object DeserializeUnknownType(this Stream reader, object context = null)");
+                deserializeUnknown.AppendLine("\t{");
+                deserializeUnknown.AppendLine("\t\tvar id = reader.DeserializeKnownType<ushort>(context);");
+                deserializeUnknown.AppendLine("\t\tswitch (id)");
+                deserializeUnknown.AppendLine("\t\t{");
 
 
 
@@ -259,16 +268,16 @@ public sealed class SerializationGenerator : IIncrementalGenerator
                     ITypeSymbol t = types[i];
                     var symname = t.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat);
 
-                    lookup.AppendLine($"\t\t\tcase {i}:");
-                    lookup.AppendLine($"\t\t\t\treturn Parsing.DeserializeType<{symname}>(reader, context);");
+                    deserializeUnknown.AppendLine($"\t\t\tcase {i}:");
+                    deserializeUnknown.AppendLine($"\t\t\t\treturn reader.DeserializeKnownType<{symname}>(context);");
 
-                    generic.AppendLine($"\t\tif (typeof(T) == typeof({symname}))");
-                    generic.AppendLine("\t\t{");
+                    deserializeKnown.AppendLine($"\t\tif (typeof(T) == typeof({symname}))");
+                    deserializeKnown.AppendLine("\t\t{");
 
 
-                    serialize.AppendLine($"\t\tif (typeof(T) == typeof({symname}))");
+                    serialize.AppendLine($"\t\tif (value.GetType() == typeof({symname}))");
                     serialize.AppendLine("\t\t{");
-                    serialize.AppendLine($"\t\t\tvar value_cast_{i} = ({symname})(object)value;");
+                    serialize.AppendLine($"\t\t\tvar value_cast_{i} = ({symname})value;");
                     serialize.AppendLine($"\t\t\tList<byte> temp_var_{i} = new();");
 
 
@@ -280,23 +289,38 @@ public sealed class SerializationGenerator : IIncrementalGenerator
                     {
                         var elementName = arr.ElementType.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat);
 
-                        generic.AppendLine($"\t\t\tvar len_{i} = Parsing.ReadVarUInt64(reader);");
-                        generic.AppendLine($"\t\t\tvar arr_{i} = new {elementName}[len_{i}];");
+                        deserializeKnown.AppendLine($"\t\t\tvar len_{i} = ReadVarUInt64(reader);");
+                        deserializeKnown.AppendLine($"\t\t\tvar arr_{i} = new {elementName}[len_{i}];");
+
+
+                        serialize.AppendLine($"\t\t\ttemp_var_{i}.AddRange(WriteVarUInt64((ulong)value_cast_{i}.Length));");
+
 
                         if (CanBeBlit(arr.ElementType))
                         {
-                            generic.AppendLine($"\t\t\tSpan<byte> span_{i} = MemoryMarshal.AsBytes(arr_{i}.AsSpan());");
-                            generic.AppendLine($"\t\t\treader.ReadExactly(span_{i});");
+                            deserializeKnown.AppendLine($"\t\t\tSpan<byte> span_{i} = MemoryMarshal.AsBytes(arr_{i}.AsSpan());");
+                            deserializeKnown.AppendLine($"\t\t\treader.ReadExactly(span_{i});");
 
-                            serialize.AppendLine($"\t\t\ttemp_var_{i}.AddRange(MemoryMarshal.AsBytes(Unsafe.As<T, {symname}>(ref value).AsSpan()));");
+                            serialize.AppendLine(
+                                $"\t\t\ttemp_var_{i}.AddRange(" +
+                                $"MemoryMarshal.AsBytes(value_cast_{i}.AsSpan()));");
                         }
                         else
                         {
-                            generic.AppendLine($"\t\t\tfor (ulong j = 0; j < len_{i}; j++)");
-                            generic.AppendLine($"\t\t\t\tarr_{i}[j] = DeserializeType<{elementName}>(reader, context);");
+                            deserializeKnown.AppendLine($"\t\t\tfor (ulong j = 0; j < len_{i}; j++)");
+                            deserializeKnown.AppendLine($"\t\t\t\tarr_{i}[j] = reader.DeserializeKnownType<{elementName}>(reader);");
+
+
+                            serialize.AppendLine($"\t\t\tfor (int i{i} = 0; i{i} < value_cast_{i}.Length; i{i}++)");
+                            serialize.AppendLine($"\t\t\t\ttemp_var_{i}.AddRange(SerializeType(value_cast_{i}[i{i}], false));");
+
                         }
 
-                        generic.AppendLine($"\t\t\treturn Unsafe.As<{symname}, T>(ref arr_{i});");
+                        deserializeKnown.AppendLine($"\t\t\treturn Unsafe.As<{symname}, T>(ref arr_{i});");
+
+
+
+
                     }
 
 
@@ -309,20 +333,20 @@ public sealed class SerializationGenerator : IIncrementalGenerator
                         var keyName = key.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat);
                         var valueName = value.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat);
 
-                        generic.AppendLine($"\t\t\tvar count_{i} = Parsing.ReadVarUInt64(reader);");
-                        generic.AppendLine($"\t\t\tvar dict_{i} = new {symname}((int)count_{i});");
+                        deserializeKnown.AppendLine($"\t\t\tvar count_{i} = ReadVarUInt64(reader);");
+                        deserializeKnown.AppendLine($"\t\t\tvar dict_{i} = new {symname}((int)count_{i});");
 
-                        generic.AppendLine($"\t\t\tfor (ulong j = 0; j < count_{i}; j++)");
-                        generic.AppendLine($"\t\t\t\tdict_{i}[DeserializeType<{keyName}>(reader, context)] = DeserializeType<{valueName}>(reader, context);");
+                        deserializeKnown.AppendLine($"\t\t\tfor (ulong j = 0; j < count_{i}; j++)");
+                        deserializeKnown.AppendLine($"\t\t\t\tdict_{i}[reader.DeserializeKnownType<{keyName}>(context)] = reader.DeserializeKnownType<{valueName}>(context);");
 
-                        generic.AppendLine($"\t\t\treturn Unsafe.As<{symname}, T>(ref dict_{i});");
+                        deserializeKnown.AppendLine($"\t\t\treturn Unsafe.As<{symname}, T>(ref dict_{i});");
 
 
-                        serialize.AppendLine($"\t\t\ttemp_var_{i}.AddRange(Parsing.WriteVarUInt64((ulong)value_cast_{i}.Count));");
+                        serialize.AppendLine($"\t\t\ttemp_var_{i}.AddRange(WriteVarUInt64((ulong)value_cast_{i}.Count));");
                         serialize.AppendLine($"\t\t\tforeach (var kv in value_cast_{i})");
                         serialize.AppendLine("\t\t\t{");
-                        serialize.AppendLine($"\t\t\t\ttemp_var_{i}.AddRange(Parsing.SerializeType(kv.Key, false));");
-                        serialize.AppendLine($"\t\t\t\ttemp_var_{i}.AddRange(Parsing.SerializeType(kv.Value, false));");
+                        serialize.AppendLine($"\t\t\t\ttemp_var_{i}.AddRange(SerializeType(kv.Key, false));");
+                        serialize.AppendLine($"\t\t\t\ttemp_var_{i}.AddRange(SerializeType(kv.Value, false));");
                         serialize.AppendLine("\t\t\t}");
                     }
 
@@ -333,11 +357,11 @@ public sealed class SerializationGenerator : IIncrementalGenerator
 
                     else if (t.SpecialType == SpecialType.System_String)
                     {
-                        generic.AppendLine($"\t\t\tvar str_{i} = Encoding.UTF8.GetString(DeserializeType<byte[]>(reader, context));");
+                        deserializeKnown.AppendLine($"\t\t\tvar str_{i} = Encoding.UTF8.GetString(reader.DeserializeKnownType<byte[]>(context));");
                         
-                        generic.AppendLine($"\t\t\treturn Unsafe.As<string, T>(ref str_{i});");
+                        deserializeKnown.AppendLine($"\t\t\treturn Unsafe.As<string, T>(ref str_{i});");
 
-                        serialize.AppendLine($"\t\t\ttemp_var_{i}.AddRange(Parsing.SerializeType(Encoding.UTF8.GetBytes(value_cast_{i}), false));");
+                        serialize.AppendLine($"\t\t\ttemp_var_{i}.AddRange(SerializeType(Encoding.UTF8.GetBytes(value_cast_{i}), false));");
                     }
 
 
@@ -345,12 +369,12 @@ public sealed class SerializationGenerator : IIncrementalGenerator
 
                     // IMPLEMENTS OWN DESERIALIZATION
 
-                    else if (GetDeserializerOverrideType(t) != null)
+                    else if (GetDeserializeOverriderType(t) != null)
                     {
-                        var from = GetDeserializerOverrideType(t).ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat);
+                        var from = GetDeserializeOverriderType(t).ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat);
 
-                        generic.AppendLine($"\t\t\tvar temp_var_2_{i} = {symname}.Deserialize(DeserializeType<{from}>(reader, context), context);");
-                        generic.AppendLine($"\t\t\treturn Unsafe.As<{symname}, T>(ref temp_var_2_{i});");
+                        deserializeKnown.AppendLine($"\t\t\tvar temp_var_2_{i} = {symname}.Deserialize(reader.DeserializeKnownType<{from}>(context), context);");
+                        deserializeKnown.AppendLine($"\t\t\treturn Unsafe.As<{symname}, T>(ref temp_var_2_{i});");
                     }
 
 
@@ -360,14 +384,19 @@ public sealed class SerializationGenerator : IIncrementalGenerator
 
                     else if (CanBeBlit(t))
                     {
-                        generic.AppendLine($"\t\t\tSpan<byte> buf_{i} = stackalloc byte[sizeof({symname})];");
-                        generic.AppendLine($"\t\t\treader.ReadExactly(buf_{i});");
-                        generic.AppendLine($"\t\t\t{symname} value_{i};");
+                        deserializeKnown.AppendLine($"\t\t\tSpan<byte> buf_{i} = stackalloc byte[sizeof({symname})];");
+                        deserializeKnown.AppendLine($"\t\t\treader.ReadExactly(buf_{i});");
+                        deserializeKnown.AppendLine($"\t\t\t{symname} value_{i};");
 
-                        generic.AppendLine($"\t\t\tfixed (byte* p_{i} = buf_{i})");
-                        generic.AppendLine($"\t\t\t\tvalue_{i} = *({symname}*)p_{i};");
+                        deserializeKnown.AppendLine($"\t\t\tfixed (byte* p_{i} = buf_{i})");
+                        deserializeKnown.AppendLine($"\t\t\t\tvalue_{i} = *({symname}*)p_{i};");
 
-                        generic.AppendLine($"\t\t\treturn Unsafe.As<{symname}, T>(ref value_{i});");
+                        deserializeKnown.AppendLine($"\t\t\treturn Unsafe.As<{symname}, T>(ref value_{i});");
+
+
+                        serialize.AppendLine(
+                            $"\t\t\ttemp_var_{i}.AddRange(MemoryMarshal.AsBytes(" +
+                            $"MemoryMarshal.CreateSpan(ref value_cast_{i}, 1)));");
                     }
 
 
@@ -377,7 +406,7 @@ public sealed class SerializationGenerator : IIncrementalGenerator
 
                     else
                     {
-                        generic.AppendLine($"\t\t\t{symname} temp_var_{i} = new();");
+                        deserializeKnown.AppendLine($"\t\t\t{symname} temp_var_{i} = new();");
 
                         foreach (var member in t.GetMembers())
                         {
@@ -385,9 +414,9 @@ public sealed class SerializationGenerator : IIncrementalGenerator
                             {
                                 void commit(string name, ITypeSymbol type)
                                 {
-                                    generic.AppendLine($"\t\t\ttemp_var_{i}.{name} = DeserializeType<{type.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat)}>(reader, context);");
+                                    deserializeKnown.AppendLine($"\t\t\ttemp_var_{i}.{name} = reader.DeserializeKnownType<{type.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat)}>(context);");
 
-                                    serialize.AppendLine($"\t\t\ttemp_var_{i}.AddRange(SerializeType<{type.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat)}>(value_cast_{i}.{name}, false));");
+                                    serialize.AppendLine($"\t\t\ttemp_var_{i}.AddRange(SerializeType(value_cast_{i}.{name}, false));");
                                 }
 
                                 if (member is IFieldSymbol field && !field.IsReadOnly)
@@ -395,12 +424,12 @@ public sealed class SerializationGenerator : IIncrementalGenerator
                             }
                         }
 
-                        generic.AppendLine($"\t\t\treturn Unsafe.As<{symname}, T>(ref temp_var_{i});");
+                        deserializeKnown.AppendLine($"\t\t\treturn Unsafe.As<{symname}, T>(ref temp_var_{i});");
                     }
 
 
 
-                    generic.AppendLine("\t\t}");
+                    deserializeKnown.AppendLine("\t\t}");
 
 
                     serialize.AppendLine($"\t\t\treturn writeTypeID ? [..BitConverter.GetBytes((ushort){i}), ..temp_var_{i}] : temp_var_{i}.ToArray();");
@@ -412,25 +441,27 @@ public sealed class SerializationGenerator : IIncrementalGenerator
 
 
 
-                generic.AppendLine();
-                generic.AppendLine("\t\tthrow new NotImplementedException();");
-                generic.AppendLine("\t}");
-
-                lookup.AppendLine("\t\t}");
-                lookup.AppendLine("\t\tthrow new NotImplementedException();");
-                lookup.AppendLine("\t}");
+                deserializeKnown.AppendLine();
+                deserializeKnown.AppendLine("\t\tthrow new NotImplementedException();");
+                deserializeKnown.AppendLine("\t}");
 
 
-                serialize.AppendLine("\t\tthrow new NotImplementedException();");
+                deserializeUnknown.AppendLine("\t\t\tdefault:");
+                deserializeUnknown.AppendLine("\t\t\t\tthrow new NotImplementedException(\n#if DEBUG\n$\"Missing type ID {id}\"\n#endif\n);");
+                deserializeUnknown.AppendLine("\t\t}");
+                deserializeUnknown.AppendLine("\t}");
+
+
+                serialize.AppendLine("\t\tthrow new NotImplementedException(\n#if DEBUG\n$\"Serialization for type '{value.GetType().FullName}' not generated, mark via attribute\"\n#endif\n);");
                 serialize.AppendLine("\t}");
 
 
 
-                sb.Append(generic);
+                sb.Append(deserializeKnown);
                 sb.AppendLine();
                 sb.AppendLine("//------------------------------------------------------------------------------------------");
                 sb.AppendLine();
-                sb.Append(lookup);
+                sb.Append(deserializeUnknown);
                 sb.AppendLine();
                 sb.AppendLine("//------------------------------------------------------------------------------------------");
                 sb.AppendLine();

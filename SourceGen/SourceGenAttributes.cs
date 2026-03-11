@@ -11,25 +11,35 @@ using System;
 /// <summary>
 /// Registers a type as both serializable and deserializable, and assigns the type an ID so that it can be deserialized even if the type is statically unknown at parse time. Backed by AOT-safe source generation.
 /// <br/>
-/// <br/> This attribute can be applied to:
-/// <br/> - A type directly
-/// <br/> - An assembly, provided <paramref name="typeOverride"/> is set to specify which type
-/// <br/>
-/// <br/> Type discovery will also naturally include all of the field types on this type (unless this type implements <see cref="Engine.Core.IBinarySerializeableOverride{TIntermediate}"/>), as well as any type used in a call to <see cref="Engine.Core.Parsing.DeserializeType{T}"/>.
-/// <br/>
 /// <br/> Involved types cannot be static, abstract or an interface, and each must expose a parameterless constructor.
 /// <br/> Serialization will occur by deserializing all publically mutable instance fields, excluding any marked with <see cref="NonSerializedAttribute"/>.
-/// <br/> <b> Arrays and dictionaries featuring supported types are also supported, and are the only exceptions to that logic. </b>
+/// <br/> <b> Arrays and dictionaries featuring supported types are also supported with special case logic. </b>
 /// <br/>
-/// <br/> If a type implements <see cref="Engine.Core.IBinarySerializeableOverride{TIntermediate}"/>, it can override how it's serialization and deserialization occurs. 
+/// <br/> If a type implements <see cref="Engine.Core.ISerializeOverrider{TIntermediate}"/>, it can override how it's serialization and deserialization occurs. 
 /// <br/> For example, it may only serialize a self-reference through this particular system.
 /// <br/> <see cref="Core.GameObject"/> and <see cref="Core.GameResource"/> are good prexisting examples of that pattern.
+/// <br/>
+/// <br/> Also see <seealso cref="BinarySerializableTypeAssemblyLevelAttribute"/>.
 /// </summary>
-[AttributeUsage(AttributeTargets.Class | AttributeTargets.Struct | AttributeTargets.Assembly | AttributeTargets.Enum, Inherited = false, AllowMultiple = true)]
-public sealed class BinarySerializableTypeAttribute(Type typeOverride = null) : Attribute
+[AttributeUsage(AttributeTargets.Class | AttributeTargets.Struct | AttributeTargets.Enum, Inherited = false, AllowMultiple = false)]
+public sealed class BinarySerializableTypeAttribute : Attribute;
+
+
+
+
+/// <summary>
+/// Works the same way as <see cref="BinarySerializableTypeAttribute"/>, but attributed at the assembly level, specifying a target type via <paramref name="typeClarification"/>. Useful if for example you don't own the type.
+/// </summary>
+/// <param name="typeClarification"></param>
+[AttributeUsage(AttributeTargets.Assembly, Inherited = false, AllowMultiple = true)]
+public sealed class BinarySerializableTypeAssemblyLevelAttribute(Type typeClarification) : Attribute
 {
-    public readonly Type TypeOverride = typeOverride;
+    public readonly Type Type = typeClarification;
 }
+
+
+
+
 
 
 

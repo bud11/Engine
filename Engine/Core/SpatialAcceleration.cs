@@ -293,7 +293,7 @@ public class BVH
 
         static BVHNode read(BinaryReader src)
         {
-            var bounds = AABB.FromMinMax(src.DeserializeType<Vector3>(), src.DeserializeType<Vector3>());
+            var bounds = AABB.FromMinMax(src.DeserializeKnownType<Vector3>(), src.DeserializeKnownType<Vector3>());
 
             var idx = src.ReadUInt32();
 

@@ -25,15 +25,19 @@ using static Engine.Core.EngineMath;
 /// <br/> To allow fields/properties to be set via data, see <see cref="BinarySerializableTypeAttribute"/> and <see cref="DataValueAttribute"/>.
 /// </summary>
 public partial class GameObject : Freeable,
-    IBinarySerializeableOverride<uint>
+    ISerializeOverrider<uint>
 {
 
 
-    static object IBinarySerializeableOverride<uint>.Deserialize(uint reference, object context)
-        => ((SceneResource.SceneBinaryDeserializationContext)context).Objects[(int)reference];
 
-    object IBinarySerializeableOverride<uint>.Serialize(uint data, object context)
+    static uint ISerializeOverrider<uint>.Serialize(object instance, object context)
         => throw new NotImplementedException();
+
+    static object ISerializeOverrider<uint>.Deserialize(uint data, object context)
+        => ((SceneResource.SceneBinaryDeserializationContext)context).Objects[(int)data];
+
+
+
 
 
 

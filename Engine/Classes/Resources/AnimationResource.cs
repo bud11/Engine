@@ -22,7 +22,11 @@ using System.Text.Json;
 
 
 [FileExtensionAssociation(".anim")]
-public class AnimationResource : GameResource, GameResource.ILoads, GameResource.IConverts
+public class AnimationResource : GameResource, GameResource.ILoads,
+
+#if DEBUG
+    GameResource.IConverts
+#endif
 {
 
 
@@ -62,9 +66,7 @@ public class AnimationResource : GameResource, GameResource.ILoads, GameResource
     public static async Task<byte[]> ConvertToFinalAssetBytes(byte[] bytes, string filePath)
     {
 
-        var s = new JsonSerializerOptions() { PropertyNameCaseInsensitive = true };
-
-        var dict = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(bytes, s);
+        var dict = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(bytes, Loading.JsonAssetLoadingOptions);
 
         using var ms = new MemoryStream();
         using var bw = new BinaryWriter(ms);
@@ -134,14 +136,13 @@ public class AnimationResource : GameResource, GameResource.ILoads, GameResource
 
 
 
-    
     public static new async Task<GameResource> Load(Loading.AssetByteStream stream, string key)
     {
-        var length = stream.DeserializeType<float>();
+        var length = stream.DeserializeKnownType<float>();
         var loops = stream.ReadByte() == 1;
 
 
-        var trackcount = stream.DeserializeType<uint>();
+        var trackcount = stream.DeserializeKnownType<uint>();
 
 
 
@@ -150,13 +151,13 @@ public class AnimationResource : GameResource, GameResource.ILoads, GameResource
 
         for (uint tr = 0; tr < trackcount; tr++)
         {
-            var identifier = stream.DeserializeType<string>();
+            var identifier = stream.DeserializeKnownType<string>();
 
 
             var tracktype = (TrackTypes)stream.ReadByte();
 
 
-            var timesarray = stream.DeserializeType<float[]>();
+            var timesarray = stream.DeserializeKnownType<float[]>();
 
             object contentarray = null;
 
@@ -165,19 +166,19 @@ public class AnimationResource : GameResource, GameResource.ILoads, GameResource
                 case TrackTypes.Position:
                 case TrackTypes.Scale:
 
-                    contentarray = stream.DeserializeType<Vector3[]>();
+                    contentarray = stream.DeserializeKnownType<Vector3[]>();
 
                     break;
 
                 case TrackTypes.Rotation:
 
-                    contentarray = stream.DeserializeType<Quaternion[]>();
+                    contentarray = stream.DeserializeKnownType<Quaternion[]>();
 
                     break;
 
                 case TrackTypes.Value:
 
-                    contentarray = stream.DeserializeType<float[]>();
+                    contentarray = stream.DeserializeKnownType<float[]>();
 
                     break;
 

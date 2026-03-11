@@ -1,6 +1,13 @@
 ﻿
 
 
+using Engine.Attributes;
+using Engine.GameResources;
+
+[assembly: BinarySerializableTypeAssemblyLevel(typeof(Dictionary<string, MaterialResource.MaterialTextureDefinition>))]
+
+
+
 namespace Engine.GameResources;
 
 
@@ -26,7 +33,11 @@ using System.Text.Json;
 
 public class MaterialResource :
 
-    GameResource, GameResource.ILoads, GameResource.IConverts
+    GameResource, GameResource.ILoads,
+
+#if DEBUG
+    GameResource.IConverts
+#endif
 {
 
 
@@ -73,9 +84,9 @@ public class MaterialResource :
 
         // --- reads ---
 
-        var Shader = BackendShaderReference.Get(stream.DeserializeType<string>());
+        var Shader = BackendShaderReference.Get(stream.DeserializeKnownType<string>());
 
-        var textures = Parsing.DeserializeType<Dictionary<string, MaterialTextureDefinition>>(stream);
+        var textures = Parsing.DeserializeKnownType<Dictionary<string, MaterialTextureDefinition>>(stream);
 
         var arguments = Parsing.ReadArgumentBytes<string>(stream, null);  
 
@@ -134,7 +145,6 @@ public class MaterialResource :
     public struct MaterialTextureDefinition
     {
         public string Path;
-        public string Name;
         public SamplerDetails SamplerDetails;
     }
 
@@ -150,7 +160,7 @@ public class MaterialResource :
 
 
 
-        var dict = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(bytes);
+        var dict = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(bytes, Loading.JsonAssetLoadingOptions);
 
 
 
@@ -164,8 +174,11 @@ public class MaterialResource :
 
 
 
-        if (dict.TryGetValue("Textures", out var resget))
-            finalbytes.AddRange(Parsing.SerializeType(resget.Deserialize<Dictionary<string, MaterialTextureDefinition>>(), false));
+        if (dict.TryGetValue("Textures", out var texGet))
+        {
+            var t = texGet.Deserialize<Dictionary<string, MaterialTextureDefinition>>(Loading.JsonAssetLoadingOptions);
+            finalbytes.AddRange(Parsing.SerializeType(t, false));
+        }
         else 
             finalbytes.AddRange(Parsing.WriteVarUInt64(0));
 

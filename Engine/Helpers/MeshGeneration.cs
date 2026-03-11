@@ -54,7 +54,6 @@ public static class MeshGeneration
 
         return new ModelResource(
             final,
-            (uint)pos.Length,
 
             [ new SubmeshRange(0, (uint)indices.Length) ],
 

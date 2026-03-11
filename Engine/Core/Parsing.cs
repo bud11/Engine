@@ -6,6 +6,7 @@ namespace Engine.Core;
 
 
 using Engine.Attributes;
+using System.Collections;
 using System.Numerics;
 using System.Runtime.InteropServices;
 using System.Text;
@@ -14,6 +15,7 @@ using System.Text;
 #if DEBUG
 using System.Text.Json;
 using static Engine.Core.Loading;
+using System.Reflection;
 #endif
 
 
@@ -29,13 +31,14 @@ using static Engine.Core.Loading;
 
 
 /// <summary>
-/// See <see cref="BinarySerializableTypeAttribute"/>. Use this to define how <typeparamref name="TIntermediate"/> should be serialized and deserialized to produce an instance of the implmenting type, given a specific context.
+/// Used to define how this type should be serialized into <typeparamref name="TIntermediate"/> and/or deserialized from <typeparamref name="TIntermediate"/>, optionally reliant on some specific contextual object.
 /// </summary>
-public interface IBinarySerializeableOverride<TIntermediate>
+public interface ISerializeOverrider<TIntermediate>
 {
-    abstract object Serialize(TIntermediate data, object context);
+    static abstract TIntermediate Serialize(object instance, object context);
 
     static abstract object Deserialize(TIntermediate data, object context);
+
 }
 
 
@@ -96,73 +99,6 @@ public static partial class Parsing
 
 
 
-    public static async Task<GameResource[]> LoadResourceBytes(Stream reader, string FilePath)
-    {
-
-        uint resourceCount = reader.DeserializeType<uint>();
-
-        if (resourceCount == 0) return null;
-
-
-        GameResource[] resources = new GameResource[resourceCount];
-
-
-        (ushort type, bool external, byte[] data)[] ress = new (ushort type, bool external, byte[] data)[resourceCount];
-        for (int r = 0; r < resourceCount; r++)
-        {
-            var type = reader.DeserializeType<ushort>();
-            bool external = reader.ReadByte() == 1;
-
-            byte[] data;
-
-            if (external)
-            {
-                var path = reader.DeserializeType<string>();
-                data = Encoding.UTF8.GetBytes(path);
-            }
-            else
-            {
-                data = reader.DeserializeType<byte[]>();
-            }
-
-            ress[r] = (type, external, data);
-        }
-
-
-        await Parallel.ForAsync<uint>(0, resourceCount, async (rIndex, cancellation) =>
-        {
-            var resource = ress[rIndex];
-
-
-            string key = null;
-            if (resource.external) key = RelativePathToFullPath(Encoding.UTF8.GetString(resource.data), FilePath[..(FilePath.LastIndexOf('/')+1)]);
-            else key = (FilePath ?? string.Empty) + "_" + rIndex;
-
-
-            GameResource res;
-
-            if (resource.external)
-                res = resources[rIndex] = await LoadGameResourceFromTypeID(resource.type, key);
-
-            else
-            {
-                using (var memstream = new AssetByteStream(new MemoryStream(resource.data), resource.data.Length)) 
-                    res = resources[rIndex] = await InternalLoadOrFetchResource(key, async () => await ConstructGameResourceFromTypeID(resource.type, memstream, key));
-
-            }
-
-
-            res.Register();
-
-            resources[rIndex].AddUser();  //this scene
-
-
-        });
-
-
-        return resources;
-    }
-
 
 
 
@@ -170,17 +106,15 @@ public static partial class Parsing
 
     public static Dictionary<TKey, object> ReadArgumentBytes<TKey>(this Stream reader, object context = null) where TKey : notnull
     {
-        var len = reader.DeserializeType<byte>();
+        var len = reader.DeserializeKnownType<byte>();
 
         var dict = new Dictionary<TKey, object>(len);
 
         for (byte i = 0; i < len; i++)
-            dict[reader.DeserializeType<TKey>(context)] = reader.DeserializeType(reader.DeserializeType<ushort>(context));
+            dict[reader.DeserializeKnownType<TKey>(context)] = reader.DeserializeUnknownType(context);
 
         return dict;
     }
-
-
 
 
 
@@ -197,7 +131,7 @@ public static partial class Parsing
 
     public static T EnumParse<T>(string value, bool ignoreCase = true) where T : struct, Enum
     {
-        if (Enum.TryParse<T>(value, ignoreCase: ignoreCase, out var val)) 
+        if (Enum.TryParse<T>(value, ignoreCase: ignoreCase, out var val))
             return val;
 
 
@@ -209,124 +143,95 @@ public static partial class Parsing
 
 
 
-    public static async Task WriteResourceBytes(List<byte> final, JsonElement[] resourcesArr, string filePath)
+
+
+    /// <summary>
+    /// Debug only development time method. Writes arbitrary arguments each with a type, value, and indexer.   
+    /// <br/> Each involved type must be serializable via <see cref="BinarySerializableTypeAttribute"/> or similar.
+    /// <br/> 
+    /// <br/> Example data might look like this, where each argument value is an input to <see cref="DeserializeTypeFromJson(JsonElement, Type, object)"/>
+    /// <br/>
+    /// <br/>
+    /// <code>
+    /// {
+    ///     "ExampleArgument": { ... },
+    ///     "ExampleArgument2": { ... }
+    /// }
+    /// </code>
+    /// 
+    /// <br/> If supplying <paramref name="DataValueAttributeTargetTypeForNumericalIndexing"/>, arguments will be treated as destined field or property assignments for that type, and will be indexed by a numerical indexer rather than string name. 
+    /// <br/> For example, instead of effectively serializing { "ExampleArgument" : { ... }  }, something closer to { type.GetFields().IndexOf(type.GetField("ExampleArgument")) : { ... } } will be serialized instead.
+    /// <br/> Members to be assigned must have <see cref="DataValueAttribute"/>.
+    /// </summary>
+    /// <param name="arguments"></param>
+    /// <returns></returns>
+    public static unsafe byte[] WriteArgumentBytes(JsonElement arguments, Type? DataValueAttributeTargetTypeForNumericalIndexing = null, object context = null)
     {
 
-        final.AddRange(BitConverter.GetBytes((uint)resourcesArr.Length));
 
-        var finalResourcesArrayBytes = new List<byte>[resourcesArr.Length];
-
+        List<byte> final = [(byte)arguments.EnumerateObject().Count()];
 
 
-        //prepare each resource in async fashion
 
-        await Parallel.ForAsync<uint>(0, (uint)resourcesArr.Length, async (rIndex, cancellation) =>
+
+        var DataValueTargetTypeMembers = DataValueAttributeTargetTypeForNumericalIndexing == null ? null : DataValueAttributeTargetTypeForNumericalIndexing.GetMembers(BindingFlags.Public | BindingFlags.Instance).Where(x => x is FieldInfo || x is PropertyInfo).ToArray();
+
+
+
+
+        foreach (var arg in arguments.EnumerateObject())
         {
 
-            var resourceFinalBytes = new List<byte>();
 
-
-            var resource = resourcesArr[rIndex];
-
-
-            var resourceTypeName = resource.GetProperty("Type").GetString();
-
-            var resourceType = Type.GetType(resourceTypeName);
+            Type deserializeTypeFallback = null;
 
 
 
-            if (resourceType == null)
-                throw new Exception($"Type '{resourceTypeName}' not found - type must be specified in full, for example 'Engine.Core.GameResource' ");
+            // ------------- indexer -------------
 
-
-
-
-            //write type
-
-            resourceFinalBytes.AddRange(BitConverter.GetBytes(GetGameResourceTypeID(resourceType)));
-
-
-
-
-
-
-            //if external, write length prefixed path
-
-            if (resource.TryGetProperty("Path", out var path))
+            if (DataValueAttributeTargetTypeForNumericalIndexing == null)
             {
-                resourceFinalBytes.Add(1);
-                resourceFinalBytes.AddRange(SerializeType(path.GetString(), false));
+                final.AddRange(SerializeType(arg.Name, false));
             }
-
-
-
-
-            //otherwise, write length prefixed final data
-
-            else if (resource.TryGetProperty("TextData", out var textdata))
-                await WriteEmbedded(Encoding.UTF8.GetBytes(textdata.GetRawText()), true);
-
-
-            else if (resource.TryGetProperty("Base64Data", out var base64data))
-                await WriteEmbedded(Convert.FromBase64String(base64data.GetString()), false);
-
-
             else
-                throw new Exception("Could not determine resource data source");
-
-
-
-
-
-
-            async Task WriteEmbedded(byte[] data, bool plaintextwarning)
             {
-
-                resourceFinalBytes.Add(0);
-
-
-                //get resource properties
-
-                var exHint = resource.GetProperty("ExtensionHint").GetString();
+                var fget = DataValueAttributeTargetTypeForNumericalIndexing.GetField(arg.Name, BindingFlags.Public | BindingFlags.Instance);
+                var pget = DataValueAttributeTargetTypeForNumericalIndexing.GetProperty(arg.Name, BindingFlags.Public | BindingFlags.Instance);
 
 
-
-                //find extension and get the final asset bytes if applicable
-
-                bool extensionHintFound = GameResourceFileAssociations.TryGetValue(exHint, out var AssetFoundType);
+                if (fget == null && pget == null)
+                    throw new Exception($"Field or property '{arg.Name}' on target type '{DataValueAttributeTargetTypeForNumericalIndexing.FullName}' couldn't be found.");
 
 
-                if (extensionHintFound)
-                {
-                    data = await (await (Task<AssetByteStream>)typeof(Loading)
-                                .GetMethod(nameof(GetFinalAssetBytes), [typeof(byte[]), typeof(string)])
-                                .MakeGenericMethod(AssetFoundType)
-                                .Invoke(null, [$"{filePath}/resource_{rIndex}.{exHint}", data])).GetArray();
-                }
+                if (fget != null && fget.GetCustomAttribute<DataValueAttribute>() == null)
+                    throw new Exception($"Field '{arg.Name}' on target type '{DataValueAttributeTargetTypeForNumericalIndexing.FullName}' is not attributed with '{typeof(DataValueAttribute).FullName}'.");
+
+
+                if (pget != null && pget.GetCustomAttribute<DataValueAttribute>() == null)
+                    throw new Exception($"Property '{arg.Name}' on target type '{DataValueAttributeTargetTypeForNumericalIndexing.FullName}' is not attributed with '{typeof(DataValueAttribute).FullName}'.");
 
 
 
-                //append final asset bytes + length
+                deserializeTypeFallback = fget == null ? pget.PropertyType : fget.FieldType;
 
-                resourceFinalBytes.AddRange(BitConverter.GetBytes((uint)data.Length));
-                resourceFinalBytes.AddRange(data);
+                final.Add((byte)Array.IndexOf(DataValueTargetTypeMembers, deserializeTypeFallback));
+
             }
 
 
 
+            // ------------- typed value -------------
+
+            final.AddRange(SerializeType(DeserializeTypeFromJsonAndSerializeToBytes(arg.Value, deserializeTypeFallback, context), true));
+
+        }
 
 
-            finalResourcesArrayBytes[rIndex] = resourceFinalBytes;
-        });
+        
 
-
-
-        //add all resources to final output
-
-        for (int i = 0; i < finalResourcesArrayBytes.Length; i++)
-            final.AddRange(finalResourcesArrayBytes[i]);
-
+        return SerializeType(final.ToArray(), false);
     }
+
 
 
 
@@ -334,52 +239,274 @@ public static partial class Parsing
 
 
     /// <summary>
-    /// Writes arbitrary parameters each with a type ID and index. The json data needs to specify the type of each parameter via its full C# type name or appropriate primitive alias.
+    /// Debug only development time method. Deserializes an arbitrary type (graph) from json data.
+    /// <br/>
+    /// <br/> Explicit typing, up/interface casts and boxing can be done by providing a dictionary with Type and Value keys as the json value. Otherwise, the type resolve falls back to <paramref name="typeHint"/>.
+    /// <br/> Deserialization will attempt to deserialize via <see cref="ISerializeOverrider{TIntermediate}"/> implementations for applicable types.
+    /// <br/>
+    /// <br/> An example input might look like this:
+    /// <br/>
+    /// <br/>
+    /// <code>
+    /// {
+    ///     "Type": "System.Collections.Generic.KeyValuePair&lt;string, object&gt;",
+    ///     "Value": { 
+    ///         "Key": "ExampleKey",
+    ///         "Value": {
+    ///             "Type" : "bool",
+    ///             "Value" : true
+    ///         }
+    ///     }
+    /// }
+    /// </code>
     /// </summary>
-    /// <param name="arguments"></param>
+    /// <param name="arg"></param>
     /// <returns></returns>
-    public static unsafe byte[] WriteArgumentBytes(JsonElement arguments)
+    /// <exception cref="Exception"></exception>
+    public static byte[] DeserializeTypeFromJson(JsonElement arg, Type typeHint = null, object context = null)
+        => (byte[])DeserializeTypeFromJsonInternal(arg, true, typeHint, context);
+
+
+
+    /// <summary>
+    /// Works the same way as <see cref="DeserializeTypeFromJson(JsonElement, Type, object)"/>, but serializes into bytes immediately, meaning no live object instances are created or derived.
+    /// </summary>
+    /// <param name="arg"></param>
+    /// <returns></returns>
+    /// <exception cref="Exception"></exception>
+    public static byte[] DeserializeTypeFromJsonAndSerializeToBytes(JsonElement arg, Type typeHint = null, object context = null)
+       => (byte[])DeserializeTypeFromJsonInternal(arg, true, typeHint, context);
+
+
+
+
+
+    private static object DeserializeTypeFromJsonInternal(JsonElement arg, bool serialize, Type typeHint = null, object context = null)
     {
-        var dict = arguments.Deserialize<Dictionary<string,JsonElement>>();
-
-        List<byte> final = [(byte)dict.Count];
 
 
-        foreach (var arg in dict)
+
+
+        Type type;
+
+
+
+        //type in data
+
+        if (arg.ValueKind == JsonValueKind.Object && arg.GetPropertyCount() == 2 && arg.TryGetProperty("Type", out var typeGet) && arg.TryGetProperty("Value", out JsonElement Value))
         {
-            var TypeName = arg.Value.GetProperty("Type").GetString();
-            var Value = arg.Value.GetProperty("Value");
 
+            var TypeName = typeRegex().Replace(typeGet.GetString(), match =>
+            {
+                if (CSharpAliases.TryGetValue(match.Value, out var type))
+                    return type.FullName!;
 
-            TypeName = System.Text.RegularExpressions.Regex.Replace(
-                TypeName,
-                @"\b[a-zA-Z_][a-zA-Z0-9_]*\b",
-                match =>
-                {
-                    if (CSharpAliases.TryGetValue(match.Value, out var type))
-                        return type.FullName!;
-
-                    return match.Value;
-                });
-
-
-            var type = Type.GetType(TypeName);
+                return match.Value;
+            });
 
 
 
-            //indexer
-            final.AddRange(SerializeType(arg.Key, false));
+            type = Type.GetType(TypeName);
 
-            //value
-            final.AddRange(type == null
-                ? throw new Exception($"Type '{TypeName}' not found - type must be specified in full (with the exception of types with built in aliases) - for example 'System.Numerics.Matrix4x4' ")
-                : SerializeType(Value.Deserialize(type), true));
+
+            if (type == null)
+                throw new Exception($"Type '{TypeName}' not found - type must be specified in full (with the exception of types with primitive aliases such as 'int') - for example '{typeof(Matrix4x4).FullName}' ");
 
         }
 
 
-        return [.. WriteVarUInt64((ulong)final.Count), .. final];
+        //type provided
+
+        else if (typeHint != null)
+        {
+            type = typeHint;
+            Value = arg;
+        }
+
+
+
+        else
+            throw new Exception("Type was not specified and could not be inferred");
+
+
+
+
+
+
+        // ------------- custom parsed -------------
+
+        var overrides = type.GetInterfaces()
+            .Where(x =>
+                x.IsGenericType
+                    ? x.GetGenericTypeDefinition() == typeof(ISerializeOverrider<>)
+                    : x == typeof(ISerializeOverrider<>));
+
+
+        if (overrides.Any())
+        {
+            foreach (var v in overrides)
+            {
+                var generic = v.GetGenericArguments()[0];
+
+                try
+                {
+                    return type.GetMethod("Deserialize", BindingFlags.Public | BindingFlags.Static).Invoke(null, [DeserializeTypeFromJsonInternal(arg, serialize, generic, context), context]);
+                }
+                catch { }
+            }
+        }
+
+
+
+
+
+
+
+
+        // ------------- primitives -------------
+
+        if (type.GetInterfaces()
+            .Any(x =>
+                x.IsGenericType
+                    ? x.GetGenericTypeDefinition() == typeof(INumber<>)
+                    : x == typeof(INumber<>)))
+
+            return SerializeType(Value.Deserialize(type, JsonAssetLoadingOptions), false);
+
+
+        if (type == typeof(bool))
+            return SerializeType(Value.Deserialize<bool>(JsonAssetLoadingOptions), false);
+
+        if (type == typeof(string))
+            return SerializeType(Value.GetString(), false);
+
+        if (type.IsEnum)
+            return SerializeType(Value.Deserialize(type, JsonAssetLoadingOptions), false);
+
+
+
+
+
+
+
+
+
+        // ------------- collections -------------
+
+
+        if (type.IsArray)
+        {
+            var arr = Value.Deserialize<JsonElement[]>(JsonAssetLoadingOptions);
+
+            var elementType = type.GetElementType();
+
+
+            if (serialize)
+            {
+                List<byte> ret = [ .. WriteVarUInt64((ulong)arr.Length) ];
+
+                for (int i = 0; i < arr.Length; i++)
+                    ret.AddRange(SerializeType(DeserializeTypeFromJsonInternal(arr[i], true, elementType, context), false));
+
+                return ret.ToArray();
+            }
+
+
+            else
+            {
+                IList ret = Array.CreateInstance(type, arr.Length);
+
+                for (int i = 0; i < arr.Length; i++)
+                    ret[i] = DeserializeTypeFromJsonInternal(arr[i], false, elementType, context);
+
+                return ret;
+            }
+        }
+
+
+
+
+        if (type.GetInterfaces().Where(x =>
+                x.IsGenericType
+                    ? x.GetGenericTypeDefinition() == typeof(IDictionary<,>)
+                    : x == typeof(IDictionary<,>)).Any())
+        {
+            var keyType = type.GetGenericArguments()[0];
+            var valueType = type.GetGenericArguments()[1];
+
+            var obj = Value.EnumerateObject();
+
+
+            var dictType = type.MakeGenericType(keyType, valueType);
+            
+
+            if (serialize)
+            {
+                List<byte> ret = [.. WriteVarUInt64((ulong)obj.Count())];
+
+                foreach (var kv in obj)
+                {
+                    ret.AddRange( SerializeType(kv.Name, false) );
+                    ret.AddRange( SerializeType(DeserializeTypeFromJsonInternal(kv.Value, true, valueType, context), false) );
+                }
+
+                return ret;
+            }
+
+            else
+            {
+                IDictionary ret = (IDictionary)Activator.CreateInstance(dictType);
+
+                foreach (var kv in obj)
+                    ret[Convert.ChangeType(kv.Name, keyType)] = DeserializeTypeFromJsonInternal(kv.Value, false, valueType, context);
+
+
+                return ret;
+            }
+
+
+        }
+
+
+
+
+
+        // -------------- other types --------------
+
+
+        object? inst = serialize ? new List<byte>() : Activator.CreateInstance(type);
+
+
+        foreach (var kv in Value.EnumerateObject())
+        {
+            var fget = type.GetField(kv.Name, BindingFlags.Public | BindingFlags.Instance);
+            var pget = type.GetProperty(kv.Name, BindingFlags.Public | BindingFlags.Instance);
+
+            if (fget != null)
+            {
+                if (serialize)
+                    ((List<byte>)inst).AddRange((byte[])DeserializeTypeFromJsonInternal(kv.Value, true, fget.FieldType, context));
+                else
+                    fget.SetValue(inst, DeserializeTypeFromJsonInternal(kv.Value, false, fget.FieldType, context));
+            }
+
+            else if (pget != null)
+            {
+                if (serialize)
+                    ((List<byte>)inst).AddRange((byte[])DeserializeTypeFromJsonInternal(kv.Value, true, pget.PropertyType, context));
+                else
+                    pget.SetValue(inst, DeserializeTypeFromJsonInternal(kv.Value, false, pget.PropertyType, context));
+            }
+
+            else throw new Exception($"Could not parse type '{type.FullName}'");
+        }
+
+
+
+        return serialize ? ((List<byte>)inst).ToArray() : inst;
+
     }
+
 
 
 
@@ -407,6 +534,9 @@ public static partial class Parsing
             ["string"] = typeof(string),
             ["object"] = typeof(object)
         };
+
+    [System.Text.RegularExpressions.GeneratedRegex(@"\b[a-zA-Z_][a-zA-Z0-9_]*\b")]
+    private static partial System.Text.RegularExpressions.Regex typeRegex();
 
 
 

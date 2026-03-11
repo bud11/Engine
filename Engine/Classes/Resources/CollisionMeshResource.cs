@@ -20,7 +20,11 @@ using System.Text.Json;
 
 
 [FileExtensionAssociation(".col")]
-public class CollisionMeshResource : GameResource, GameResource.ILoads, GameResource.IConverts
+public class CollisionMeshResource : GameResource, GameResource.ILoads,
+
+#if DEBUG
+    GameResource.IConverts
+#endif
 {
 
     public readonly AABB BaseAABB;
@@ -31,7 +35,7 @@ public class CollisionMeshResource : GameResource, GameResource.ILoads, GameReso
     public static new async Task<GameResource> Load(Loading.AssetByteStream stream, string key)
     {
 
-        uint tricount = stream.DeserializeType<uint>();
+        uint tricount = stream.DeserializeKnownType<uint>();
 
 
         CollisionMeshTriangle[] tris = new CollisionMeshTriangle[tricount];
@@ -40,18 +44,18 @@ public class CollisionMeshResource : GameResource, GameResource.ILoads, GameReso
         {
             tris[i] = new CollisionMeshTriangle()
             {
-                position1 = stream.DeserializeType<Vector3>(),
-                position2 = stream.DeserializeType<Vector3>(),
-                position3 = stream.DeserializeType<Vector3>(),
+                position1 = stream.DeserializeKnownType<Vector3>(),
+                position2 = stream.DeserializeKnownType<Vector3>(),
+                position3 = stream.DeserializeKnownType<Vector3>(),
 
-                normal = stream.DeserializeType<Vector3>(),
+                normal = stream.DeserializeKnownType<Vector3>(),
 
                 meta = (byte)stream.ReadByte()
             };
         }
 
-        Vector3 min = stream.DeserializeType<Vector3>();
-        Vector3 max = stream.DeserializeType<Vector3>();
+        Vector3 min = stream.DeserializeKnownType<Vector3>();
+        Vector3 max = stream.DeserializeKnownType<Vector3>();
 
         var aabb = AABB.FromMinMax(min, max);
 
@@ -68,7 +72,7 @@ public class CollisionMeshResource : GameResource, GameResource.ILoads, GameReso
 
     public static async Task<byte[]> ConvertToFinalAssetBytes(byte[] bytes, string filePath)
     {
-        var dict = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(bytes);
+        var dict = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(bytes, Loading.JsonAssetLoadingOptions);
 
 
         List<byte> final = new();
@@ -76,10 +80,10 @@ public class CollisionMeshResource : GameResource, GameResource.ILoads, GameReso
 
 
         // AABB
-        if (dict.TryGetValue("localAABB", out var aabb))
+        if (dict.TryGetValue("LocalAABB", out var aabb))
         {
-            var min = JsonSerializer.Deserialize<float[]>(aabb.GetProperty("min"));
-            var max = JsonSerializer.Deserialize<float[]>(aabb.GetProperty("max"));
+            var min = JsonSerializer.Deserialize<float[]>(aabb.GetProperty("Min"), Loading.JsonAssetLoadingOptions);
+            var max = JsonSerializer.Deserialize<float[]>(aabb.GetProperty("Max"), Loading.JsonAssetLoadingOptions);
 
             foreach (var f in min) final.AddRange(BitConverter.GetBytes(f));
             foreach (var f in max) final.AddRange(BitConverter.GetBytes(f));

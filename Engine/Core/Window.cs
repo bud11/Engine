@@ -48,7 +48,6 @@ public static class Window
         SDL.SyncWindow(SDLWindowHandle);
 
 
-
         return SDLWindowHandle;
     }
 

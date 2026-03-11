@@ -20,14 +20,18 @@ using static Loading;
 /// </summary>
 /// 
 public abstract partial class GameResource(string key) : RefCounted,
-    IBinarySerializeableOverride<uint>
+    ISerializeOverrider<uint>
 {
 
-    static object IBinarySerializeableOverride<uint>.Deserialize(uint reference, object context)
-        => ((SceneResource.SceneBinaryDeserializationContext)context).Resources[(int)reference];
 
-    object IBinarySerializeableOverride<uint>.Serialize(uint data, object context)
+
+    static uint ISerializeOverrider<uint>.Serialize(object instance, object context)
         => throw new NotImplementedException();
+
+    static object ISerializeOverrider<uint>.Deserialize(uint data, object context)
+        => ((SceneResource.SceneBinaryDeserializationContext)context).Objects[(int)data];
+
+
 
 
 
@@ -35,7 +39,7 @@ public abstract partial class GameResource(string key) : RefCounted,
 
 
     /// <summary>
-    /// Given a <see cref="GameResource"/> implements <see cref="ILoads"/>, and has one or more <see cref="FileExtensionAssociationAttribute"/>s, it can be loaded via <see cref="LoadResource{T}(string)"/>.
+    /// Given a <see cref="GameResource"/>-derived type implements <see cref="ILoads"/>, and has one or more <see cref="FileExtensionAssociationAttribute"/>s, it can be loaded via <see cref="LoadResource{T}(string)"/>.
     /// </summary>
     public interface ILoads
     {
@@ -52,9 +56,11 @@ public abstract partial class GameResource(string key) : RefCounted,
 #if DEBUG
 
     /// <summary>
-    /// <see cref="GameResource"/>s can implement development-time preprocessing via <see cref="IConverts"/>, for example to facilitate texture compression, and should they, the conversion will be cached in <see cref="AssetCachePath"/>.
+    /// <see cref="GameResource"/>s can implement development-time preprocessing/conversion from intermediary formats via <see cref="IConverts"/> and <see cref="ConvertToFinalAssetBytes(byte[], string)"/>, and should they, the conversion will be cached in <see cref="AssetCachePath"/>.
     /// <br/> The result will then be fed into <see cref="ILoads.Load(AssetByteStream, string)"/>.
     /// <br/> The cache will only be used if the md5 hash of the asset file matches the hash of the asset file at the time it was cached and <see cref="ForceReconversion(byte[], byte[])"/> returns false.
+    /// <br/>
+    /// <br/> Development time intermediary formats automatically support zstd decompression. For example, a json file could be zstd compressed, keep its original extension, and then be fed into <see cref="ConvertToFinalAssetBytes(byte[], string)"/> as the original raw json.
     /// <br/>
     /// <br/> <b> ! ! ! Implementation of <see cref="IConverts"/> must be excluded from release builds via preprocessor directives or similar. For release builds, <see cref="IConverts"/> will be invoked at compile/asset compression time instead. ! ! ! </b>
     /// </summary>

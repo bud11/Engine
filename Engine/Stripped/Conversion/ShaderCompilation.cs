@@ -23,7 +23,7 @@ using static RunProcess;
 /// <summary>
 /// Manages shader construction, compilation and reflection in debug builds.
 /// </summary>
-public static class ShaderCompilation
+public static partial class ShaderCompilation
 {
 
 
@@ -62,11 +62,11 @@ public static class ShaderCompilation
 
 
     //RESOURCE SET
-    public record class ShaderResourceSetDefinition(OrderedDictionary<string, IShaderResourceSetResourceDefinition> Content);
+    public record class ShaderResourceSetDefinition(OrderedDictionary<string, IResourceSetResourceSetResourceDefinition> Content);
 
 
     //RESOURCES
-    public interface IShaderResourceSetResourceDefinition;
+    public interface IResourceSetResourceSetResourceDefinition;
 
 
     private interface IShaderDataBufferDefinition
@@ -80,7 +80,7 @@ public static class ShaderCompilation
     /// Defines a uniform buffer / array within a resource set.
     /// </summary>
     /// <param name="vars"></param>
-    public record class ShaderUniformBufferDefinition(OrderedDictionary<string, IShaderBufferStructDeclaration> vars) : IShaderResourceSetResourceDefinition, IShaderDataBufferDefinition
+    public record class ShaderUniformBufferDefinition(OrderedDictionary<string, IShaderBufferStructDeclaration> vars) : IResourceSetResourceSetResourceDefinition, IShaderDataBufferDefinition
     {
         public OrderedDictionary<string, IShaderBufferStructDeclaration> Vars => vars;
     }
@@ -89,7 +89,7 @@ public static class ShaderCompilation
     /// Defines a storage buffer / array within a resource set.
     /// </summary>
     /// <param name="vars"></param>
-    public record class ShaderStorageBufferDefinition(OrderedDictionary<string, IShaderBufferStructDeclaration> vars, SSBOReadWriteFlags allowedAccess) : IShaderResourceSetResourceDefinition, IShaderDataBufferDefinition
+    public record class ShaderStorageBufferDefinition(OrderedDictionary<string, IShaderBufferStructDeclaration> vars, SSBOReadWriteFlags allowedAccess) : IResourceSetResourceSetResourceDefinition, IShaderDataBufferDefinition
     {
         public OrderedDictionary<string, IShaderBufferStructDeclaration> Vars => vars;
     }
@@ -102,7 +102,7 @@ public static class ShaderCompilation
     /// </summary>
     /// <param name="SamplerType"></param>
     /// <param name="ArrayLength"></param>
-    public record class ShaderTextureDefinition(TextureSamplerTypes SamplerType, uint ArrayLength = 0) : IShaderResourceSetResourceDefinition;
+    public record class ShaderTextureDefinition(TextureSamplerTypes SamplerType, uint ArrayLength = 0) : IResourceSetResourceSetResourceDefinition;
 
 
 

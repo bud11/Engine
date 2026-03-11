@@ -1,5 +1,41 @@
 ﻿
 
+
+// -----------------------------------
+// Standard common serializable types
+
+
+[assembly: Engine.Attributes.BinarySerializableTypeAssemblyLevel(typeof(int))]
+[assembly: Engine.Attributes.BinarySerializableTypeAssemblyLevel(typeof(int[]))]
+
+[assembly: Engine.Attributes.BinarySerializableTypeAssemblyLevel(typeof(uint))]
+[assembly: Engine.Attributes.BinarySerializableTypeAssemblyLevel(typeof(uint[]))]
+
+[assembly: Engine.Attributes.BinarySerializableTypeAssemblyLevel(typeof(byte))]
+[assembly: Engine.Attributes.BinarySerializableTypeAssemblyLevel(typeof(byte[]))]
+
+[assembly: Engine.Attributes.BinarySerializableTypeAssemblyLevel(typeof(ushort))]
+[assembly: Engine.Attributes.BinarySerializableTypeAssemblyLevel(typeof(ushort[]))]
+
+[assembly: Engine.Attributes.BinarySerializableTypeAssemblyLevel(typeof(float))]
+[assembly: Engine.Attributes.BinarySerializableTypeAssemblyLevel(typeof(float[]))]
+
+[assembly: Engine.Attributes.BinarySerializableTypeAssemblyLevel(typeof(bool))]
+[assembly: Engine.Attributes.BinarySerializableTypeAssemblyLevel(typeof(bool[]))]
+
+[assembly: Engine.Attributes.BinarySerializableTypeAssemblyLevel(typeof(string))]
+[assembly: Engine.Attributes.BinarySerializableTypeAssemblyLevel(typeof(string[]))]
+
+[assembly: Engine.Attributes.BinarySerializableTypeAssemblyLevel(typeof(Engine.Core.EngineMath.AABB))]
+
+[assembly: Engine.Attributes.BinarySerializableTypeAssemblyLevel(typeof(System.Numerics.Matrix4x4))]
+[assembly: Engine.Attributes.BinarySerializableTypeAssemblyLevel(typeof(System.Numerics.Matrix4x4[]))]
+
+// -----------------------------------
+
+
+
+
 namespace Engine.Core;
 
 using Attributes;
@@ -63,6 +99,23 @@ public static partial class Loading
 
 
 
+#if DEBUG
+
+    public static readonly System.Text.Json.JsonSerializerOptions JsonAssetLoadingOptions = new System.Text.Json.JsonSerializerOptions()
+    {
+        IncludeFields = true,
+        Converters =
+        {
+            new System.Text.Json.Serialization.JsonStringEnumConverter()
+        }
+    };
+
+#endif
+
+
+
+
+
 
 
 
@@ -109,13 +162,13 @@ public static partial class Loading
 
             using (var filestream = new FileStream(archivePath, FileMode.Open, FileAccess.Read))
             {
-                var assetCount = filestream.DeserializeType<uint>();
+                var assetCount = filestream.DeserializeKnownType<uint>();
                 for (uint i = 0; i < assetCount; i++)
                 {
-                    var assetOffset = filestream.DeserializeType<ulong>();
-                    var assetLength = filestream.DeserializeType<ulong>();
-                    var assetPath = filestream.DeserializeType<string>();
-                    Type assetType = Parsing.GetGameResourceTypeFromTypeID(filestream.DeserializeType<ushort>());
+                    var assetOffset = filestream.DeserializeKnownType<ulong>();
+                    var assetLength = filestream.DeserializeKnownType<ulong>();
+                    var assetPath = filestream.DeserializeKnownType<string>();
+                    Type assetType = Parsing.GetGameResourceTypeFromTypeID(filestream.DeserializeKnownType<ushort>());
 
                     AssetLookupDirect[$"{archiveName}/{assetPath}"] = new AssetDataRange(archivePath, assetType, assetOffset, assetLength);
                 }
@@ -413,15 +466,25 @@ public static partial class Loading
     public static void CleanAssetCache()
     {
 
+
+
+
         if (!DirectoryExistsCaseSensitive(AssetCachePath))
             return;
+
+
+
+        // delete entire cache for debug
+        //Directory.Delete(AssetCachePath, true);
+        //return;
+
 
 
         foreach (var cacheFile in Directory.EnumerateFiles(AssetCachePath, "*", SearchOption.AllDirectories))
         {
             try
             {
-                var relativePath = Path.GetRelativePath(AssetCachePath, cacheFile);
+                var relativePath = Path.GetRelativePath(AssetCachePath, cacheFile.Split("+")[0]);
                 var sourcePath = Path.Combine(AssetRootDirectoryPath, relativePath).Replace(".cached", string.Empty);
 
                 if (!FileExistsCaseSensitive(sourcePath))
@@ -470,7 +533,7 @@ public static partial class Loading
 
 
     /// <summary>
-    /// Loads a <see cref="GameResource"/> from a folder/archive within the game's asset root directory (see <see cref="Loading.AssetRootDirectoryPath"/>).
+    /// Loads a <see cref="GameResource"/> from a folder/archive within the game's asset root directory (see <see cref="AssetRootDirectoryPath"/>).
     /// <br/> <b><paramref name="resourcePath"/> should be relative to the asset root directory and should not include a file extension. </b>
     /// </summary>
     /// <typeparam name="T"></typeparam>
@@ -516,7 +579,7 @@ public static partial class Loading
 
             //if type converts, try loading cached result, otherwise convert and cache result if cached file doesnt exist or doesnt match
 
-            stream = await GetFinalAssetBytes<T>(Path.GetFullPath(Path.Combine(AssetRootDirectoryPath, loadpath)));
+            stream = await GetFinalAssetBytes<T>(loadpath);
 
 
 #else
@@ -559,6 +622,9 @@ public static partial class Loading
     /// <summary>
     /// Caches and/or fetches an asset file's final bytes, assuming the asset file's contents are <paramref name="unconvertedData"/>, and its path on disk is <paramref name="relativePath"/>.
     /// <br/> Parts of that assumption may not be true, for example, embedded resources, which aren't truly separate, yet benefit from individual caching.
+    /// <br/><br/> '+' acts as a delimiter within <paramref name="relativePath"/> to signify that only content before the symbol should be used as the file name when checking if the file exists during cache clean on startup.
+    /// <br/>For example, an embedded material within a scene might supply a <paramref name="relativePath"/> such as 'assets/scene.scn+material.mat', but when the cache is cleaned, it'll simply check if 'assets/scene.scn' exists.
+    /// <br/>
     /// <br/> This is a development-time debug-only method and usually shouldn't be used directly.
     /// </summary>
     /// <typeparam name="T"></typeparam>
@@ -604,21 +670,20 @@ public static partial class Loading
 
                 var filestream = new FileStream(cachedFileDir, FileMode.Open, FileAccess.Read);
 
+                uint storedCrc = filestream.DeserializeKnownType<uint>();
 
-
-                uint storedCrc = filestream.DeserializeType<uint>();
 
                 if (storedCrc == crc)
                 {
+                    var len = filestream.DeserializeKnownType<uint>();
+
                     statusPrint($"Cached file found for asset '{relativePath}'");
 
-                    int remaining = (int)(filestream.Length - filestream.Position);
-
-                    finalStream = new AssetByteStream(filestream, remaining);
+                    finalStream = new AssetByteStream(new DecompressionStream(filestream, (int)len, leaveOpen: false), len);
 
 
                     //forced reconversion?
-                    if ((bool) typeof(T).GetMethod(nameof(GameResource.IConverts.ForceReconversion), BindingFlags.Static | BindingFlags.Public, [typeof(byte[]), typeof(byte[])]).Invoke(null, [null]))
+                    if ((bool) typeof(T).GetMethod(nameof(GameResource.IConverts.ForceReconversion), BindingFlags.Static | BindingFlags.Public, [typeof(byte[]), typeof(byte[])]).Invoke(null, [null, null])!)
                     {
                         crc = 0;
                         filestream.Dispose();
@@ -643,16 +708,62 @@ public static partial class Loading
                 liststatusChange(assetloadingstatusForDebugMsg.Converting);
 
 
-                var finalBytes = await (Task<byte[]>)typeof(T).GetMethod(nameof(GameResource.IConverts.ConvertToFinalAssetBytes), BindingFlags.Static | BindingFlags.Public, [typeof(byte[]), typeof(string)]).Invoke(null, [unconvertedData, relativePath]);
+
+                //  ---------------------- zstd detection / decompression ----------------------
+
+                byte[] zstdMagic = [0x28, 0xB5, 0x2F, 0xFD];
+                bool zstd = true;
+
+                for (int i = 0; i < 4; i++)
+                {
+                    if (unconvertedData[i] != zstdMagic[i])
+                        zstd = false;
+                        break;
+                }
+
+
+                if (zstd)
+                {
+                    try
+                    {
+                        using var input = new MemoryStream(unconvertedData);
+                        using var zstdStream = new DecompressionStream(input);
+                        using var output = new MemoryStream();
+
+                        zstdStream.CopyTo(output);
+
+                        unconvertedData = output.ToArray();
+                    }
+
+                    catch (ZstdException) { }  //invalid zstd
+
+                }
+
+                // -----------------------------------------------------------------------------
+
+
+
+
+
+                var finalBytes = await (Task<byte[]>)typeof(T).GetMethod(nameof(GameResource.IConverts.ConvertToFinalAssetBytes), BindingFlags.Static | BindingFlags.Public, [typeof(byte[]), typeof(string)])
+                    .Invoke(null, [unconvertedData, relativePath]);
+
+
+
+                using var compressor = new Compressor(6);
+
+                var compressedFinalBytes = compressor.Wrap(finalBytes).ToArray();
+
 
 
                 using (var filestream = new FileStream(cachedFileDir, FileMode.Create))
                 {
                     await filestream.WriteAsync(Crc32.Hash(unconvertedData));
-                    await filestream.WriteAsync(finalBytes);
+                    await filestream.WriteAsync(BitConverter.GetBytes((uint)finalBytes.Length));
+                    await filestream.WriteAsync(compressedFinalBytes);
                 }
 
-                finalStream = new AssetByteStream(new MemoryStream(finalBytes), finalBytes.Length);
+                finalStream = new AssetByteStream(new DecompressionStream(new MemoryStream(compressedFinalBytes), bufferSize: finalBytes.Length, leaveOpen: false), finalBytes.Length);
 
             }
 

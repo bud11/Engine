@@ -209,7 +209,7 @@ public static class RenderThread
 
 
 
-        RenderingBackend.StartFrameRendering();
+        RenderingBackend.StartFrameRendering(); 
 
         RenderingCommandBufferA.Execute();
 

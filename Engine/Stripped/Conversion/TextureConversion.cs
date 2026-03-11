@@ -7,6 +7,7 @@ using Engine.Core;
 using StbImageSharp;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
+using System.Text;
 using TinyEXR;
 using static Engine.Core.EngineMath;
 using static Engine.Core.Rendering;
@@ -36,32 +37,14 @@ public static class TextureConversion
 
 
 
-    public static TextureProcessingData LoadPNGTextureData(byte[] src)
+    public static TextureProcessingData LoadSTBImageTextureData(byte[] src)
     {
 
-        // Check for sRGB chunk presence in PNG bytes
-        static bool HasSrgbChunk(ReadOnlySpan<byte> data)
-        {
-            int pos = 8; 
-            while (pos + 8 < data.Length)
-            {
-                uint length = (uint)((data[pos] << 24) | (data[pos + 1] << 16) | (data[pos + 2] << 8) | data[pos + 3]);
-                pos += 4;
-                if (pos + 4 > data.Length) break;
-                // chunk type
-                if (data[pos] == 's' && data[pos + 1] == 'R' && data[pos + 2] == 'G' && data[pos + 3] == 'B')
-                    return true;
-
-                pos += 4 + (int)length + 4;
-            }
-            return false;
-        }
-
-
-
-
         StbImage.stbi_set_flip_vertically_on_load(1);
-        ImageResult tex = ImageResult.FromMemory(src);
+
+
+        ImageResultFloat tex = ImageResultFloat.FromMemory(src);
+
 
 
         int components = tex.SourceComp switch
@@ -76,24 +59,24 @@ public static class TextureConversion
 
 
 
-        bool SRGB = HasSrgbChunk(src);
+        float[] floatData = tex.Data.ToArray();
 
-        float[] floatData = new float[tex.Data.Length];
 
-        byte c = 0;
-        for (int i = 0; i < tex.Data.Length; i++)
+        var header = Encoding.ASCII.GetString(src, 0, Math.Min(8, src.Length));
+
+
+        //if not .hdr file (linear already)
+
+        if (!header.StartsWith("#?RADIANCE"))
         {
-            var f = tex.Data[i] / 255f;
-
-            if (SRGB && (components != 4 || c != 3))
+            for (int i = 0; i < tex.Data.Length; i++)
             {
-                f = SrgbToLinear(f);
-                c = 0;
+                //convert to linear, skip alpha
+                if (i % components < 3)
+                    floatData[i] = SrgbToLinear(floatData[i]);
             }
-            c++;
-
-            floatData[i] = f;   
         }
+
 
 
         return new TextureProcessingData()
@@ -108,10 +91,11 @@ public static class TextureConversion
                 ColorComponents.Grey => TextureFormats.R8_UNORM,
                 ColorComponents.GreyAlpha => TextureFormats.RG8_UNORM,
 
-
                 _ => throw new NotImplementedException(),
             }
         };
+
+
     }
 
 
@@ -213,9 +197,6 @@ public static class TextureConversion
 
 
 
-
-
-
             bool anyExceed8BitRange = false;
             for (int i = 0; i < output.Length; i++)
             {
@@ -280,6 +261,11 @@ public static class TextureConversion
     /// <exception cref="NotImplementedException"></exception>
     private static (string? bcFormat, TextureFormats format) GetCompressionFormat(int channels, int bitDepth, bool textureis3D)
     {
+
+        //no compression
+        return (null, default);
+
+
         if (bitDepth == 16)
         {
             return channels switch
@@ -378,9 +364,6 @@ public static class TextureConversion
 
 
 
-
-
-        // otherwise just use original with no compression
         var originalDataForReferenceOrBypass = new byte[
             TextureData.Data.Length *
             (bitdepth == 8 ? 1 : 2)
@@ -427,7 +410,7 @@ public static class TextureConversion
 
 
             await RunProcess.Run(
-                    "NVTT3",
+                    "nvtt_export",
                     $""" "{texpathtemp}" --format {f.bcFormat.ToLower()} --output "{texpathtempOut}" --mip-filter box --export-transfer-function 2"""
                 );
 
@@ -463,12 +446,16 @@ public static class TextureConversion
                 Mips = mipLevels,
 
                 InternalImageDataFormat = f.format,
+                TextureType = TextureTypes.Texture2D,
 
                 Dimensions = TextureData.Dimensions
             };
         }
 
 
+
+
+        // otherwise just use original with no compression
 
 
         if (bitdepth == 8)
@@ -498,6 +485,8 @@ public static class TextureConversion
         {
             Mips = [originalDataForReferenceOrBypass],
             InternalImageDataFormat = TextureData.ImageDataFormatTarget,
+
+            TextureType = TextureTypes.Texture2D,
 
             Dimensions = TextureData.Dimensions,
         };

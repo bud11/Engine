@@ -85,7 +85,7 @@ public static partial class Entry
 
             ShaderName: ShaderName,
 
-            ResourceSets: null,
+            Resources: null,
 
             Attributes: new()
             {

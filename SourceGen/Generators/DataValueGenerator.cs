@@ -107,6 +107,10 @@ public sealed class DataValueGenerator : IIncrementalGenerator
                     SB.AppendLine();
                     SB.AppendLine($"\t\t\tif (args != null)");
                     SB.AppendLine("\t\t\t{");
+                    SB.AppendLine("\t\t\t");
+                    SB.AppendLine("#if DEBUG");
+                    SB.AppendLine("\t\t\t\tvar processed = 0;");
+                    SB.AppendLine("#endif");
 
 
 
@@ -124,7 +128,12 @@ public sealed class DataValueGenerator : IIncrementalGenerator
 
 
                         SB.AppendLine($"\t\t\t\tif (args.TryGetValue({i1}, out var {valGet}))");
+                        SB.AppendLine("\t\t\t\t{");
                         SB.AppendLine($"\t\t\t\t\t(({typename})obj).{param.Name} = ({paramtypename}){valGet};");
+                        SB.AppendLine("#if DEBUG");
+                        SB.AppendLine("\t\t\t\t\tprocessed++;");
+                        SB.AppendLine("#endif");
+                        SB.AppendLine("\t\t\t\t}");
                     }
 
 
@@ -145,6 +154,10 @@ public sealed class DataValueGenerator : IIncrementalGenerator
 
 
                     SB.AppendLine();
+
+                    SB.AppendLine("#if DEBUG");
+                    SB.AppendLine($"\t\t\t\tif ({values.Length} - processed != 0) throw new Exception(\"Too many/non matching values given\");");
+                    SB.AppendLine("#endif");
 
 
                     SB.AppendLine("\t\t\t}");
