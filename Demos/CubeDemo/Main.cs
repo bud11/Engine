@@ -146,12 +146,12 @@ public static unsafe partial class Entry
                 gl_Position = GlobalUBO.ProjectionMatrix * GlobalUBO.ViewMatrix * ModelUBO.ModelMatrix * vec4(Position, 1.0);   
                 
                 mat3 normalMatrix = transpose(inverse(mat3(ModelUBO.ModelMatrix)));
-                Fragnormal = normalize(normalMatrix * normal);
+                FragNormal = normalize(normalMatrix * Normal);
 
                 """,    
 
             FragmentMainBody:
-                "FragOutFinalColor = vec4(vec3(1.0) * clamp(dot(Fragnormal, normalize(vec3(1, 1, -1))), 0.2, 1), 1.0);"     
+                "FragOutFinalColor = vec4(vec3(1.0) * clamp(dot(FragNormal, normalize(vec3(1, 1, -1))), 0.2, 1), 1.0);"
 
 
 

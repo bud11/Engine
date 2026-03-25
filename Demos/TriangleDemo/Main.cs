@@ -133,7 +133,7 @@ public static partial class Entry
     /// <summary>
     /// <inheritdoc cref="_InitSummary"/>
     /// </summary>
-    public static partial async Task Init()
+    public static partial void Init()
     {
 
         TriangleVertPos = RenderingBackend.BackendVertexBufferAllocationReference.Create(
