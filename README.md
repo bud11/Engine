@@ -21,6 +21,7 @@ This project aims to offer a platform agnostic and mostly unopinionated foundati
 - Some mild rendering backend abstraction reworking to make it feel more robust, extensible and less vulkan-centric
 - Finishing compute shaders properly, and in tandem, solidifying asynchronous gpu work and gpu -> cpu communication
 - Likely some form of rendering pipeline rework, such that materials are moreso compiled/cached rather than assembled fresh
+- Further work on more optimal resource/subresource compilation, resource dependencies
 
 
 # Quick start:
