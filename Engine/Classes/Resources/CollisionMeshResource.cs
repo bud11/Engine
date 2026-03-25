@@ -14,6 +14,7 @@ using Engine.Core;
 
 #if DEBUG
 using System.Text.Json;
+using static Engine.Core.Parsing;
 #endif
 
 
@@ -32,10 +33,11 @@ public class CollisionMeshResource : GameResource, GameResource.ILoads,
 
 
     
-    public static new async Task<GameResource> Load(Loading.AssetByteStream stream, string key)
+    public static async Task<GameResource> Load(Loading.AssetByteStream stream, string key)
     {
+        var reader = ValueReader.FromStream(stream);
 
-        uint tricount = stream.DeserializeKnownType<uint>();
+        uint tricount = reader.ReadUnmanaged<uint>();
 
 
         CollisionMeshTriangle[] tris = new CollisionMeshTriangle[tricount];
@@ -44,18 +46,18 @@ public class CollisionMeshResource : GameResource, GameResource.ILoads,
         {
             tris[i] = new CollisionMeshTriangle()
             {
-                position1 = stream.DeserializeKnownType<Vector3>(),
-                position2 = stream.DeserializeKnownType<Vector3>(),
-                position3 = stream.DeserializeKnownType<Vector3>(),
+                position1 = reader.ReadUnmanaged<Vector3>(),
+                position2 = reader.ReadUnmanaged<Vector3>(),
+                position3 = reader.ReadUnmanaged<Vector3>(),
 
-                normal = stream.DeserializeKnownType<Vector3>(),
+                normal = reader.ReadUnmanaged<Vector3>(),
 
                 meta = (byte)stream.ReadByte()
             };
         }
 
-        Vector3 min = stream.DeserializeKnownType<Vector3>();
-        Vector3 max = stream.DeserializeKnownType<Vector3>();
+        Vector3 min = reader.ReadUnmanaged<Vector3>();
+        Vector3 max = reader.ReadUnmanaged<Vector3>();
 
         var aabb = AABB.FromMinMax(min, max);
 
@@ -67,35 +69,37 @@ public class CollisionMeshResource : GameResource, GameResource.ILoads,
 
 #if DEBUG
 
-    public static bool ForceReconversion(byte[] bytes, byte[] currentCache) => false;
 
-
-    public static async Task<byte[]> ConvertToFinalAssetBytes(byte[] bytes, string filePath)
+    public static async Task<byte[]> ConvertToFinalAssetBytes(Loading.Bytes bytes, string filePath)
     {
-        var dict = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(bytes, Loading.JsonAssetLoadingOptions);
+        var dict = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(bytes.ByteArray, Parsing.JsonAssetLoadingOptions);
+
+        bytes.Dispose();
 
 
-        List<byte> final = new();
+        var write = ValueWriter.CreateWithBufferWriter();
 
 
 
         // AABB
         if (dict.TryGetValue("LocalAABB", out var aabb))
         {
-            var min = JsonSerializer.Deserialize<float[]>(aabb.GetProperty("Min"), Loading.JsonAssetLoadingOptions);
-            var max = JsonSerializer.Deserialize<float[]>(aabb.GetProperty("Max"), Loading.JsonAssetLoadingOptions);
+            var min = JsonSerializer.Deserialize<float[]>(aabb.GetProperty("Min"), Parsing.JsonAssetLoadingOptions);
+            var max = JsonSerializer.Deserialize<float[]>(aabb.GetProperty("Max"), Parsing.JsonAssetLoadingOptions);
 
-            foreach (var f in min) final.AddRange(BitConverter.GetBytes(f));
-            foreach (var f in max) final.AddRange(BitConverter.GetBytes(f));
+            foreach (var f in min) write.WriteUnmanaged(f);
+            foreach (var f in max) write.WriteUnmanaged(f);
         }
         else
         {
             for (int i = 0; i < 6; i++)
-                final.AddRange(BitConverter.GetBytes(float.MaxValue));
+                write.WriteUnmanaged(float.MaxValue);
         }
 
-        return final.ToArray();
+
+        return write.GetSpan().ToArray();
     }
+
 
 
 

@@ -39,7 +39,8 @@ public static partial class Entry
 #endif
 
 
-    public static partial Task Init();
+    public static partial void Init();
+
 
 
 

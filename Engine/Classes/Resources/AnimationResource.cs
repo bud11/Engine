@@ -7,9 +7,6 @@ namespace Engine.GameResources;
 
 
 using System.Numerics;
-
-
-using Engine.Attributes;
 using static Engine.Core.EngineMath;
 using Engine.Core;
 
@@ -17,6 +14,7 @@ using Engine.Core;
 
 #if DEBUG
 using System.Text.Json;
+using static Engine.Core.Parsing;
 #endif
 
 
@@ -59,41 +57,41 @@ public class AnimationResource : GameResource, GameResource.ILoads,
 #if DEBUG
 
 
-
-    public static bool ForceReconversion(byte[] bytes, byte[] currentCache) => false;
-
-
-    public static async Task<byte[]> ConvertToFinalAssetBytes(byte[] bytes, string filePath)
+    public static async Task<byte[]> ConvertToFinalAssetBytes(Loading.Bytes bytes, string filePath)
     {
 
-        var dict = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(bytes, Loading.JsonAssetLoadingOptions);
+        var dict = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(bytes.ByteArray, Parsing.JsonAssetLoadingOptions);
 
-        using var ms = new MemoryStream();
-        using var bw = new BinaryWriter(ms);
+        bytes.Dispose();
+
+
+
+        var write = ValueWriter.CreateWithBufferWriter();
+
 
         // header
-        bw.Write(dict["length"].GetSingle());
-        bw.Write(dict["loop"].GetBoolean());
+        write.WriteUnmanaged(dict["length"].GetSingle());
+        write.WriteUnmanaged(dict["loop"].GetBoolean());
 
 
         var tracks = dict["tracks"];
-        bw.Write((uint)tracks.GetArrayLength());
+        write.WriteUnmanaged((uint)tracks.GetArrayLength());
 
 
         foreach (var track in tracks.EnumerateArray())
         {
-            var id = track.GetProperty("identifier").GetString();
-            var type = Parsing.EnumParse<TrackTypes>(track.GetProperty("type").GetString());
+            var type = Enum.Parse<TrackTypes>(track.GetProperty("type").GetString(), true);
             var keys = track.GetProperty("keys");
 
 
-            bw.Write(Parsing.SerializeType(id, false));
-            bw.Write((byte)type);
-            bw.Write((uint)keys.GetArrayLength());
+            write.WriteString(track.GetProperty("identifier").GetString());
+            write.WriteUnmanaged((byte)type);
+            write.WriteUnmanaged((uint)keys.GetArrayLength());
+
 
             // times
             foreach (var key in keys.EnumerateArray())
-                bw.Write(key.GetProperty("time").GetSingle());
+                write.WriteUnmanaged(key.GetProperty("time").GetSingle());
 
             // values
             foreach (var key in keys.EnumerateArray())
@@ -105,27 +103,27 @@ public class AnimationResource : GameResource, GameResource.ILoads,
                     case TrackTypes.Position:
                     case TrackTypes.Scale:
                         var arr = value.EnumerateArray();
-                        bw.Write(arr.ElementAt(0).GetSingle());
-                        bw.Write(arr.ElementAt(1).GetSingle());
-                        bw.Write(arr.ElementAt(2).GetSingle());
+                        write.WriteUnmanaged(arr.ElementAt(0).GetSingle());
+                        write.WriteUnmanaged(arr.ElementAt(1).GetSingle());
+                        write.WriteUnmanaged(arr.ElementAt(2).GetSingle());
                         break;
 
                     case TrackTypes.Rotation:
                         var arr2 = value.EnumerateArray();
-                        bw.Write(arr2.ElementAt(0).GetSingle());
-                        bw.Write(arr2.ElementAt(1).GetSingle());
-                        bw.Write(arr2.ElementAt(2).GetSingle());
-                        bw.Write(arr2.ElementAt(3).GetSingle());
+                        write.WriteUnmanaged(arr2.ElementAt(0).GetSingle());
+                        write.WriteUnmanaged(arr2.ElementAt(1).GetSingle());
+                        write.WriteUnmanaged(arr2.ElementAt(2).GetSingle());
+                        write.WriteUnmanaged(arr2.ElementAt(3).GetSingle());
                         break;
 
                     case TrackTypes.Value:
-                        bw.Write(value.GetSingle());
+                        write.WriteUnmanaged(value.GetSingle());
                         break;
                 }
             }
         }
 
-        return ms.ToArray();
+        return write.GetSpan().ToArray();
 
     }
 
@@ -136,13 +134,18 @@ public class AnimationResource : GameResource, GameResource.ILoads,
 
 
 
-    public static new async Task<GameResource> Load(Loading.AssetByteStream stream, string key)
+    public static async Task<GameResource> Load(Loading.AssetByteStream stream, string key)
     {
-        var length = stream.DeserializeKnownType<float>();
-        var loops = stream.ReadByte() == 1;
+
+        var read = ValueReader.FromStream(stream);
 
 
-        var trackcount = stream.DeserializeKnownType<uint>();
+
+        var length = read.ReadUnmanaged<float>();
+        var loops = read.ReadUnmanaged<bool>();
+
+
+        var trackcount = read.ReadUnmanaged<uint>();
 
 
 
@@ -151,13 +154,13 @@ public class AnimationResource : GameResource, GameResource.ILoads,
 
         for (uint tr = 0; tr < trackcount; tr++)
         {
-            var identifier = stream.DeserializeKnownType<string>();
+            var identifier = read.ReadString();
 
 
-            var tracktype = (TrackTypes)stream.ReadByte();
+            var tracktype = (TrackTypes)read.ReadUnmanaged<byte>();
 
 
-            var timesarray = stream.DeserializeKnownType<float[]>();
+            var timesarray = read.ReadLengthPrefixedUnmanagedSpan<float>();
 
             object contentarray = null;
 
@@ -166,19 +169,19 @@ public class AnimationResource : GameResource, GameResource.ILoads,
                 case TrackTypes.Position:
                 case TrackTypes.Scale:
 
-                    contentarray = stream.DeserializeKnownType<Vector3[]>();
+                    contentarray = read.ReadLengthPrefixedUnmanagedSpan<Vector3>();
 
                     break;
 
                 case TrackTypes.Rotation:
 
-                    contentarray = stream.DeserializeKnownType<Quaternion[]>();
+                    contentarray = read.ReadLengthPrefixedUnmanagedSpan<Quaternion>();
 
                     break;
 
                 case TrackTypes.Value:
 
-                    contentarray = stream.DeserializeKnownType<float[]>();
+                    contentarray = read.ReadLengthPrefixedUnmanagedSpan<float>();
 
                     break;
 

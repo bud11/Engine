@@ -33,7 +33,7 @@ public sealed class GameResourceGlueGenerator : IIncrementalGenerator
                 gameResourceSB.AppendLine("using System;");
                 gameResourceSB.AppendLine();
 
-                gameResourceSB.AppendLine("public static partial class Parsing");
+                gameResourceSB.AppendLine("public partial class GameResource");
                 gameResourceSB.AppendLine("{");
 
 
@@ -53,7 +53,7 @@ public sealed class GameResourceGlueGenerator : IIncrementalGenerator
 
                 var ConstructGameResourceFromGeneric_SB = new StringBuilder();
 
-                ConstructGameResourceFromGeneric_SB.AppendLine("\tpublic static async Task<GameResource> ConstructGameResourceFromGeneric<T>(Loading.AssetByteStream stream, string key) where T : GameResource");
+                ConstructGameResourceFromGeneric_SB.AppendLine("\tpublic static partial async Task<GameResource> LoadGameResourceFromGenericAndStream<T>(Loading.AssetByteStream stream, string key) where T : GameResource");
                 ConstructGameResourceFromGeneric_SB.AppendLine("\t{");
                 ConstructGameResourceFromGeneric_SB.AppendLine(); 
 
@@ -61,7 +61,7 @@ public sealed class GameResourceGlueGenerator : IIncrementalGenerator
 
                 var ConstructGameResourceFromTypeID_SB = new StringBuilder();
 
-                ConstructGameResourceFromTypeID_SB.AppendLine("\tpublic static async Task<GameResource> ConstructGameResourceFromTypeID(ushort TypeID, Loading.AssetByteStream stream, string key)");
+                ConstructGameResourceFromTypeID_SB.AppendLine("\tpublic static partial async Task<GameResource> LoadGameResourceFromTypeIDAndStream(ushort TypeID, Loading.AssetByteStream stream, string key)");
                 ConstructGameResourceFromTypeID_SB.AppendLine("\t{");
                 ConstructGameResourceFromTypeID_SB.AppendLine();
                 ConstructGameResourceFromTypeID_SB.AppendLine("\t\treturn TypeID switch");
@@ -71,7 +71,7 @@ public sealed class GameResourceGlueGenerator : IIncrementalGenerator
 
                 var LoadGameResourceFromTypeID_SB = new StringBuilder();
 
-                LoadGameResourceFromTypeID_SB.AppendLine("\tpublic static async Task<GameResource> LoadGameResourceFromTypeID(ushort TypeID, string path)");
+                LoadGameResourceFromTypeID_SB.AppendLine("\tpublic static partial async Task<GameResource> LoadGameResourceFromTypeIDAndPath(ushort TypeID, string path)");
                 LoadGameResourceFromTypeID_SB.AppendLine("\t{");
                 LoadGameResourceFromTypeID_SB.AppendLine("\t\treturn TypeID switch");
                 LoadGameResourceFromTypeID_SB.AppendLine("\t\t{");
@@ -81,7 +81,7 @@ public sealed class GameResourceGlueGenerator : IIncrementalGenerator
 
                 var getResourceTypeIDSB = new StringBuilder();
 
-                getResourceTypeIDSB.AppendLine("\tpublic static ushort GetGameResourceTypeID(Type type)");
+                getResourceTypeIDSB.AppendLine("\tpublic static partial ushort GetGameResourceTypeID(Type type)");
                 getResourceTypeIDSB.AppendLine("\t{");
                 getResourceTypeIDSB.AppendLine();
 
@@ -89,7 +89,7 @@ public sealed class GameResourceGlueGenerator : IIncrementalGenerator
 
                 var getResourceType_FROM_ID_SB = new StringBuilder();
 
-                getResourceType_FROM_ID_SB.AppendLine("\tpublic static Type GetGameResourceTypeFromTypeID(ushort TypeID)");
+                getResourceType_FROM_ID_SB.AppendLine("\tpublic static partial Type GetGameResourceTypeFromTypeID(ushort TypeID)");
                 getResourceType_FROM_ID_SB.AppendLine("\t{");
                 getResourceType_FROM_ID_SB.AppendLine("\t\treturn TypeID switch");
                 getResourceType_FROM_ID_SB.AppendLine("\t\t{");

@@ -84,8 +84,8 @@ public static class EngineMath
 
 
 
-        public static AABB operator *(AABB left, Transform transform) 
-            => new AABB(transform * left.Min, transform * left.Max);
+        public static AABB operator *(AABB left, Matrix4x4 transform) 
+            => new AABB(transform.Transform(left.Min), transform.Transform(left.Max));
 
 
 
@@ -120,325 +120,128 @@ public static class EngineMath
 
 
 
+    public static Matrix4x4 GetBasis(this in Matrix4x4 m) => m with { M41 = 0, M42 = 0, M43 = 0, M44 = 1, M14 = 0, M24 = 0, M34 = 0 };
 
+    public static Vector3 GetOrientationX(this in Matrix4x4 m)
+        => new(m.M11, m.M12, m.M13);
 
-    /// <summary>
-    /// A wrapper over System.Numerics's <see cref="Matrix4x4"/>. Column-major.
-    /// </summary>
-    public unsafe struct Transform(Matrix4x4 matrix) : IEquatable<Transform>, IEquatable<Matrix4x4>
+    public static void SetOrientationX(this ref Matrix4x4 m, Vector3 v)
     {
-        public static readonly Transform Identity = new(Matrix4x4.Identity);
-
-        public Matrix4x4 Matrix = matrix;
-
-        public Vector3 Origin
-        {
-            readonly get => Matrix.Translation;
-            set => Matrix.Translation = value;
-        }
-
-
-
-        public Vector3 OrientationX
-        {
-            readonly get => new(Matrix.M11, Matrix.M21, Matrix.M31);
-            set => Matrix = Matrix with { M11 = value.X, M21 = value.Y, M31 = value.Z };
-        }
-
-        public Vector3 OrientationY
-        {
-            readonly get => new(Matrix.M12, Matrix.M22, Matrix.M32);
-            set => Matrix = Matrix with { M12 = value.X, M22 = value.Y, M32 = value.Z };
-        }
-
-        public Vector3 OrientationZ
-        {
-            readonly get => new(Matrix.M13, Matrix.M23, Matrix.M33);
-            set => Matrix = Matrix with { M13 = value.X, M23 = value.Y, M33 = value.Z };
-        }
-
-
-
-
-
-        public struct PosRotScale
-        {
-            public Vector3 Origin;
-            public Vector3 Scale;
-            public Quaternion Rotation;
-        }
-
-
-        public readonly PosRotScale Decompose()
-        {
-            Vector3 scale;
-            Quaternion rotation;
-            Vector3 origin;
-            if (!Matrix4x4.Decompose(Matrix, out scale, out rotation, out origin))
-                throw new Exception();
-
-            return new PosRotScale { Origin = origin, Rotation = rotation, Scale = scale };
-        }
-
-
-        // ---------------------- Inverse ----------------------
-        public readonly Transform Inverse()
-        {
-            Matrix4x4.Invert(Matrix, out var inv);
-            return new Transform(inv);
-        }
-
-
-
-        public readonly Transform AffineInverse() => Inverse();
-
-
-
-
-        public readonly Transform Rotated(Vector3 axis, float radians)
-            => new(Matrix * Matrix4x4.CreateFromAxisAngle(Vector3.Normalize(axis), radians));
-
-        public static Transform Rotated(Transform t, Vector3 axis, float radians)
-            => t.Rotated(axis, radians);
-
-        public static Transform FromRotation(Vector3 axis, float angle)
-            => new(Matrix4x4.CreateFromAxisAngle(Vector3.Normalize(axis), angle));
-
-        public static Transform FromRotation(Quaternion q)
-            => new(Matrix4x4.CreateFromQuaternion(q));
-
-
-
-        public static Transform FromEuler(Vector3 euler)
-        {
-            var rotX = Matrix4x4.CreateRotationX(euler.X);
-            var rotY = Matrix4x4.CreateRotationY(euler.Y);
-            var rotZ = Matrix4x4.CreateRotationZ(euler.Z);
-            return new Transform(rotZ * rotX * rotY);
-        }
-
-        public readonly Vector3 GetEuler()
-        {
-            var m = Matrix;
-            float sy = -m.M32;
-            bool singular = MathF.Abs(sy) >= 0.999999f;
-
-            float pitch, yaw, roll;
-            if (!singular)
-            {
-                pitch = MathF.Asin(sy);
-                yaw = MathF.Atan2(m.M31, m.M33);
-                roll = MathF.Atan2(m.M12, m.M22);
-            }
-            else
-            {
-                pitch = MathF.Asin(sy);
-                yaw = MathF.Atan2(-m.M13, m.M11);
-                roll = 0;
-            }
-
-            return new Vector3(pitch, yaw, roll);
-        }
-
-
-
-        public readonly Transform Scaled(Vector3 scale)
-            => new(Matrix4x4.CreateScale(scale) * Matrix);
-
-        public static Transform FromScale(Vector3 scale)
-            => new(Matrix4x4.CreateScale(scale));
-
-
-
-
-        public readonly Transform Orthonormalized()
-        {
-            Vector3 x = new(Matrix.M11, Matrix.M12, Matrix.M13);
-            Vector3 y = new(Matrix.M21, Matrix.M22, Matrix.M23);
-            Vector3 z = new(Matrix.M31, Matrix.M32, Matrix.M33);
-
-            x = Vector3.Normalize(x);
-            y = Vector3.Normalize(y - Vector3.Dot(y, x) * x);
-            z = Vector3.Cross(x, y);
-
-            var mat = Matrix;
-            mat.M11 = x.X; mat.M12 = x.Y; mat.M13 = x.Z;
-            mat.M21 = y.X; mat.M22 = y.Y; mat.M23 = y.Z;
-            mat.M31 = z.X; mat.M32 = z.Y; mat.M33 = z.Z;
-
-            return new Transform(mat);
-        }
-
-
-
-
-        public static Transform LookingAt(Vector3 target, Vector3 up, Vector3 origin = default)
-        {
-            Vector3 z = Vector3.Normalize(target - origin);
-            Vector3 x = Vector3.Normalize(Vector3.Cross(up, z));
-            Vector3 y = Vector3.Cross(z, x);
-
-            var mat = new Matrix4x4
-            {
-                M11 = x.X,
-                M12 = x.Y,
-                M13 = x.Z,
-                M21 = y.X,
-                M22 = y.Y,
-                M23 = y.Z,
-                M31 = z.X,
-                M32 = z.Y,
-                M33 = z.Z,
-                Translation = origin
-            };
-
-            return new Transform(mat);
-        }
-
-
-        public readonly Transform LookingAt(Vector3 target, Vector3 up) => LookingAt(target, up, Origin);
-
-
-
-
-        public static Transform operator *(Transform a, Transform b) => new(a.Matrix * b.Matrix);
-
-        public static Transform operator *(Transform a, Matrix4x4 b) => new(a.Matrix * b);
-        public static Transform operator *(Matrix4x4 a, Transform b) => new(a * b.Matrix);
-
-        public static Vector3 operator *(Transform t, Vector3 v) => Vector3.Transform(v, t.Matrix);
-
-
-        public static bool operator ==(Transform a, Transform b) => a.Matrix == b.Matrix;
-        public static bool operator !=(Transform a, Transform b) => !(a == b);
-
-
-        public static bool operator ==(Transform a, Matrix4x4 b) => a.Matrix == b;
-        public static bool operator !=(Transform a, Matrix4x4 b) => !(a == b);
-
-
-        public static implicit operator Transform(Matrix4x4 mat) => new(mat);
-        public static implicit operator Matrix4x4(Transform tr) => tr.Matrix;
-
-
-        public override readonly bool Equals(object? obj) => obj is Transform t && this == t;
-
-        public override readonly int GetHashCode() => Matrix.GetHashCode();
-
-        public override readonly string ToString() => Matrix.ToString();
-
-        public readonly bool Equals(Transform other) => Matrix == other.Matrix;
-
-        public readonly bool Equals(Matrix4x4 other) => Matrix == other;
+        m.M11 = v.X; m.M12 = v.Y; m.M13 = v.Z;
+    }
+
+    public static Vector3 GetOrientationY(this in Matrix4x4 m)
+        => new(m.M21, m.M22, m.M23);
+
+    public static void SetOrientationY(this ref Matrix4x4 m, Vector3 v)
+    {
+        m.M21 = v.X; m.M22 = v.Y; m.M23 = v.Z;
+    }
+
+    public static Vector3 GetOrientationZ(this in Matrix4x4 m)
+        => new(m.M31, m.M32, m.M33);
+
+    public static void SetOrientationZ(this ref Matrix4x4 m, Vector3 v)
+    {
+        m.M31 = v.X; m.M32 = v.Y; m.M33 = v.Z;
     }
 
 
 
 
 
-    /// <summary>
-    /// Represents a 3x3 matrix.
-    /// </summary>
-    public unsafe struct Matrix3x3 : IEquatable<Matrix3x3>
+    public struct PosRotScale
     {
-        public float M11, M12, M13;
-        public float M21, M22, M23;
-        public float M31, M32, M33;
+        public Vector3 Origin;
+        public Vector3 Scale;
+        public Quaternion Rotation;
 
-        /// <summary>Creates a 3x3 matrix from 9 float values in row-major order.</summary>
-        public Matrix3x3(
-            float m11, float m12, float m13,
-            float m21, float m22, float m23,
-            float m31, float m32, float m33)
-        {
-            M11 = m11; M12 = m12; M13 = m13;
-            M21 = m21; M22 = m22; M23 = m23;
-            M31 = m31; M32 = m32; M33 = m33;
-        }
-
-        /// <summary>Creates a 3x3 matrix with all diagonal values set, others zero.</summary>
-        public Matrix3x3(float diagonal)
-        {
-            M11 = M22 = M33 = diagonal;
-            M12 = M13 = M21 = M23 = M31 = M32 = 0f;
-        }
-
-        public static readonly Matrix3x3 Identity = new(1f);
-
-        /// <summary>Returns a new matrix that is the transpose of this matrix.</summary>
-        public readonly Matrix3x3 Transpose() => new(
-            M11, M21, M31,
-            M12, M22, M32,
-            M13, M23, M33
-        );
-
-        /// <summary>Adds two matrices element-wise.</summary>
-        public static Matrix3x3 operator +(Matrix3x3 a, Matrix3x3 b) => new(
-            a.M11 + b.M11, a.M12 + b.M12, a.M13 + b.M13,
-            a.M21 + b.M21, a.M22 + b.M22, a.M23 + b.M23,
-            a.M31 + b.M31, a.M32 + b.M32, a.M33 + b.M33
-        );
-
-        /// <summary>Subtracts two matrices element-wise.</summary>
-        public static Matrix3x3 operator -(Matrix3x3 a, Matrix3x3 b) => new(
-            a.M11 - b.M11, a.M12 - b.M12, a.M13 - b.M13,
-            a.M21 - b.M21, a.M22 - b.M22, a.M23 - b.M23,
-            a.M31 - b.M31, a.M32 - b.M32, a.M33 - b.M33
-        );
-
-        /// <summary>Multiplies all elements by a scalar.</summary>
-        public static Matrix3x3 operator *(Matrix3x3 m, float s) => new(
-            m.M11 * s, m.M12 * s, m.M13 * s,
-            m.M21 * s, m.M22 * s, m.M23 * s,
-            m.M31 * s, m.M32 * s, m.M33 * s
-        );
-
-        /// <summary>Multiplies two 3x3 matrices together (matrix product).</summary>
-        public static Matrix3x3 operator *(Matrix3x3 a, Matrix3x3 b) => new(
-            a.M11 * b.M11 + a.M12 * b.M21 + a.M13 * b.M31,
-            a.M11 * b.M12 + a.M12 * b.M22 + a.M13 * b.M32,
-            a.M11 * b.M13 + a.M12 * b.M23 + a.M13 * b.M33,
-
-            a.M21 * b.M11 + a.M22 * b.M21 + a.M23 * b.M31,
-            a.M21 * b.M12 + a.M22 * b.M22 + a.M23 * b.M32,
-            a.M21 * b.M13 + a.M22 * b.M23 + a.M23 * b.M33,
-
-            a.M31 * b.M11 + a.M32 * b.M21 + a.M33 * b.M31,
-            a.M31 * b.M12 + a.M32 * b.M22 + a.M33 * b.M32,
-            a.M31 * b.M13 + a.M32 * b.M23 + a.M33 * b.M33
-        );
-
-        /// <summary>Multiplies a matrix by a vector3 (matrix * column vector).</summary>
-        public static Vector3 operator *(Matrix3x3 m, Vector3 v) => new(
-            m.M11 * v.X + m.M12 * v.Y + m.M13 * v.Z,
-            m.M21 * v.X + m.M22 * v.Y + m.M23 * v.Z,
-            m.M31 * v.X + m.M32 * v.Y + m.M33 * v.Z
-        );
-
-        public override readonly bool Equals(object? obj) => obj is Matrix3x3 other && Equals(other);
-        public readonly bool Equals(Matrix3x3 other) =>
-            M11 == other.M11 && M12 == other.M12 && M13 == other.M13 &&
-            M21 == other.M21 && M22 == other.M22 && M23 == other.M23 &&
-            M31 == other.M31 && M32 == other.M32 && M33 == other.M33;
-
-        public override readonly int GetHashCode()
-        {
-            HashCode hash = new HashCode();
-            hash.Add(M11);
-            hash.Add(M12);
-            hash.Add(M13);
-            hash.Add(M21);
-            hash.Add(M22);
-            hash.Add(M23);
-            hash.Add(M31);
-            hash.Add(M32);
-            hash.Add(M33);
-            return hash.ToHashCode();
-        }
-
-        public override readonly string ToString() =>
-            $"Matrix3x3(\n  {M11}, {M12}, {M13}\n  {M21}, {M22}, {M23}\n  {M31}, {M32}, {M33}\n)";
+        public readonly Matrix4x4 Compose() => Matrix4x4.CreateFromQuaternion(Rotation).Scaled(Scale) with { Translation = Origin };
     }
+
+
+
+    public static PosRotScale Decompose(this in Matrix4x4 m)
+    {
+        if (!Matrix4x4.Decompose(m, out var scale, out var rotation, out var origin))
+            throw new InvalidOperationException();
+        return new PosRotScale { Origin = origin, Rotation = rotation, Scale = scale };
+    }
+
+
+
+
+    public static Matrix4x4 Inverse(this in Matrix4x4 m)
+    {
+        Matrix4x4.Invert(m, out var inv);
+        return inv;
+    }
+
+    public static Matrix4x4 Rotated(this in Matrix4x4 m, Vector3 axis, float radians)
+        => m * Matrix4x4.CreateFromAxisAngle(Vector3.Normalize(axis), radians);
+
+
+    public static Matrix4x4 FromEuler(Vector3 euler)
+    {
+
+        var rotX = Matrix4x4.CreateRotationX(euler.X);
+        var rotY = Matrix4x4.CreateRotationY(euler.Y);
+        var rotZ = Matrix4x4.CreateRotationZ(euler.Z);
+        return rotZ * rotX * rotY;
+    }
+
+    public static Vector3 GetEuler(this in Matrix4x4 m)
+    {
+        float sy = -m.M32;
+        bool singular = MathF.Abs(sy) >= 0.999999f;
+
+        float pitch, yaw, roll;
+        if (!singular)
+        {
+            pitch = MathF.Asin(sy);
+            yaw = MathF.Atan2(m.M31, m.M33);
+            roll = MathF.Atan2(m.M12, m.M22);
+        }
+        else
+        {
+            pitch = MathF.Asin(sy);
+            yaw = MathF.Atan2(-m.M13, m.M11);
+            roll = 0;
+        }
+
+        return new Vector3(pitch, yaw, roll);
+    }
+
+
+    public static Matrix4x4 Scaled(this in Matrix4x4 m, Vector3 scale)
+        => Matrix4x4.CreateScale(scale) * m;
+
+
+    public static Matrix4x4 Orthonormalized(this in Matrix4x4 m)
+    {
+        Vector3 x = new(m.M11, m.M12, m.M13);
+        Vector3 y = new(m.M21, m.M22, m.M23);
+        Vector3 z = new(m.M31, m.M32, m.M33);
+
+        x = Vector3.Normalize(x);
+        y = Vector3.Normalize(y - Vector3.Dot(y, x) * x);
+        z = Vector3.Cross(x, y);
+
+        var mat = m;
+        mat.M11 = x.X; mat.M12 = x.Y; mat.M13 = x.Z;
+        mat.M21 = y.X; mat.M22 = y.Y; mat.M23 = y.Z;
+        mat.M31 = z.X; mat.M32 = z.Y; mat.M33 = z.Z;
+
+        return mat;
+    }
+
+    public static Matrix4x4 Multiply(this in Matrix4x4 a, Matrix4x4 b) => a * b;
+    public static Vector3 Transform(this in Matrix4x4 m, Vector3 v) => Vector3.Transform(v, m);
+
+
+
+
+
 
 
 
@@ -481,7 +284,9 @@ public static class EngineMath
         public static explicit operator Vector2<T>(Vector2 val) => new(T.CreateChecked(val.X), T.CreateChecked(val.Y));
         public static explicit operator Vector2(Vector2<T> val) => new(float.CreateChecked(val.X), float.CreateChecked(val.Y));
 
+
         public readonly T Dot(Vector2<T> other) => X * other.X + Y * other.Y;
+
 
         public override readonly bool Equals(object? obj) => obj is Vector2<T> other && Equals(other);
         public readonly bool Equals(Vector2<T> other) => X == other.X && Y == other.Y;
@@ -529,6 +334,8 @@ public static class EngineMath
         public static explicit operator Vector3(Vector3<T> val) => new(float.CreateChecked(val.X), float.CreateChecked(val.Y), float.CreateChecked(val.Z));
 
         public readonly T Dot(Vector3<T> other) => X * other.X + Y * other.Y + Z * other.Z;
+
+
         public readonly Vector3<T> Cross(Vector3<T> other) => new(
             Y * other.Z - Z * other.Y,
             Z * other.X - X * other.Z,
@@ -582,6 +389,7 @@ public static class EngineMath
         public static explicit operator Vector4(Vector4<T> val) => new(float.CreateChecked(val.X), float.CreateChecked(val.Y), float.CreateChecked(val.Z), float.CreateChecked(val.W));
 
         public readonly T Dot(Vector4<T> other) => X * other.X + Y * other.Y + Z * other.Z + W * other.W;
+
 
         public override readonly bool Equals(object? obj) => obj is Vector4<T> other && Equals(other);
         public readonly bool Equals(Vector4<T> other) => X == other.X && Y == other.Y && Z == other.Z && W == other.W;

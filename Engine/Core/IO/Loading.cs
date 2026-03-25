@@ -1,42 +1,11 @@
 ﻿
 
 
-// -----------------------------------
-// Standard common serializable types
-
-
-[assembly: Engine.Attributes.BinarySerializableTypeAssemblyLevel(typeof(int))]
-[assembly: Engine.Attributes.BinarySerializableTypeAssemblyLevel(typeof(int[]))]
-
-[assembly: Engine.Attributes.BinarySerializableTypeAssemblyLevel(typeof(uint))]
-[assembly: Engine.Attributes.BinarySerializableTypeAssemblyLevel(typeof(uint[]))]
-
-[assembly: Engine.Attributes.BinarySerializableTypeAssemblyLevel(typeof(byte))]
-[assembly: Engine.Attributes.BinarySerializableTypeAssemblyLevel(typeof(byte[]))]
-
-[assembly: Engine.Attributes.BinarySerializableTypeAssemblyLevel(typeof(ushort))]
-[assembly: Engine.Attributes.BinarySerializableTypeAssemblyLevel(typeof(ushort[]))]
-
-[assembly: Engine.Attributes.BinarySerializableTypeAssemblyLevel(typeof(float))]
-[assembly: Engine.Attributes.BinarySerializableTypeAssemblyLevel(typeof(float[]))]
-
-[assembly: Engine.Attributes.BinarySerializableTypeAssemblyLevel(typeof(bool))]
-[assembly: Engine.Attributes.BinarySerializableTypeAssemblyLevel(typeof(bool[]))]
-
-[assembly: Engine.Attributes.BinarySerializableTypeAssemblyLevel(typeof(string))]
-[assembly: Engine.Attributes.BinarySerializableTypeAssemblyLevel(typeof(string[]))]
-
-[assembly: Engine.Attributes.BinarySerializableTypeAssemblyLevel(typeof(Engine.Core.EngineMath.AABB))]
-
-[assembly: Engine.Attributes.BinarySerializableTypeAssemblyLevel(typeof(System.Numerics.Matrix4x4))]
-[assembly: Engine.Attributes.BinarySerializableTypeAssemblyLevel(typeof(System.Numerics.Matrix4x4[]))]
-
-// -----------------------------------
-
-
 
 
 namespace Engine.Core;
+
+
 
 using Attributes;
 using Engine.GameResources;
@@ -65,8 +34,32 @@ public static partial class Loading
 {
 
 
+    /// <summary>
+    /// A throttle for the maximum amount of resources that can be asynchronously loading at once. 0 = uncapped
+    /// </summary>
+    public static int MaxParallelAssetLoads = 0;
 
-    // --------------- !!!!! Changing these paths will break .props, the build process, .gitignore and external tools !!!!! --------------- \\
+
+
+#if DEBUG
+
+    public static bool PrintAssetLoadingStatus = false;
+
+    /// <summary>
+    /// A throttle for the maximum amount of resources that can be asynchronously converted via <see cref="GameResource.IConverts.ConvertToFinalAssetBytes(Bytes, string)"/> at once. 0 = uncapped
+    /// </summary>
+    public static int MaxParallelAssetConversions = 0;
+
+#endif
+
+
+
+
+
+
+
+
+    // --------------- !!!!! Changing these paths will break .props, the build process, .gitignore and potentially external tools !!!!! --------------- \\
 
 
 #if DEBUG
@@ -95,22 +88,6 @@ public static partial class Loading
     // ------------------------------------------------------------------------------------------------------------------------------------ \\
 
 
-
-
-
-
-#if DEBUG
-
-    public static readonly System.Text.Json.JsonSerializerOptions JsonAssetLoadingOptions = new System.Text.Json.JsonSerializerOptions()
-    {
-        IncludeFields = true,
-        Converters =
-        {
-            new System.Text.Json.Serialization.JsonStringEnumConverter()
-        }
-    };
-
-#endif
 
 
 
@@ -162,13 +139,15 @@ public static partial class Loading
 
             using (var filestream = new FileStream(archivePath, FileMode.Open, FileAccess.Read))
             {
-                var assetCount = filestream.DeserializeKnownType<uint>();
+                var read = Parsing.ValueReader.FromStream(filestream);
+
+                var assetCount = read.ReadUnmanaged<uint>();
                 for (uint i = 0; i < assetCount; i++)
                 {
-                    var assetOffset = filestream.DeserializeKnownType<ulong>();
-                    var assetLength = filestream.DeserializeKnownType<ulong>();
-                    var assetPath = filestream.DeserializeKnownType<string>();
-                    Type assetType = Parsing.GetGameResourceTypeFromTypeID(filestream.DeserializeKnownType<ushort>());
+                    var assetOffset = read.ReadUnmanaged<ulong>();
+                    var assetLength = read.ReadUnmanaged<ulong>();
+                    var assetPath = read.ReadString();
+                    Type assetType = GameResource.GetGameResourceTypeFromTypeID(read.ReadUnmanaged<ushort>());
 
                     AssetLookupDirect[$"{archiveName}/{assetPath}"] = new AssetDataRange(archivePath, assetType, assetOffset, assetLength);
                 }
@@ -269,13 +248,15 @@ public static partial class Loading
             return buffer;
         }
 
+
+
         protected override void Dispose(bool disposing)
         {
-            if (disposing)
-                _baseStream.Dispose();
-
-            base.Dispose(disposing);
+            _baseStream.Dispose();
+            base.Dispose(true);
         }
+
+
 
         public override bool CanRead => _baseStream.CanRead;
         public override bool CanSeek => false;
@@ -309,7 +290,7 @@ public static partial class Loading
 
             int count = (int)Math.Min(buffer.Length, _remaining);
             int read = await _baseStream
-                .ReadAsync(buffer.Slice(0, count), cancellationToken)
+                .ReadAsync(buffer[..count], cancellationToken)
                 .ConfigureAwait(false);
 
             _remaining -= read;
@@ -475,8 +456,7 @@ public static partial class Loading
 
 
         // delete entire cache for debug
-        //Directory.Delete(AssetCachePath, true);
-        //return;
+        //Directory.Delete(AssetCachePath, true); return;
 
 
 
@@ -484,7 +464,7 @@ public static partial class Loading
         {
             try
             {
-                var relativePath = Path.GetRelativePath(AssetCachePath, cacheFile.Split("+")[0]);
+                var relativePath = Path.GetRelativePath(AssetCachePath, cacheFile);
                 var sourcePath = Path.Combine(AssetRootDirectoryPath, relativePath).Replace(".cached", string.Empty);
 
                 if (!FileExistsCaseSensitive(sourcePath))
@@ -530,8 +510,6 @@ public static partial class Loading
 
 
 
-
-
     /// <summary>
     /// Loads a <see cref="GameResource"/> from a folder/archive within the game's asset root directory (see <see cref="AssetRootDirectoryPath"/>).
     /// <br/> <b><paramref name="resourcePath"/> should be relative to the asset root directory and should not include a file extension. </b>
@@ -541,6 +519,8 @@ public static partial class Loading
     /// <returns></returns>
     public static async Task<T> LoadResource<T>(string resourcePath) where T : GameResource
     {
+
+
 
         return (T) await InternalLoadOrFetchResource(resourcePath, async () =>
         {
@@ -587,9 +567,12 @@ public static partial class Loading
 #endif
 
 
-            var res = await Parsing.ConstructGameResourceFromGeneric<T>(stream, resourcePath);
+            var res = await GameResource.LoadGameResourceFromGenericAndStream<T>(stream, resourcePath);
 
             res.Register();
+
+
+            stream.Dispose();
 
             return res;
 
@@ -606,6 +589,7 @@ public static partial class Loading
 #if DEBUG
 
 
+
     /// <summary>
     /// Caches and/or fetches the asset file at <paramref name="relativePath"/>'s final bytes.
     /// <br/> This is a development-time debug-only method and usually shouldn't be used directly.
@@ -615,15 +599,42 @@ public static partial class Loading
     /// <returns></returns>
     public static async Task<AssetByteStream> GetFinalAssetBytes<T>(string relativePath) where T : GameResource
     {
-        return await GetFinalAssetBytes<T>(await AcquireAssetByteStream(relativePath).GetArray(), relativePath);
+        return await GetFinalAssetBytes<T>(new Bytes(await AcquireAssetByteStream(relativePath).GetArray()), relativePath);
     }
 
 
     /// <summary>
-    /// Caches and/or fetches an asset file's final bytes, assuming the asset file's contents are <paramref name="unconvertedData"/>, and its path on disk is <paramref name="relativePath"/>.
-    /// <br/> Parts of that assumption may not be true, for example, embedded resources, which aren't truly separate, yet benefit from individual caching.
-    /// <br/><br/> '+' acts as a delimiter within <paramref name="relativePath"/> to signify that only content before the symbol should be used as the file name when checking if the file exists during cache clean on startup.
-    /// <br/>For example, an embedded material within a scene might supply a <paramref name="relativePath"/> such as 'assets/scene.scn+material.mat', but when the cache is cleaned, it'll simply check if 'assets/scene.scn' exists.
+    /// A disposable wrapper over <see cref="byte[]"/> (simply sets own reference to <paramref name="byteArray"/> to null upon disposal to allow GC).
+    /// </summary>
+    public sealed class Bytes(byte[] byteArray) : IDisposable
+    {
+        public byte[] ByteArray = byteArray;
+        public void Dispose() => ByteArray = null;
+    }
+
+
+
+
+
+
+
+    private static readonly SemaphoreSlim AssetConversionThrottle = new(MaxParallelAssetConversions);
+
+
+    public static async Task EnterAssetConversionSemaphore()
+    {
+        if (MaxParallelAssetConversions != 0) await AssetConversionThrottle.WaitAsync();
+    }
+    public static void ExitAssetConversionSemaphore()
+    {
+        if (MaxParallelAssetConversions != 0) AssetConversionThrottle.Release();
+    }
+
+
+
+
+    /// <summary>
+    /// Fetches and/or caches an asset file's final bytes, assuming the asset file's contents are <paramref name="unconvertedData"/>, and its path on disk is <paramref name="relativePath"/>.
     /// <br/>
     /// <br/> This is a development-time debug-only method and usually shouldn't be used directly.
     /// </summary>
@@ -631,8 +642,11 @@ public static partial class Loading
     /// <param name="unconvertedData"></param>
     /// <param name="relativePath"></param>
     /// <returns></returns>
-    public static async Task<AssetByteStream> GetFinalAssetBytes<T>(byte[] unconvertedData, string relativePath) where T : GameResource
+    public static async Task<AssetByteStream> GetFinalAssetBytes<T>(Bytes unconvertedData, string relativePath = null) where T : GameResource
     {
+
+       
+
 
         var loadingDbgString = $"Loading asset file '{relativePath}'";
         var convertingDbgString = $"Converting/caching asset file '{relativePath}'";
@@ -653,55 +667,62 @@ public static partial class Loading
         if (convertcheck)
         {
 
-
-            var cachedFileDir = Path.Combine(AssetCachePath, relativePath + ".cached");
-
-
-            Directory.CreateDirectory(Directory.GetParent(cachedFileDir).FullName);
-
-
-
             uint crc = 0;
 
-            if (FileExistsCaseSensitive(cachedFileDir))
+
+            var cachedFileDir = relativePath == null ? null : Path.Combine(AssetCachePath, relativePath + ".cached");
+
+
+
+            // path supplied, check if cache file exists and is valid
+
+            if (relativePath != null)
             {
-                crc = Crc32.HashToUInt32(unconvertedData);
+
+                Directory.CreateDirectory(Directory.GetParent(cachedFileDir).FullName);
 
 
-                var filestream = new FileStream(cachedFileDir, FileMode.Open, FileAccess.Read);
-
-                uint storedCrc = filestream.DeserializeKnownType<uint>();
-
-
-                if (storedCrc == crc)
+                if (FileExistsCaseSensitive(cachedFileDir))
                 {
-                    var len = filestream.DeserializeKnownType<uint>();
-
-                    statusPrint($"Cached file found for asset '{relativePath}'");
-
-                    finalStream = new AssetByteStream(new DecompressionStream(filestream, (int)len, leaveOpen: false), len);
+                    crc = Crc32.HashToUInt32(unconvertedData.ByteArray);
 
 
-                    //forced reconversion?
-                    if ((bool) typeof(T).GetMethod(nameof(GameResource.IConverts.ForceReconversion), BindingFlags.Static | BindingFlags.Public, [typeof(byte[]), typeof(byte[])]).Invoke(null, [null, null])!)
+                    var filestream = new FileStream(cachedFileDir, FileMode.Open, FileAccess.Read);
+
+                    var read = Parsing.ValueReader.FromStream(filestream);
+
+
+                    uint storedCrc = read.ReadUnmanaged<uint>();
+
+
+                    if (storedCrc == crc)
+                    {
+                        var len = read.ReadUnmanaged<uint>();
+
+                        statusPrint($"Cached file found for asset '{relativePath}'");
+
+                        finalStream = new AssetByteStream(new DecompressionStream(filestream, (int)len, leaveOpen: false), len);
+
+                    }
+                    else
                     {
                         crc = 0;
                         filestream.Dispose();
                     }
 
                 }
-                else
-                {
-                    crc = 0;
-                    filestream.Dispose();
-                }
-
             }
 
 
-            //cached file wasnt found or doesn't match
+
+
+            // path not supplied, cache file wasnt found, or cache file doesn't match
+
             if (crc == 0)
             {
+                await EnterAssetConversionSemaphore();
+
+
                 statusPrint($"Required cache missing or out of date for asset '{relativePath}', converting...");
 
 
@@ -716,7 +737,7 @@ public static partial class Loading
 
                 for (int i = 0; i < 4; i++)
                 {
-                    if (unconvertedData[i] != zstdMagic[i])
+                    if (unconvertedData.ByteArray[i] != zstdMagic[i])
                         zstd = false;
                         break;
                 }
@@ -726,13 +747,13 @@ public static partial class Loading
                 {
                     try
                     {
-                        using var input = new MemoryStream(unconvertedData);
+                        using var input = new MemoryStream(unconvertedData.ByteArray);
                         using var zstdStream = new DecompressionStream(input);
                         using var output = new MemoryStream();
 
                         zstdStream.CopyTo(output);
 
-                        unconvertedData = output.ToArray();
+                        unconvertedData.ByteArray = output.ToArray();
                     }
 
                     catch (ZstdException) { }  //invalid zstd
@@ -744,30 +765,50 @@ public static partial class Loading
 
 
 
+                crc = Crc32.HashToUInt32(unconvertedData.ByteArray);
 
-                var finalBytes = await (Task<byte[]>)typeof(T).GetMethod(nameof(GameResource.IConverts.ConvertToFinalAssetBytes), BindingFlags.Static | BindingFlags.Public, [typeof(byte[]), typeof(string)])
+
+                var finalBytes = await (Task<byte[]>)typeof(T).GetMethod(nameof(GameResource.IConverts.ConvertToFinalAssetBytes), BindingFlags.Static | BindingFlags.Public, [typeof(Bytes), typeof(string)])
                     .Invoke(null, [unconvertedData, relativePath]);
 
 
-
-                using var compressor = new Compressor(6);
-
-                var compressedFinalBytes = compressor.Wrap(finalBytes).ToArray();
+                finalStream = new AssetByteStream(new MemoryStream(finalBytes), finalBytes.Length);
 
 
 
-                using (var filestream = new FileStream(cachedFileDir, FileMode.Create))
+                // path supplied, compress and cache
+
+                if (relativePath != null)
                 {
-                    await filestream.WriteAsync(Crc32.Hash(unconvertedData));
-                    await filestream.WriteAsync(BitConverter.GetBytes((uint)finalBytes.Length));
-                    await filestream.WriteAsync(compressedFinalBytes);
+
+                    using var compressor = new Compressor(6);
+
+                    var compressedFinalBytes = compressor.Wrap(finalBytes);
+
+
+                    using var filestream = new FileStream(cachedFileDir, FileMode.Create, FileAccess.Write, FileShare.None, compressedFinalBytes.Length + 4096);
+
+                    var writer = Parsing.ValueWriter.FromStream(filestream);
+
+                    writer.WriteUnmanaged(crc);
+                    writer.WriteUnmanaged((uint)finalBytes.Length);
+                    writer.WriteUnmanagedSpan<byte>(compressedFinalBytes);
+
+                    compressedFinalBytes = default;
                 }
 
-                finalStream = new AssetByteStream(new DecompressionStream(new MemoryStream(compressedFinalBytes), bufferSize: finalBytes.Length, leaveOpen: false), finalBytes.Length);
 
+                //conversion often leaves a lot of junk/temporary data
+
+                System.Runtime.GCSettings.LargeObjectHeapCompactionMode = System.Runtime.GCLargeObjectHeapCompactionMode.CompactOnce;
+                System.Runtime.GCSettings.LatencyMode = System.Runtime.GCLatencyMode.Batch;
+                GC.Collect();
+
+
+                ExitAssetConversionSemaphore();
             }
-
         }
+
 
 
         else finalStream = AcquireAssetByteStream(relativePath);
@@ -781,13 +822,20 @@ public static partial class Loading
 
 
 
+
         return finalStream;
 
 
 
 
-        static void statusPrint(string p)
+        void statusPrint(string p)
         {
+
+#if !ENGINE_BUILD_PASS
+            if (PrintAssetLoadingStatus)
+#endif
+
+            if (relativePath != null)
 
 #if ENGINE_BUILD_PASS
             Console.WriteLine(
@@ -795,28 +843,33 @@ public static partial class Loading
             Debug.Print(
 #endif
             p);
+
+
         }
 
 
 
         void liststatusChange(assetloadingstatusForDebugMsg status)
         {
-            lock (AssetLoadingDebugList)
-            {
-                AssetLoadingDebugList.Remove(loadingDbgString);
-                AssetLoadingDebugList.Remove(convertingDbgString);
 
-                switch (status)
+            if (relativePath != null)
+
+                lock (AssetLoadingDebugList)
                 {
-                    case assetloadingstatusForDebugMsg.Loading:
-                        AssetLoadingDebugList.Add(loadingDbgString);
-                        return;
+                    AssetLoadingDebugList.Remove(loadingDbgString);
+                    AssetLoadingDebugList.Remove(convertingDbgString);
 
-                    case assetloadingstatusForDebugMsg.Converting:
-                        AssetLoadingDebugList.Add(convertingDbgString);
-                        return;
+                    switch (status)
+                    {
+                        case assetloadingstatusForDebugMsg.Loading:
+                            AssetLoadingDebugList.Add(loadingDbgString);
+                            return;
+
+                        case assetloadingstatusForDebugMsg.Converting:
+                            AssetLoadingDebugList.Add(convertingDbgString);
+                            return;
+                    }
                 }
-            }
         }
     }
 
@@ -846,6 +899,24 @@ public static partial class Loading
 
 
 
+    private static readonly SemaphoreSlim AssetLoadThrottle = new(MaxParallelAssetLoads);
+
+
+    public static async Task EnterAssetLoadSemaphore()
+    {
+        if (MaxParallelAssetLoads != 0) await AssetLoadThrottle.WaitAsync();
+    }
+    public static void ExitAssetLoadSemaphore()
+    {
+        if (MaxParallelAssetLoads != 0) AssetLoadThrottle.Release();
+    }
+
+
+
+
+
+
+
     private static readonly SemaphoreSlim LoadedResourcesSemaphore = new(1, 1);
 
     private static readonly Dictionary<string, TaskCompletionSource<GameResource>> LoadedResources = new();
@@ -858,46 +929,47 @@ public static partial class Loading
     /// <returns></returns>
     public static async Task<GameResource> InternalLoadOrFetchResource(string resourcePath, Func<Task<GameResource>> loader)
     {
+        await EnterAssetLoadSemaphore();
+
+
         //acquire semaphore
         await LoadedResourcesSemaphore.WaitAsync();
 
 
         //see if resource is already being loaded, if so, return that task
-        if (LoadedResources.TryGetValue(resourcePath, out var loadstatus) &&
-            !(loadstatus.Task.IsCompletedSuccessfully && !loadstatus.Task.Result.Valid))
+        if (LoadedResources.TryGetValue(resourcePath, out var loadstatus))
         {
             LoadedResourcesSemaphore.Release();
-            return await loadstatus.Task;
+            return await loadstatus.Task;    //LoadedResourcesSemaphore isnt being held. setresourceloaded calls.
         }
 
-        
+
         //otherwise, set up a task source and release the semaphore
-        var tcs = new TaskCompletionSource<GameResource>();
-        LoadedResources[resourcePath] = tcs;
+        LoadedResources[resourcePath] = loadstatus = new TaskCompletionSource<GameResource>();
         LoadedResourcesSemaphore.Release();
 
-
         //load the resource
-        var resource = await loader.Invoke();  
+        var resource = await loader.Invoke();
+
+
+
+
+
+        ExitAssetLoadSemaphore();
 
         return resource;
     }
 
 
-    public static void SetResourceLoaded(this GameResource resource)
+    public static async void SetResourceLoaded(this GameResource resource)
     {
-        LoadedResourcesSemaphore.Wait();
+        await LoadedResourcesSemaphore.WaitAsync();
 
-        if (LoadedResources.TryGetValue(resource.Key, out var get))
-            if (get.Task.IsCompletedSuccessfully)
-                throw new Exception($"Resource {resource.Key} already registered");
-
-        else
+        if (!LoadedResources.TryGetValue(resource.Key, out var get))
             LoadedResources[resource.Key] = get = new TaskCompletionSource<GameResource>();
 
 
         get.SetResult(resource);
-
         LoadedResourcesSemaphore.Release();
 
     }

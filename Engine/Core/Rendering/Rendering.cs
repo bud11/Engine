@@ -366,11 +366,19 @@ public static class Rendering
             foreach (var set in ResourceSets)
             {
                 if (set.Value.IsAllocated)
-                    foreach (var res in set.Value.Target.GetContents())
+                {
+                    var sp = set.Value.Target.GetContents();
+
+                    for (int i = 0; i < sp.Length; i++)
                     {
+                        var res = sp[i];
+
                         if (res == null || IsResourceDummy(res))
-                            throw new Exception($"Missing resource in set '{set.Key}'");
+                        {
+                            throw new Exception($"Missing resource in set '{set.Key.Target}'");
+                        }
                     }
+                }
             }
         }
 

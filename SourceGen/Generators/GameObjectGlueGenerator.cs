@@ -36,7 +36,7 @@ public sealed class GameObjectGlueGenerator : IIncrementalGenerator
                 gameObjectSB.AppendLine("using System;");
                 gameObjectSB.AppendLine();
 
-                gameObjectSB.AppendLine("public static partial class Parsing");
+                gameObjectSB.AppendLine("public partial class GameObject");
                 gameObjectSB.AppendLine("{");
 
 
@@ -66,7 +66,7 @@ public sealed class GameObjectGlueGenerator : IIncrementalGenerator
                 var getobjTypeIDSB = new StringBuilder();
 
 
-                constructSB.AppendLine("\tpublic static GameObject ConstructGameObjectFromTypeID(ushort TypeID)");
+                constructSB.AppendLine("\tpublic static partial GameObject ConstructGameObjectFromTypeID(ushort TypeID)");
                 constructSB.AppendLine("\t{");
                 constructSB.AppendLine();
                 constructSB.AppendLine("\t\treturn TypeID switch");
@@ -74,7 +74,7 @@ public sealed class GameObjectGlueGenerator : IIncrementalGenerator
 
 
 
-                getobjTypeIDSB.AppendLine("\tpublic static ushort GetGameObjectTypeID(Type type)");
+                getobjTypeIDSB.AppendLine("\tpublic static partial ushort GetGameObjectTypeID(Type type)");
                 getobjTypeIDSB.AppendLine("\t{");
                 getobjTypeIDSB.AppendLine();
 

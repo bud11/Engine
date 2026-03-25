@@ -12,6 +12,73 @@ using System.Text;
 public static class SourceGenCommon
 {
 
+
+
+
+    public static void EmitDiagnostic(SourceProductionContext context, string message, Location location, DiagnosticSeverity severity = DiagnosticSeverity.Error)
+    {
+        const string id = "ERR001";
+
+        var descriptor = new DiagnosticDescriptor(
+            id,
+            id,                  
+            message,             
+            "Error",
+            severity,
+            isEnabledByDefault: true
+        );
+
+        var diagnostic = Diagnostic.Create(descriptor, location);
+        context.ReportDiagnostic(diagnostic);
+    }
+
+
+
+
+    public static string GetValidSourceFileNameFromTypeName(INamedTypeSymbol t)
+    {
+        return t.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat).Replace(":", "_").Replace(".", "_").Replace("+", "_") + ".g.cs";
+    }
+
+
+
+
+    public static Dictionary<string, object?> GetAttributeConstructorValues(AttributeData attr)
+    {
+        var result = new Dictionary<string, object?>();
+
+        var ctor = attr.AttributeConstructor;
+        var parameters = ctor.Parameters;
+        var args = attr.ConstructorArguments;
+
+        for (int i = 0; i < parameters.Length; i++)
+        {
+            var param = parameters[i];
+
+            object? value;
+
+            if (i < args.Length)
+            {
+                value = args[i].Value;
+            }
+            else if (param.HasExplicitDefaultValue)
+            {
+                value = param.ExplicitDefaultValue;
+            }
+            else
+            {
+                value = null;
+            }
+
+            result[param.Name] = value;
+        }
+
+        return result;
+    }
+
+
+
+
     public static IEnumerable<INamedTypeSymbol> GetAllTypes(INamespaceSymbol ns)
     {
         foreach (var member in ns.GetMembers())
@@ -42,7 +109,7 @@ public static class SourceGenCommon
         }
     }
 
-    public static bool DerivesFrom(INamedTypeSymbol type, INamedTypeSymbol baseType)
+    public static bool DerivesFrom(ITypeSymbol type, ITypeSymbol baseType)
     {
         for (var t = type.BaseType; t != null; t = t.BaseType)
         {
@@ -189,7 +256,7 @@ public static class SourceGenCommon
 
         var chain = GetContainingChain(target).ToList();
 
-        for (int i = 0; i<chain.Count; i++)
+        for (int i = 0; i < chain.Count; i++)
         {
 
             if (i == chain.Count-1)

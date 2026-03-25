@@ -11,13 +11,16 @@ using System.Collections.Immutable;
 
 using static Engine.Core.Parsing;
 
+using System.Text;
+using Engine.GameObjects;
+using System.Numerics;
+using static Engine.Core.Loading;
+
 
 #if DEBUG
 using System.Reflection;
 using System.Text.Json;
-using System.Text;
-using Engine.GameObjects;
-using static Engine.Core.Loading;
+using System.Buffers;
 #endif
 
 
@@ -38,10 +41,10 @@ using static Engine.Core.Loading;
 
 
 [FileExtensionAssociation(".scn")]
-public partial class SceneResource : GameResource, GameResource.ILoads,
+public partial class SceneResource : GameResource, GameResource.ILoads
 
 #if DEBUG
-    GameResource.IConverts
+    , GameResource.IConverts
 #endif
 {
 
@@ -70,36 +73,41 @@ public partial class SceneResource : GameResource, GameResource.ILoads,
 #if DEBUG
 
 
-    //always reconverting at dev time to ensure object arguments don't break given code-side cant be considered in the hash in any way
-    //subresources aren't reconverted, this is fine
-
-    public static bool ForceReconversion(byte[] bytes, byte[] currentCache) => true;
-
-
     
 
-    public static async Task<byte[]> ConvertToFinalAssetBytes(byte[] bytes, string filePath)
+    public static async Task<byte[]> ConvertToFinalAssetBytes(Bytes bytes, string filePath)
     {
 
 
-        List<byte> final = new();
+        var final = ValueWriter.CreateWithBufferWriter();
 
 
-        var dict = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(bytes, JsonAssetLoadingOptions);
+        using var doc = JsonDocument.Parse(bytes.ByteArray);
+        var root = doc.RootElement;
+
+
+        bytes.Dispose();
 
 
 
-        if (dict.TryGetValue("Resources", out var resget))
+
+
+
+        if (root.TryGetProperty("Resources", out var resget))
         {
 
-            var resourcesArr = JsonSerializer.Deserialize<JsonElement[]>(resget, JsonAssetLoadingOptions);
+            var resourcesArr = resget.EnumerateArray().ToArray();
 
 
 
+            final.WriteUnmanaged((uint)resourcesArr.Length);
 
-            final.AddRange(BitConverter.GetBytes((uint)resourcesArr.Length));
 
-            var finalResourcesArrayBytes = new List<byte>[resourcesArr.Length];
+            var finalResourcesArrayBytes = new ValueWriter[resourcesArr.Length];
+
+
+
+            ExitAssetConversionSemaphore();
 
 
 
@@ -108,7 +116,8 @@ public partial class SceneResource : GameResource, GameResource.ILoads,
             await Parallel.ForAsync<uint>(0, (uint)resourcesArr.Length, async (rIndex, cancellation) =>
             {
 
-                var resourceFinalBytes = new List<byte>();
+
+                var resourceFinalBytes = ValueWriter.CreateWithBufferWriter();
 
 
                 var resource = resourcesArr[rIndex];
@@ -128,7 +137,7 @@ public partial class SceneResource : GameResource, GameResource.ILoads,
 
                 //write type
 
-                resourceFinalBytes.AddRange(BitConverter.GetBytes(GetGameResourceTypeID(resourceType)));
+                resourceFinalBytes.WriteUnmanaged(GetGameResourceTypeID(resourceType));
 
 
 
@@ -139,8 +148,8 @@ public partial class SceneResource : GameResource, GameResource.ILoads,
 
                 if (resource.TryGetProperty("Path", out var path))
                 {
-                    resourceFinalBytes.Add(1);
-                    resourceFinalBytes.AddRange(SerializeType(path.GetString(), false));
+                    resourceFinalBytes.WriteUnmanaged((byte)1);
+                    resourceFinalBytes.WriteString(path.GetString());
                 }
 
 
@@ -148,26 +157,26 @@ public partial class SceneResource : GameResource, GameResource.ILoads,
 
                 //otherwise, write length prefixed final data
 
-                else if (resource.TryGetProperty("TextData", out var textdata))
-                    await WriteEmbedded(Encoding.UTF8.GetBytes(textdata.GetRawText()), true);
-
-
-                else if (resource.TryGetProperty("Base64Data", out var base64data))
-                    await WriteEmbedded(Convert.FromBase64String(base64data.GetString()), false);
-
-
                 else
-                    throw new Exception("Could not determine resource data source");
-
-
-
-
-
-
-                async Task WriteEmbedded(byte[] data, bool plaintextwarning)
                 {
+                    byte[] data;
 
-                    resourceFinalBytes.Add(0);
+                    if (resource.TryGetProperty("TextData", out var textdata))
+                        data = Encoding.UTF8.GetBytes(textdata.GetRawText());
+
+
+                    else if (resource.TryGetProperty("Base64Data", out var base64data))
+                        data = Convert.FromBase64String(base64data.GetString());
+
+
+                    else
+                        throw new Exception("Could not determine resource data source");
+
+
+
+
+
+                    resourceFinalBytes.WriteUnmanaged((byte)0);
 
 
 
@@ -179,10 +188,18 @@ public partial class SceneResource : GameResource, GameResource.ILoads,
 
                         if (GameResourceFileAssociations.TryGetValue(ex, out var AssetFoundType))
                         {
-                            data = await (await (Task<AssetByteStream>)typeof(Loading)
-                                        .GetMethod(nameof(GetFinalAssetBytes), [typeof(byte[]), typeof(string)])
+                            var arg = new Bytes(data);
+                            data = null;
+
+                            var ret = await (await (Task<AssetByteStream>)typeof(Loading)
+                                        .GetMethod(nameof(GetFinalAssetBytes), [typeof(Bytes), typeof(string)])
                                         .MakeGenericMethod(AssetFoundType)
-                                        .Invoke(null, [data, $"{filePath}+resource{rIndex}{ex}"])).GetArray();
+                                        .Invoke(null, [arg, null])).GetArray();
+
+                            data = ret;
+
+                            // $"{filePath}+resource{rIndex}{ex}"
+
                         }
 
                         else
@@ -190,7 +207,7 @@ public partial class SceneResource : GameResource, GameResource.ILoads,
 
                     }
 
-                    else 
+                    else
                         throw new Exception("No extension hint defined in json data for resource");
 
 
@@ -199,12 +216,12 @@ public partial class SceneResource : GameResource, GameResource.ILoads,
 
                     //append final asset bytes + length
 
-                    resourceFinalBytes.AddRange(WriteVarUInt64((ulong)data.Length));
-                    resourceFinalBytes.AddRange(data);
+                    resourceFinalBytes.WriteVariableLengthUnsigned((ulong)data.Length);
+                    resourceFinalBytes.WriteUnmanagedSpan<byte>(data);
+
+
+                    data = null;
                 }
-
-
-
 
 
                 finalResourcesArrayBytes[rIndex] = resourceFinalBytes;
@@ -212,21 +229,29 @@ public partial class SceneResource : GameResource, GameResource.ILoads,
 
 
 
+            await EnterAssetConversionSemaphore();
+
+
+
             //add all resources to final output
 
             for (int i = 0; i < finalResourcesArrayBytes.Length; i++)
-                final.AddRange(finalResourcesArrayBytes[i]);
+                final.WriteUnmanagedSpan(finalResourcesArrayBytes[i].GetSpan());
         }
 
         else 
-            final.AddRange(BitConverter.GetBytes(0u));
+            final.WriteUnmanaged(0u);
+
+
+
 
 
 
 
         //write objects
 
-        var objects = dict["Objects"];
+        var objects = root.GetProperty("Objects");
+
 
 
 
@@ -336,7 +361,7 @@ public partial class SceneResource : GameResource, GameResource.ILoads,
 
 
 
-        final.AddRange(BitConverter.GetBytes((uint)objects.GetArrayLength()));
+        final.WriteUnmanaged((uint)objects.GetArrayLength());
 
 
         foreach (var obj in objects.EnumerateArray())
@@ -345,9 +370,9 @@ public partial class SceneResource : GameResource, GameResource.ILoads,
 
 
             if (obj.TryGetProperty("Parent", out var parentget))
-                final.AddRange(BitConverter.GetBytes(parentget.GetUInt32()));
+                final.WriteUnmanaged(parentget.GetUInt32());
             else
-                final.AddRange(BitConverter.GetBytes(uint.MaxValue));
+                final.WriteUnmanaged(uint.MaxValue);
 
 
 
@@ -365,13 +390,12 @@ public partial class SceneResource : GameResource, GameResource.ILoads,
 
             if (obj.TryGetProperty("SelfSceneInstance", out var sceneInstanceGet))
             {
-                final.AddRange(BitConverter.GetBytes(sceneInstanceGet.GetUInt32()));
+                final.WriteUnmanaged(sceneInstanceGet.GetUInt32());
             }
 
             else
             {
-
-                final.AddRange(BitConverter.GetBytes(uint.MaxValue));
+                final.WriteUnmanaged(uint.MaxValue);
 
 
 
@@ -384,7 +408,8 @@ public partial class SceneResource : GameResource, GameResource.ILoads,
                 if (objType == null)
                     throw new Exception($"Type '{objTypeName}' not found - type must be specified in full, for example '{typeof(GameObject).FullName}' ");
 
-                final.AddRange(BitConverter.GetBytes(GetGameObjectTypeID(objType)));
+
+                final.WriteUnmanaged(GameObject.GetGameObjectTypeID(objType));
 
             }
 
@@ -392,17 +417,15 @@ public partial class SceneResource : GameResource, GameResource.ILoads,
 
             //write each argument
 
-            if (obj.TryGetProperty("Arguments", out var argsGet))
-                final.AddRange(WriteArgumentBytes(argsGet, objType));
-            else
-                final.AddRange(WriteVarUInt64(0));
-
+            obj.TryGetProperty("Arguments", out var argsGet);
+            
+            final.WriteLengthPrefixedUnmanagedSpan<byte>(GetArgumentBytes<SceneBinarySerializerDeserializer>(argsGet, objType));
+            
         }
 
 
 
-
-        return final.ToArray();
+        return final.GetSpan().ToArray();
     }
 
 
@@ -417,57 +440,57 @@ public partial class SceneResource : GameResource, GameResource.ILoads,
     public static async Task<GameResource> Load(AssetByteStream stream, string FilePath)
     {
 
+        var reader = ValueReader.FromStream(stream);
 
-        uint resourceCount = stream.DeserializeKnownType<uint>();
+
+        uint resourceCount = reader.ReadUnmanaged<uint>();
 
         if (resourceCount == 0) return null;
 
 
+
         GameResource[] SceneResources = new GameResource[resourceCount];
 
-        (ushort type, bool external, byte[] data)[] ress = new (ushort type, bool external, byte[] data)[resourceCount];
+        (ushort type, object data)[] ress = new (ushort type, object data)[resourceCount];
         for (int r = 0; r < resourceCount; r++)
         {
-            var type = stream.DeserializeKnownType<ushort>();
-            bool external = stream.ReadByte() == 1;
+            var type = reader.ReadUnmanaged<ushort>();
 
-            byte[] data;
+            object data;
 
-            if (external)
-            {
-                var path = stream.DeserializeKnownType<string>();
-                data = Encoding.UTF8.GetBytes(path);
-            }
+            if (stream.ReadByte() == 1) 
+                data = reader.ReadString();
+
             else
-            {
-                data = stream.DeserializeKnownType<byte[]>();
-            }
+                data = reader.ReadLengthPrefixedUnmanagedSpan<byte>();
 
-            ress[r] = (type, external, data);
+
+            ress[r] = (type, data);
         }
 
 
-
+        ExitAssetLoadSemaphore();
 
         await Parallel.ForAsync<uint>(0, resourceCount, async (rIndex, cancellation) =>
         {
             var resource = ress[rIndex];
 
 
-            string key = null;
-            if (resource.external) key = RelativePathToFullPath(Encoding.UTF8.GetString(resource.data), FilePath[..(FilePath.LastIndexOf('/')+1)]);
-            else key = (FilePath ?? string.Empty) + "_" + rIndex;
-
 
             GameResource res;
 
-            if (resource.external)
-                res = SceneResources[rIndex] = await LoadGameResourceFromTypeID(resource.type, key);
+            if (resource.data is string path)
+                res = SceneResources[rIndex] = await LoadGameResourceFromTypeIDAndPath(resource.type, RelativePathToFullPath(path, FilePath[..(FilePath.LastIndexOf('/')+1)]));
 
             else
             {
-                using (var memstream = new AssetByteStream(new MemoryStream(resource.data), resource.data.Length))
-                    res = SceneResources[rIndex] = await InternalLoadOrFetchResource(key, async () => await ConstructGameResourceFromTypeID(resource.type, memstream, key));
+                var dat = (byte[])resource.data;
+
+                var key = (FilePath ?? string.Empty) + "_" + rIndex;
+
+
+                using (var memstream = new AssetByteStream(new MemoryStream(dat), dat.Length))
+                    res = SceneResources[rIndex] = await InternalLoadOrFetchResource(key, async () => await LoadGameResourceFromTypeIDAndStream(resource.type, memstream, key));
 
             }
 
@@ -479,14 +502,14 @@ public partial class SceneResource : GameResource, GameResource.ILoads,
 
         });
 
+        await EnterAssetLoadSemaphore();
 
 
 
 
 
 
-
-        uint objectcount = stream.DeserializeKnownType<uint>();
+        uint objectcount = reader.ReadUnmanaged<uint>();
 
         SceneObjectGenData[] SceneObjects = new SceneObjectGenData[objectcount];
 
@@ -500,9 +523,9 @@ public partial class SceneResource : GameResource, GameResource.ILoads,
         {
 
 
-            var parent = stream.DeserializeKnownType<uint>();
+            var parent = reader.ReadUnmanaged<uint>();
 
-            var sceneref = stream.DeserializeKnownType<uint>();
+            var sceneref = reader.ReadUnmanaged<uint>();
 
 
 
@@ -519,7 +542,7 @@ public partial class SceneResource : GameResource, GameResource.ILoads,
             }
 
             //otherwise, make totally fresh data and read type
-            else inst = new() { GameObjectTypeID = stream.DeserializeKnownType<ushort>() };
+            else inst = new() { GameObjectTypeID = reader.ReadUnmanaged<ushort>() };
 
 
 
@@ -530,8 +553,8 @@ public partial class SceneResource : GameResource, GameResource.ILoads,
 
 
 
-            inst.ArgumentData = stream.DeserializeKnownType<byte[]>();
-            
+            inst.ArgumentData = reader.ReadLengthPrefixedUnmanagedSpan<byte>();
+
 
             inst.SelfIndex = obj;
 
@@ -555,8 +578,6 @@ public partial class SceneResource : GameResource, GameResource.ILoads,
             }
         }
 
-
-
         return new SceneResource(SceneResources, SceneRoot, FilePath);
     }
 
@@ -565,12 +586,43 @@ public partial class SceneResource : GameResource, GameResource.ILoads,
 
 
 
+    // basic
+    [BinarySerializableType(typeof(bool))]
+    [BinarySerializableType(typeof(float))]
+    [BinarySerializableType(typeof(string))]
+    [BinarySerializableType(typeof(Vector3))]
+    [BinarySerializableType(typeof(Matrix4x4))]
 
-    public sealed class SceneBinaryDeserializationContext
+    // references 
+    [BinarySerializableType(deserializeMethod: nameof(ReadGameObject))]
+    [BinarySerializableType(deserializeMethod: nameof(ReadGameResource))]
+    [BinarySerializableType(deserializeMethod: nameof(ReadMaterialResource))]
+    [BinarySerializableType(deserializeMethod: nameof(ReadModelResource))]
+
+    [BinarySerializableType(typeof(GameObject[]))]
+    [BinarySerializableType(typeof(GameResource[]))]
+    [BinarySerializableType(typeof(MaterialResource[]))]
+
+    //arguments
+    [BinarySerializableType(typeof(Dictionary<byte, object>))]
+    public partial class SceneBinarySerializerDeserializer : BinarySerializerDeserializerBase
     {
-        public ImmutableArray<GameObject> Objects;
+
+        public Dictionary<uint, GameObject> Objects;
         public ImmutableArray<GameResource> Resources;
+
+        private GameObject ReadGameObject(uint val) => Objects[val];
+        private GameResource ReadGameResource(uint val) => Resources[(int)val];
+        private MaterialResource ReadMaterialResource(uint val) => (MaterialResource)ReadGameResource(val);
+        private ModelResource ReadModelResource(uint val) => (ModelResource)ReadGameResource(val);
     }
+
+
+
+
+
+
+
 
 
     private class SceneObjectGenData
@@ -594,38 +646,36 @@ public partial class SceneResource : GameResource, GameResource.ILoads,
 
 
     /// <summary>
-    /// Instantiates the scene, sets <see cref="DataValueAttribute"/> users on each <see cref="GameObject"/>, calls <see cref="GameObject.Init"/> for each <see cref="GameObject"/> starting with the deepest children, and returns the root <see cref="GameObject"/>.
+    /// Instantiates the scene, sets <see cref="IndexableAttribute"/> users on each <see cref="GameObject"/>, calls <see cref="GameObject.Init"/> for each <see cref="GameObject"/> starting with the deepest children, and returns the root <see cref="GameObject"/>.
     /// </summary>
     /// <returns></returns>
-    public GameObject Instantiate() => InstantiateScene(true);
-
-
-
-
-    private GameObject InstantiateScene(bool callInit)
+    public GameObject Instantiate() 
     {
-        var objs = new Dictionary<GameObject, List<(SceneObjectGenData, SceneBinaryDeserializationContext)>>();
+        var objs = new Dictionary<GameObject, List<(SceneObjectGenData, SceneBinarySerializerDeserializer)>>();
 
         var rootObj = InstantiateInternal(objs);
 
 
-        if (callInit)
-            Init(rootObj, objs);
+        var argsBuffer = new Dictionary<byte, object>(capacity : 16);
+
+
+        Init(rootObj, objs, argsBuffer);
 
 
         return rootObj;
 
 
 
-        static void Init(GameObject obj, Dictionary<GameObject, List<(SceneObjectGenData, SceneBinaryDeserializationContext)>>? objs)
+        static void Init(GameObject obj, Dictionary<GameObject, List<(SceneObjectGenData, SceneBinarySerializerDeserializer)>>? objs, Dictionary<byte, object> args)
         {
             ImmutableArray<GameObject> array = obj.GetChildren();
 
             for (int i = 0; i < array.Length; i++)
-                Init(array[i], objs);
+                Init(array[i], objs, args);
 
 
-            Dictionary<byte, object> args = new();
+            args.Clear();
+
 
             var objdata = objs[obj];
 
@@ -633,16 +683,18 @@ public partial class SceneResource : GameResource, GameResource.ILoads,
             {
                 var get = objdata[i];
 
-                var read = Parsing.ReadArgumentBytes<byte>(new MemoryStream(get.Item1.ArgumentData), get.Item2);
+                var reader = ValueReader.FromMemory(get.Item1.ArgumentData);
+
+                var read = get.Item2.ReadKnownType<Dictionary<byte, object>>(ref reader);
 
                 if (read != null)
                     foreach (var kv in read)
                         args[kv.Key] = kv.Value;
             }
 
-            if (obj is ModelInstance) throw new Exception();
 
-            SetDataValues(obj, args);
+            foreach (var kv in args)
+                obj.SetIndexable(kv.Key, kv.Value);
 
 
             obj.Init();
@@ -652,26 +704,36 @@ public partial class SceneResource : GameResource, GameResource.ILoads,
 
 
 
-
-    private GameObject InstantiateInternal(Dictionary<GameObject, List<(SceneObjectGenData, SceneBinaryDeserializationContext)>> objs)
+    private GameObject InstantiateInternal(Dictionary<GameObject, List<(SceneObjectGenData, SceneBinarySerializerDeserializer)>> objs)
     {
 
 
-        var ctx = new SceneBinaryDeserializationContext();
+        var ctx = new SceneBinarySerializerDeserializer
+        {
+            Resources = SceneResources,
+            Objects = new()
+        };
 
-        var rootObj = CreateInstanceTree(SceneRootObject);
+
+
+        var rootObj = CreateInstanceTree(SceneRootObject, objs, ctx);
         rootObj.IsSceneInstanceRoot = true;
+
 
 
         return rootObj;
 
 
-        GameObject CreateInstanceTree(SceneObjectGenData gendata)
+        static GameObject CreateInstanceTree(SceneObjectGenData gendata, Dictionary<GameObject, List<(SceneObjectGenData, SceneBinarySerializerDeserializer)>> objs, SceneBinarySerializerDeserializer ctx)
         {
 
             GameObject inst =
                 gendata.SelfSceneInstance == null ?
-                ConstructGameObjectFromTypeID(gendata.GameObjectTypeID) : gendata.SelfSceneInstance.InstantiateInternal(objs);
+                GameObject.ConstructGameObjectFromTypeID(gendata.GameObjectTypeID) : gendata.SelfSceneInstance.InstantiateInternal(objs);
+
+
+
+            ctx.Objects[gendata.SelfIndex] = inst;
 
 
             if (!objs.TryGetValue(inst, out var get)) 
@@ -684,7 +746,7 @@ public partial class SceneResource : GameResource, GameResource.ILoads,
             {
                 for (int i = 0; i < gendata.Children.Count; i++)
                 {
-                    var child = CreateInstanceTree(gendata.Children[i]);
+                    var child = CreateInstanceTree(gendata.Children[i], objs, ctx);
 
                     inst.AddChild(child);
                 }

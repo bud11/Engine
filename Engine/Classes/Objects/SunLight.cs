@@ -15,10 +15,10 @@ public partial class SunLight : AABBObject
 {
     protected override EngineMath.AABB BaseAABB => EngineMath.AABB.MaxValue;
 
-    [DataValue]
+    [Indexable]
     public Vector4 Color;
 
-    [DataValue]
+    [Indexable]
     public bool Shadow;
 
 }

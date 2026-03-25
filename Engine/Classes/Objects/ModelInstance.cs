@@ -19,14 +19,14 @@ public partial class ModelInstance : DrawObject
 
 
 
-    [DataValue]
+    [Indexable]
     public ModelResource Model;
 
 
     protected override AABB BaseAABB => Model.BaseAABB;
 
 
-    [DataValue]
+    [Indexable]
     public RefCountCollections.RefCountedArray<MaterialResource> Materials;
 
 

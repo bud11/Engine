@@ -7,63 +7,64 @@ using System;
 
 
 
-
 /// <summary>
-/// Registers a type as both serializable and deserializable, and assigns the type an ID so that it can be deserialized even if the type is statically unknown at parse time. Backed by AOT-safe source generation.
+/// <br/> This attribute must be applied to a <see cref="Core.Parsing.BinarySerializerDeserializerBase"/> derived class.
 /// <br/>
-/// <br/> Involved types cannot be static, abstract or an interface, and each must expose a parameterless constructor.
-/// <br/> Serialization will occur by deserializing all publically mutable instance fields, excluding any marked with <see cref="NonSerializedAttribute"/>.
-/// <br/> <b> Arrays and dictionaries featuring supported types are also supported with special case logic. </b>
+/// <br/> Registers a type as both serializable and deserializable by this class. This generates an AOT-safe serialization and deserialization codepath, and assigns the type a numerical ID so that it can be deserialized even if the type is statically unknown at parse time. 
 /// <br/>
-/// <br/> If a type implements <see cref="Engine.Core.ISerializeOverrider{TIntermediate}"/>, it can override how it's serialization and deserialization occurs. 
-/// <br/> For example, it may only serialize a self-reference through this particular system.
-/// <br/> <see cref="Core.GameObject"/> and <see cref="Core.GameResource"/> are good prexisting examples of that pattern.
+/// <br/> Involved types cannot be static and must each expose a parameterless constructor. 
 /// <br/>
-/// <br/> Also see <seealso cref="BinarySerializableTypeAssemblyLevelAttribute"/>.
+/// <br/> Serialization will usually occur by recursively serializing all publically mutable instance fields, excluding any marked with <see cref="NonSerializedAttribute"/>, as efficiently as possible.
+/// <br/> Special cases:
+/// <br/> - Arrays of supported types
+/// <br/> - Dictionaries involving supported types
+/// <br/> - Types included via custom serialize/deserialize methods 
 /// </summary>
-[AttributeUsage(AttributeTargets.Class | AttributeTargets.Struct | AttributeTargets.Enum, Inherited = false, AllowMultiple = false)]
-public sealed class BinarySerializableTypeAttribute : Attribute;
-
-
-
-
-/// <summary>
-/// Works the same way as <see cref="BinarySerializableTypeAttribute"/>, but attributed at the assembly level, specifying a target type via <paramref name="typeClarification"/>. Useful if for example you don't own the type.
-/// </summary>
-/// <param name="typeClarification"></param>
-[AttributeUsage(AttributeTargets.Assembly, Inherited = false, AllowMultiple = true)]
-public sealed class BinarySerializableTypeAssemblyLevelAttribute(Type typeClarification) : Attribute
+[AttributeUsage(AttributeTargets.Class, Inherited = true, AllowMultiple = true)]
+public sealed class BinarySerializableTypeAttribute : Attribute
 {
-    public readonly Type Type = typeClarification;
+    public readonly Type Type;
+    public readonly string SerializeMethodName;
+    public readonly string DeserializeMethodName;
+
+    public BinarySerializableTypeAttribute(Type type)
+    {
+        Type = type;
+    }
+
+    public BinarySerializableTypeAttribute(string serializeMethod = null, string deserializeMethod = null)
+    {
+        SerializeMethodName = serializeMethod;
+        DeserializeMethodName = deserializeMethod;
+    }
+
 }
 
 
 
 
 
-
-
 /// <summary>
-/// Registers this instance field or property as one that can be set via an index and value upon an instance of the type; for example upon a <see cref="Core.GameObject"/> type by a <see cref="GameResources.SceneResource"/> during instantiation.
+/// Registers this instance field or property as indexable via <see cref="string"/> name.
 /// <br/> The enclosing type must be partial.
-/// <br/> All <see cref="DataValueAttribute"/> users within a type can be quickly seen in IDE by inspecting the type's remarks.
+/// <br/> All <see cref="IndexableAttribute"/> members within a type can be quickly seen in IDE by inspecting the type's remarks.
 /// </summary>
-/// <param name="path"></param>
-/// <param name="autoManage"></param>
 [AttributeUsage(AttributeTargets.Field | AttributeTargets.Property, Inherited = false)]
-public sealed class DataValueAttribute : Attribute;
+public sealed class IndexableAttribute : Attribute;
+
 
 
 
 /// <summary>
 /// Registers a <see cref="Core.GameResource"/>-type static field or property as a dependency to the enclosing type.
 /// <br/> This means that it gets added to a list of resources loaded and set via <see cref="Core.Loading.LoadResourceDependenciesFor{T}()"/>, where T is the enclosing type.
-/// <br/> If <paramref name="autoManage"/> is true, and the enclosing type is a <see cref="Core.GameObject"/> or <see cref="Core.GameResource"/>, resource dependencies are loaded and deloaded automatically as the enclosing type is loaded or instantiated.
+/// <br/> If <paramref name="autoLoad"/> is true, and the enclosing type is a <see cref="Core.GameObject"/> or <see cref="Core.GameResource"/>, resource dependencies are loaded and deloaded automatically as the enclosing type is loaded or instantiated.
 /// </summary>
 /// <param name="path"></param>
+/// <param name="autoLoad"></param>
 [AttributeUsage(AttributeTargets.Field | AttributeTargets.Property, Inherited = false)]
-public sealed class ResourceDependencyAttribute(string path, bool autoManage = true) : Attribute
+public sealed class ResourceDependencyAttribute(string path, bool autoLoad) : Attribute
 {
     public readonly string ResourcePath = path;
-    public readonly bool AutoManage = autoManage;
+    public readonly bool AutoManage = autoLoad;
 }

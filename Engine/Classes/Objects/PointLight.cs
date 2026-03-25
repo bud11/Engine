@@ -17,13 +17,13 @@ public partial class PointLight : AABBObject
         => EngineMath.AABB.FromCenterExtent(Vector3.Zero, new Vector3(Radius));
 
 
-    [DataValue]
+    [Indexable]
     public Vector4 Color;
 
-    [DataValue]
+    [Indexable]
     public float Radius;
 
-    [DataValue]
+    [Indexable]
     public bool Shadow;
 
 }

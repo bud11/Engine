@@ -8,6 +8,7 @@ namespace Engine.Core;
 using SDL3;
 using System.Numerics;
 using System.Runtime.InteropServices;
+using static Engine.Core.EngineMath;
 using static Input.IGamepadInputBinding;
 using static Input.IKeyboardInputBinding;
 
@@ -456,10 +457,21 @@ public static class Input
         public bool KeyJustReleased(SDL.Scancode key) => InputJustReleased((int)key);
 
 
-
-
         public ThreadSafeEventAction GetKeyJustPressedEvent(SDL.Scancode key) => GetInputJustPressedEvent((int)key);
         public ThreadSafeEventAction GetKeyJustReleasedEvent(SDL.Scancode key) => GetInputJustReleasedEvent((int)key);
+
+
+
+
+        public short GetAxisFromTwo(SDL.Scancode negative, SDL.Scancode positive)
+        {
+            return KeyPressed(negative) ? short.MinValue : KeyPressed(positive) ? short.MaxValue : (short)0;
+        }
+
+        public Vector2<short> GetAxisFromFour(SDL.Scancode negativeX, SDL.Scancode positiveX, SDL.Scancode negativeY, SDL.Scancode positiveY)
+        {
+            return new Vector2<short>(GetAxisFromTwo(negativeX, positiveX), GetAxisFromTwo(negativeY, positiveY));
+        }
 
 
 
@@ -580,12 +592,15 @@ public static class Input
 
         private SDL.MouseButtonFlags MouseState;
         private float MouseX, MouseY;
+        private float MouseDeltaX, MouseDeltaY;
 
         protected override void PreReadUpdate()
         {
             MouseState = SDL.GetMouseState(out MouseX, out MouseY);
-            
+
+            SDL.GetRelativeMouseState(out MouseDeltaX, out MouseDeltaY);
         }
+
 
         protected override short ReadInput(int idx)
             => ((MouseState & (SDL.MouseButtonFlags)idx) != 0) ? short.MaxValue : (short)0;
@@ -594,7 +609,17 @@ public static class Input
         public Vector2 GetWindowRelativeMousePosition() => new(MouseX, MouseY);
 
 
-        public float GetMouseScroll() => Window.MouseScrollWheelDelta;
+        public float GetMouseScrollDelta() => Window.MouseScrollWheelDelta;
+        public Vector2 GetMousePositionDelta() => new(MouseDeltaX, MouseDeltaY);
+
+
+        public void SetMouseRelative(bool enabled) => Window.MouseModeRelative = enabled;
+        public void SetMouseVisible(bool visible)
+        {
+            if (visible) SDL.ShowCursor();
+            else SDL.HideCursor();
+        }
+
 
 
 

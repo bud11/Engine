@@ -5,7 +5,7 @@ namespace Engine.Core;
 
 
 using Engine.GameResources;
-using static Loading;
+using static Engine.Core.Loading;
 
 
 
@@ -19,20 +19,8 @@ using static Loading;
 /// <br/> <inheritdoc cref="IConverts"/>
 /// </summary>
 /// 
-public abstract partial class GameResource(string key) : RefCounted,
-    ISerializeOverrider<uint>
+public abstract partial class GameResource(string key) : RefCounted
 {
-
-
-
-    static uint ISerializeOverrider<uint>.Serialize(object instance, object context)
-        => throw new NotImplementedException();
-
-    static object ISerializeOverrider<uint>.Deserialize(uint data, object context)
-        => ((SceneResource.SceneBinaryDeserializationContext)context).Objects[(int)data];
-
-
-
 
 
 
@@ -58,7 +46,7 @@ public abstract partial class GameResource(string key) : RefCounted,
     /// <summary>
     /// <see cref="GameResource"/>s can implement development-time preprocessing/conversion from intermediary formats via <see cref="IConverts"/> and <see cref="ConvertToFinalAssetBytes(byte[], string)"/>, and should they, the conversion will be cached in <see cref="AssetCachePath"/>.
     /// <br/> The result will then be fed into <see cref="ILoads.Load(AssetByteStream, string)"/>.
-    /// <br/> The cache will only be used if the md5 hash of the asset file matches the hash of the asset file at the time it was cached and <see cref="ForceReconversion(byte[], byte[])"/> returns false.
+    /// <br/> The cache will only be used if the md5 hash of the asset file matches the hash of the asset file at the time it was cached.
     /// <br/>
     /// <br/> Development time intermediary formats automatically support zstd decompression. For example, a json file could be zstd compressed, keep its original extension, and then be fed into <see cref="ConvertToFinalAssetBytes(byte[], string)"/> as the original raw json.
     /// <br/>
@@ -72,15 +60,8 @@ public abstract partial class GameResource(string key) : RefCounted,
 		/// <param name="bytes"></param>
 		/// <param name="filePath"></param>
 		/// <returns></returns>
-		public static abstract Task<byte[]> ConvertToFinalAssetBytes(byte[] bytes, string filePath);
+		public static abstract Task<byte[]> ConvertToFinalAssetBytes(Bytes bytes, string filePath);
 
-        /// <summary>
-        /// An extra layer of control over whether to reuse a seemingly valid found cache file or not. See <see cref="IConverts"/> 
-        /// </summary>
-        /// <param name="bytes"></param>
-        /// <param name="currentCache"></param>
-        /// <returns></returns>
-        public static abstract bool ForceReconversion(byte[] bytes, byte[] currentCache);
     }
 
 #endif
@@ -120,5 +101,48 @@ public abstract partial class GameResource(string key) : RefCounted,
     {
         if (Key != null) Loading.SetResourceUnloaded(this);
     }
+
+
+
+    /// <summary>
+    /// Creates a <see cref="GameResource"/> type instance via type ID + <see cref="ILoads.Load(AssetByteStream, string)"/>.
+    /// </summary>
+    /// <param name="TypeID"></param>
+    /// <param name="stream"></param>
+    /// <param name="key"></param>
+    /// <returns></returns>
+    public static partial Task<GameResource> LoadGameResourceFromTypeIDAndStream(ushort TypeID, AssetByteStream stream, string key);
+
+    /// <summary>
+    /// Creates a <see cref="GameResource"/> type instance via type ID + <see cref="LoadResource{T}(string)"/>.
+    /// </summary>
+    /// <param name="TypeID"></param>
+    /// <param name="path"></param>
+    /// <returns></returns>
+    public static partial Task<GameResource> LoadGameResourceFromTypeIDAndPath(ushort TypeID, string path);
+
+    /// <summary>
+    /// Creates a <see cref="GameResource"/> type instance via generic + <see cref="ILoads.Load(AssetByteStream, string)"/>.
+    /// </summary>
+    /// <typeparam name="T"></typeparam>
+    /// <param name="stream"></param>
+    /// <param name="key"></param>
+    /// <returns></returns>
+    public static partial Task<GameResource> LoadGameResourceFromGenericAndStream<T>(AssetByteStream stream, string key) where T : GameResource;
+
+
+    /// <summary>
+    /// Gets the numerical type ID for the given <see cref="GameResource"/> type.
+    /// </summary>
+    /// <param name="type"></param>
+    /// <returns></returns>
+    public static partial ushort GetGameResourceTypeID(Type type);
+
+    /// <summary>
+    /// Gets the <see cref="GameResource"/> type correspondant to the given ID.
+    /// </summary>
+    /// <param name="TypeID"></param>
+    /// <returns></returns>
+    public static partial Type GetGameResourceTypeFromTypeID(ushort TypeID);
 
 }

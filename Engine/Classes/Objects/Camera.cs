@@ -55,7 +55,7 @@ public partial class Camera : GameObject
         return Matrix4x4.CreateOrthographic(OrthoScale * (Resolution.X / (float)Resolution.Y), OrthoScale, Near, Far);
     }
 
-    public Matrix4x4 GetViewMatrix() => Matrix4x4.CreateLookTo(GlobalTransform.Origin, GlobalTransform.OrientationZ, GlobalTransform.OrientationY);
+    public Matrix4x4 GetViewMatrix() => Matrix4x4.CreateLookTo(GlobalTransform.Translation, GlobalTransform.GetOrientationZ(), GlobalTransform.GetOrientationY());
 
 
 
@@ -265,15 +265,15 @@ public partial class Camera : GameObject
 
 
 
-    private static Transform[] CubemapDirections = [
-                EngineMath.Transform.LookingAt(Vector3.UnitX, Vector3.UnitY),
-                    EngineMath.Transform.LookingAt(-Vector3.UnitX, Vector3.UnitY),
+    private static Matrix4x4[] CubemapDirections = [
+                Matrix4x4.CreateLookAt(Vector3.Zero, Vector3.UnitX, Vector3.UnitY),
+                    Matrix4x4.CreateLookAt(Vector3.Zero,-Vector3.UnitX, Vector3.UnitY),
 
-                    EngineMath.Transform.LookingAt(-Vector3.UnitY, -Vector3.UnitZ),
-                    EngineMath.Transform.LookingAt(Vector3.UnitY, Vector3.UnitZ),
+                    Matrix4x4.CreateLookAt(Vector3.Zero,-Vector3.UnitY, -Vector3.UnitZ),
+                    Matrix4x4.CreateLookAt(Vector3.Zero,Vector3.UnitY, Vector3.UnitZ),
 
-                    EngineMath.Transform.LookingAt(-Vector3.UnitZ, Vector3.UnitY),
-                    EngineMath.Transform.LookingAt(Vector3.UnitZ, Vector3.UnitY),
+                    Matrix4x4.CreateLookAt(Vector3.Zero,-Vector3.UnitZ, Vector3.UnitY),
+                    Matrix4x4.CreateLookAt(Vector3.Zero,Vector3.UnitZ, Vector3.UnitY),
                     ];
 
 
@@ -599,9 +599,6 @@ public partial class Camera : GameObject
 
     public void DisposeBuffers()
     {
-
-        //post process buffers are disposed in Free and in Evaluate, that way any constant fixed size buffers IE for bloom dont need to be recreated for no reason
-
         for (int i = 0; i < ColorBufferTextures?.Length; i++)
             ColorBufferTextures[i].Free();
 

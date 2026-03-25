@@ -51,7 +51,6 @@ public static partial class ShaderCompilation
         { typeof(Vector4<uint>), "uvec4" },
 
         // Matrices
-        { typeof(Matrix3x3), "mat3" },
         { typeof(Matrix4x4), "mat4" }
     });
 
@@ -323,7 +322,6 @@ public static partial class ShaderCompilation
     /// <summary>
     ///  Reconstruct and recompile all shaders.
     /// </summary>
-    /// <param name="name"></param>
     [Conditional("DEBUG")]
     public static void CompileShaders()
     {

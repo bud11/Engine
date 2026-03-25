@@ -22,7 +22,7 @@ public partial class SkinnedModelInstance : ModelInstance
     }
 
 
-    [DataValue]
+    [Indexable]
     public Skeleton Skeleton;
 
 

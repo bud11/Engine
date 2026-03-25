@@ -1,6 +1,7 @@
 ﻿
 
 
+using Engine.Core;
 using Engine.GameResources;
 
 namespace Engine.GameObjects;
@@ -40,12 +41,17 @@ public abstract partial class DrawObject : AABBObject
     /// </summary>
     public unsafe virtual void PreDraw()
     {
+        OnPreDraw.Invoke();
+
         DrawnThisFrame = true;
     }
 
 
     public unsafe abstract void Draw(delegate*<MaterialResource, MaterialResource.MaterialResolution> resolver);
 
+
+
+    public readonly ThreadSafeEventAction OnPreDraw = new();
 
 
 }

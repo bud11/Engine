@@ -1,9 +1,7 @@
 ﻿
 namespace Engine.Core;
 
-using Engine.Core;
 using SDL3;
-using System.Diagnostics;
 using System.Runtime.InteropServices;
 using System.Text;
 using static Engine.Core.EngineMath;
@@ -53,6 +51,9 @@ public static class Window
 
 
 
+    public static bool MouseModeRelative;
+
+
 
     public static void WindowPoll()
     {
@@ -64,6 +65,8 @@ public static class Window
 
         MouseScrollWheelDelta = 0;
 
+
+        SDL.SetWindowRelativeMouseMode(SDLWindowHandle, MouseModeRelative);
 
 
         while (SDL.PollEvent(out var @ev))
@@ -220,7 +223,7 @@ public static class Window
 
             SDL.SyncWindow(SDLWindowHandle);
 
-            RenderThread.PushRenderThreadAction(() => { RenderingBackend.ConfigureSwapchain(Size, UseHDR); return null; });
+            RenderThread.PushRenderThreadAction(() => { RenderingBackend.ConfigureSwapchain(Size, UseHDR); return null; }).Wait();
 
             windowValid = false;
         }

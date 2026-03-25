@@ -546,7 +546,7 @@ public static partial class RenderingBackend
 
             string err = $"validation layer:" + Marshal.PtrToStringAnsi((nint)pCallbackData->PMessage);
 
-            EngineDebug.Print(err);
+            //EngineDebug.Print(err);
 
             if (messageSeverity.HasFlag(DebugUtilsMessageSeverityFlagsEXT.ErrorBitExt))
                 throw new Exception(err);
@@ -2457,10 +2457,10 @@ public static partial class RenderingBackend
                 TextureFormats.RG16_SFLOAT => Format.R16G16Sfloat,
                 TextureFormats.RGBA16_SFLOAT => Format.R16G16B16A16Sfloat,
 
-                TextureFormats.BC4 => Format.BC4UnormBlock,
-                TextureFormats.BC5 => Format.BC5UnormBlock,
-                TextureFormats.BC7 => Format.BC7UnormBlock,
-                TextureFormats.BC6H_SFLOAT => Format.BC6HSfloatBlock,
+                TextureFormats.R8_BC4_UNORM => Format.BC4UnormBlock,
+                TextureFormats.RG8_BC5_UNORM => Format.BC5UnormBlock,
+                TextureFormats.RGBA8_BC7_UNORM => Format.BC7UnormBlock,
+                TextureFormats.RGB16_BC6H_SFLOAT => Format.BC6HSfloatBlock,
 
                 TextureFormats.DepthStencil => Format.D24UnormS8Uint,
 

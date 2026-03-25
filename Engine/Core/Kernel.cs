@@ -117,9 +117,7 @@ public static class Kernel
 
 
 
-
-                Entry.Init().Wait();  //stall is nessecary
-
+                Entry.Init();     
 
 
 
@@ -141,7 +139,9 @@ public static class Kernel
                     }
 
 
-                    Logic.LogicThreadLoop();  
+
+                    Logic.LogicThreadLoop();
+
                 }
             });
 

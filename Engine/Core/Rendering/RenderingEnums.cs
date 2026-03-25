@@ -197,19 +197,19 @@ public static partial class RenderingBackend
         /// <summary>
         /// Block compressed 1 channel byte format.
         /// </summary>
-        BC4,
+        R8_BC4_UNORM,
         /// <summary>
         /// Block compressed 2 channel byte format.
         /// </summary>
-        BC5,
+        RG8_BC5_UNORM,
         /// <summary>
         /// Block compressed 4 channel byte format.
         /// </summary>
-        BC7,
+        RGBA8_BC7_UNORM,
         /// <summary>
         /// Block compressed 3 channel half format. Alpha is treated as 1.0.
         /// </summary>
-        BC6H_SFLOAT,
+        RGB16_BC6H_SFLOAT,
 
 
         /// <summary>

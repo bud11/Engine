@@ -146,12 +146,12 @@ public static unsafe partial class Entry
                 gl_Position = GlobalUBO.ProjectionMatrix * GlobalUBO.ViewMatrix * ModelUBO.ModelMatrix * vec4(Position, 1.0);   
                 
                 mat3 normalMatrix = transpose(inverse(mat3(ModelUBO.ModelMatrix)));
-                FragNormal = normalize(normalMatrix * Normal);
+                Fragnormal = normalize(normalMatrix * normal);
 
                 """,    
 
             FragmentMainBody:
-                "FragOutFinalColor = vec4(vec3(1.0) * clamp(dot(FragNormal, normalize(vec3(1, 1, -1))), 0.2, 1), 1.0);"     
+                "FragOutFinalColor = vec4(vec3(1.0) * clamp(dot(Fragnormal, normalize(vec3(1, 1, -1))), 0.2, 1), 1.0);"     
 
 
 
@@ -224,7 +224,7 @@ public static unsafe partial class Entry
 
         public override void Loop()
         {
-            GlobalTransform = GlobalTransform.Rotated(Vector3.UnitY, float.DegreesToRadians(SpinSpeed * Logic.Delta)) with { Origin = new(0, MathF.Sin(SpinSpeed * Logic.TimeActive * 0.03f) * 2f, 0) };
+            GlobalTransform = GlobalTransform.Rotated(Vector3.UnitY, float.DegreesToRadians(SpinSpeed * Logic.Delta)) with { Translation = new(0, MathF.Sin(SpinSpeed * Logic.TimeActive * 0.03f) * 2f, 0) };
 
             base.Loop();
         }
@@ -291,7 +291,7 @@ public static unsafe partial class Entry
     /// <summary>
     /// <inheritdoc cref="_InitSummary"/>
     /// </summary>
-    public static partial async Task Init()
+    public static partial void Init()
     {
 
 
@@ -495,8 +495,6 @@ public static unsafe partial class Entry
         writehandle.PushWriteFromOffsetOf("ViewMatrix", Camera.GetViewMatrix());
 
         writehandle.EndWrite();
-
-
 
 
 

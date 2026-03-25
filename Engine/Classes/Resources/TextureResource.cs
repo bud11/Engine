@@ -50,53 +50,30 @@ public class TextureResource : GameResource, GameResource.ILoads,
 
 #if DEBUG
 
-    public static bool ForceReconversion(byte[] bytes, byte[] currentCache) => false;
 
-    public static async Task<byte[]> ConvertToFinalAssetBytes(byte[] bytes, string filePath)
+    public static async Task<byte[]> ConvertToFinalAssetBytes(Loading.Bytes bytes, string filePath)
     {
-        TextureConversion.TextureProcessingData dat;
-
-
         var ext = Path.GetExtension(filePath);
 
-
-        //supported by StbImage
-        if (ext == ".png" || ext == ".jpg" || ext == ".jpeg" || ext == ".bmp" || ext == ".tga" || ext == ".gif" || ext == ".hdr") 
-            dat = TextureConversion.LoadSTBImageTextureData(bytes);
-
-        //other
-        else if (ext == ".exr") 
-            dat = TextureConversion.LoadEXRTextureData(bytes);
-
-
-        else 
-            throw new Exception("Unsupported texture format!");
-
-
+        var header = TextureConversion.InspectTextureHeader(bytes.ByteArray, ext);
         
-
-        var finaltexturedata = await TextureConversion.TextureToTextureRuntimeFormat(dat);
-
+        var finaltexturedata = await TextureConversion.ConvertTextureToRuntimeFormat(bytes, ext, header, new() { ConvertTo = TextureFormats.RGB8_UNORM, ConvertSrgbToLinear = true, GenerateMips = true });
 
 
-        List<byte> final = [
+        var write = Parsing.ValueWriter.CreateWithBufferWriter();
 
-                .. BitConverter.GetBytes(finaltexturedata.Dimensions.X),
-                .. BitConverter.GetBytes(finaltexturedata.Dimensions.Y),
-                .. BitConverter.GetBytes(finaltexturedata.Dimensions.Z),
+        write.WriteUnmanaged(finaltexturedata.Dimensions);
 
-               (byte)finaltexturedata.InternalImageDataFormat,
-               (byte)finaltexturedata.TextureType,
-
-               (byte)finaltexturedata.Mips.Length,
-            ];
+        write.WriteUnmanaged((byte)finaltexturedata.InternalImageDataFormat);
+        write.WriteUnmanaged((byte)finaltexturedata.TextureType);
+        write.WriteUnmanaged((byte)finaltexturedata.Mips.Length);
 
 
         foreach (var v in finaltexturedata.Mips)
-            final.AddRange(Parsing.SerializeType(v, false));
+            write.WriteLengthPrefixedUnmanagedSpan<byte>(v);
 
 
-        return final.ToArray();
+        return write.GetSpan().ToArray();
 
     }
 
@@ -109,9 +86,12 @@ public class TextureResource : GameResource, GameResource.ILoads,
     public static async Task<GameResource> Load(Loading.AssetByteStream stream, string key)
     {
 
-        var w = stream.DeserializeKnownType<uint>();
-        var h = stream.DeserializeKnownType<uint>();
-        var d = stream.DeserializeKnownType<uint>();
+        var reader = Parsing.ValueReader.FromStream(stream);
+
+        var w = reader.ReadUnmanaged<uint>();
+        var h = reader.ReadUnmanaged<uint>();
+        var d = reader.ReadUnmanaged<uint>();
+
 
         TextureFormats format = (TextureFormats)stream.ReadByte();
         TextureTypes type = (TextureTypes)stream.ReadByte();
@@ -120,8 +100,7 @@ public class TextureResource : GameResource, GameResource.ILoads,
         byte[][] mips = new byte[stream.ReadByte()][];
 
         for (int i = 0; i < mips.Length; i++)
-            mips[i] = stream.DeserializeKnownType<byte[]>();
-
+            mips[i] = reader.ReadLengthPrefixedUnmanagedSpan<byte>();
 
 
 

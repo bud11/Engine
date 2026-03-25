@@ -22,33 +22,21 @@ using static Engine.Core.EngineMath;
 /// <br/> 
 /// <br/> <see cref="GameObject"/> types must be public and expose a parameterless constructor.
 /// <br/>
-/// <br/> To allow fields/properties to be set via data, see <see cref="BinarySerializableTypeAttribute"/> and <see cref="DataValueAttribute"/>.
+/// <br/> To allow fields/properties to be set via data, see <see cref="BinarySerializableTypeAttribute"/> and <see cref="IndexableAttribute"/>.
 /// </summary>
-public partial class GameObject : Freeable,
-    ISerializeOverrider<uint>
+public partial class GameObject : Freeable
 {
 
 
 
-    static uint ISerializeOverrider<uint>.Serialize(object instance, object context)
-        => throw new NotImplementedException();
-
-    static object ISerializeOverrider<uint>.Deserialize(uint data, object context)
-        => ((SceneResource.SceneBinaryDeserializationContext)context).Objects[(int)data];
 
 
 
-
-
-
-
-
-
-
-    [DataValue]
     /// <summary>
     /// The name of this object. <br/> <b>! ! ! Names are not automatically made unique in any context. ! ! ! </b> 
     /// </summary>
+
+    [Indexable]
     public string Name
     {
         get => _name;
@@ -88,11 +76,11 @@ public partial class GameObject : Freeable,
 
 
 
-    [DataValue]
     /// <summary>
     /// Whether the object should inherit transforms from its ancestors or not. <br />
     /// When setting, the existing global transform of the object will be maintained.
     /// </summary>
+    [Indexable]
     public bool TopLevel
     {
         get => _toplevel;
@@ -107,21 +95,23 @@ public partial class GameObject : Freeable,
         }
     }
 
-    private Transform _transform = Transform.Identity;
+    private Matrix4x4 _transform = Matrix4x4.Identity;
+
 
 
     /// <summary>
     /// The world-space transform of the object. This is cached where possible to reduce unnessecary matrix multiplications.
     /// </summary>
-    public Transform GlobalTransform
+    public Matrix4x4 GlobalTransform
     {
         get
         {
+            
             if (TopLevel) return Transform;
 
             if (!GlobalTransformDirty) return GlobalTransformCached;
 
-            Transform global = Transform;
+            Matrix4x4 global = Transform;
             var p = Parent;
 
             while (p != null)
@@ -143,13 +133,13 @@ public partial class GameObject : Freeable,
         set
         {
             Transform = value;
-            if (Parent != null && !TopLevel) Transform *= Parent.GlobalTransform.AffineInverse();
+            if (Parent != null && !TopLevel) Transform *= Parent.GlobalTransform.Inverse();
         }
     }
 
 
-    [DataValue]
-    public Transform Transform
+    [Indexable]
+    public Matrix4x4 Transform
     {
         get => _transform;
         set
@@ -162,7 +152,7 @@ public partial class GameObject : Freeable,
 
 
     private bool GlobalTransformDirty = true;
-    private Transform GlobalTransformCached;
+    private Matrix4x4 GlobalTransformCached;
 
 
 
@@ -187,22 +177,28 @@ public partial class GameObject : Freeable,
 
     public Vector3 GlobalPosition
     {
-        get => GlobalTransform.Origin;
-        set => GlobalTransform = GlobalTransform with { Origin = value };
+        get => GlobalTransform.Translation;
+        set => GlobalTransform = GlobalTransform with { Translation = value };
     }
 
-    public Vector3 GlobalRotation
+    public Vector3 GlobalRotationEuler
     {
         get => GlobalTransform.GetEuler();
         set
         {
             var gtransform = GlobalTransform;
             var scale = gtransform.Decompose().Scale;
-            GlobalTransform = Transform.FromEuler(value).Scaled(scale) with { Origin = gtransform.Origin };
+            GlobalTransform = FromEuler(value).Scaled(scale) with { Translation = gtransform.Translation };
         }
     }
+    public Vector3 GlobalScale
+    {
+        get => GlobalTransform.Decompose().Scale;
+        set => GlobalTransform = (GlobalTransform.Decompose() with { Scale = value }).Compose();
+    }
 
-    public Vector3 GlobalRotationDegrees
+
+    public Vector3 GlobalRotationEulerDegrees
     {
         get
         {
@@ -213,31 +209,38 @@ public partial class GameObject : Freeable,
         {
             var gtransform = GlobalTransform;
             var scale = gtransform.Decompose().Scale;
-            GlobalTransform = Transform.FromEuler(new Vector3(DegToRad(value.X), DegToRad(value.Y), DegToRad(value.Z)))
+            GlobalTransform = FromEuler(new Vector3(DegToRad(value.X), DegToRad(value.Y), DegToRad(value.Z)))
                 .Scaled(scale)
                 with
-            { Origin = gtransform.Origin };
+            { Translation = gtransform.Translation };
         }
     }
 
     public Vector3 Position
     {
-        get => Transform.Origin;
-        set => Transform = Transform with { Origin = value };
+        get => Transform.Translation;
+        set => Transform = Transform with { Translation = value };
     }
 
-    public Vector3 Rotation
+    public Vector3 RotationEuler
     {
         get => Transform.GetEuler();
         set
         {
             var t = Transform;
             var scale = t.Decompose().Scale;
-            Transform = Transform.FromEuler(value).Scaled(scale) with { Origin = t.Origin };
+            Transform = FromEuler(value).Scaled(scale) with { Translation = t.Translation };
         }
     }
+    public Vector3 Scale
+    {
+        get => Transform.Decompose().Scale;
+        set => Transform = (Transform.Decompose() with { Scale = value }).Compose();
+    }
 
-    public Vector3 RotationDegrees
+
+
+    public Vector3 RotationEulerDegrees
     {
         get
         {
@@ -248,18 +251,20 @@ public partial class GameObject : Freeable,
         {
             var t = Transform;
             var scale = t.Decompose().Scale;
-            Transform = Transform.FromEuler(new Vector3(DegToRad(value.X), DegToRad(value.Y), DegToRad(value.Z)))
+            Transform = FromEuler(new Vector3(DegToRad(value.X), DegToRad(value.Y), DegToRad(value.Z)))
                 .Scaled(scale)
                 with
-            { Origin = t.Origin };
+            { Translation = t.Translation };
         }
     }
+
+
 
 
     public bool IsSceneInstanceRoot;
 
 
-    [DataValue]
+    [Indexable]
     public bool Visible = true;
 
 
@@ -284,7 +289,7 @@ public partial class GameObject : Freeable,
 
 
 
-    [DataValue]
+    [Indexable]
     public bool EnableCameraCulling = true;
 
     /// <summary>
@@ -489,15 +494,31 @@ public partial class GameObject : Freeable,
 
 
 
-
-
-
     public static readonly List<GameObject> AllGameObjects = new();
 
     /// <summary>
     /// Contains every <see cref="GameObject"/> with a name. <br/> <b>! ! ! Objects will replace each other if they have the same name. This is only reliably useful for objects with globally unique names. ! ! !</b>
     /// </summary>
     public static readonly Dictionary<string, GameObject> NamedGameObjects = new();
+
+
+
+
+
+
+    /// <summary>
+    /// Gets the type ID correspondant to a <see cref="GameObject"/> type.
+    /// </summary>
+    /// <param name="type"></param>
+    /// <returns></returns>
+    public static partial ushort GetGameObjectTypeID(Type type);
+
+    /// <summary>
+    /// Constructs and returns a <see cref="GameObject"/> type instance correspondant to the given type ID. Does not call <see cref="Init"/> or do anything else further.
+    /// </summary>
+    /// <param name="TypeID"></param>
+    /// <returns></returns>
+    public static partial GameObject ConstructGameObjectFromTypeID(ushort TypeID);
 
 
 

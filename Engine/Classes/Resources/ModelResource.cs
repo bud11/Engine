@@ -1,39 +1,28 @@
-﻿
-using Engine.Attributes;
-using Engine.GameResources;
-
-[assembly: BinarySerializableTypeAssemblyLevel(typeof(ModelResource.SubmeshRange[]))]
+﻿namespace Engine.GameResources;
 
 
 
-namespace Engine.GameResources;
-
-
-
-using System.Numerics;
 using System.Runtime.CompilerServices;
-
-
-using Engine.Attributes;
 using static Engine.Core.EngineMath;
 using static Engine.Core.RenderingBackend;
 using Engine.Core;
+
+using static Engine.Core.Parsing;
 
 
 
 #if DEBUG
 using System.Text.Json;
-using System.Runtime.InteropServices;
 #endif
 
 
 
 
 [FileExtensionAssociation(".mdl")]
-public class ModelResource : GameResource, GameResource.ILoads,
+public class ModelResource : GameResource, GameResource.ILoads
 
 #if DEBUG
-    GameResource.IConverts
+    , GameResource.IConverts
 #endif
 {
 
@@ -49,7 +38,6 @@ public class ModelResource : GameResource, GameResource.ILoads,
 
 
 
-    [BinarySerializableType]
     public record struct SubmeshRange(uint Start, uint End);
 
 
@@ -234,9 +222,11 @@ public class ModelResource : GameResource, GameResource.ILoads,
     public static async Task<GameResource> Load(Loading.AssetByteStream stream, string key)
     {
 
+        var reader = ValueReader.FromStream(stream);
 
-        var attribDefCount = stream.DeserializeKnownType<byte>();
-        var bufferCount = stream.DeserializeKnownType<byte>();
+
+        var attribDefCount = reader.ReadUnmanaged<byte>();
+        var bufferCount = reader.ReadUnmanaged<byte>();
 
 
 
@@ -245,7 +235,7 @@ public class ModelResource : GameResource, GameResource.ILoads,
         for (var i = 0; i < bufferCount; i++)
         {
             bool writeable = stream.ReadByte() == 1;
-            var data = stream.DeserializeKnownType<byte[]>();
+            var data = reader.ReadLengthPrefixedUnmanagedSpan<byte>();
 
             buffers[i] = BackendVertexBufferAllocationReference.Create<byte>(data, writeable);
         }
@@ -256,7 +246,7 @@ public class ModelResource : GameResource, GameResource.ILoads,
 
         for (var i = 0; i < attribDefCount; i++)
         {
-            string name = stream.DeserializeKnownType<string>();
+            string name = reader.ReadString();
 
             var componentFormat = (VertexAttributeBufferComponentFormat)stream.ReadByte();
             byte offset = (byte)stream.ReadByte();
@@ -268,16 +258,16 @@ public class ModelResource : GameResource, GameResource.ILoads,
         }
 
 
-        var submeshes = stream.DeserializeKnownType<SubmeshRange[]>();
+        var submeshes = reader.ReadLengthPrefixedUnmanagedSpan<SubmeshRange>();
 
-        var idxbuffer = stream.DeserializeKnownType<uint[]>();
+        var idxbuffer = reader.ReadLengthPrefixedUnmanagedSpan<uint>();
 
         BackendIndexBufferAllocationReference indexbuffer = idxbuffer == null ? null : BackendIndexBufferAllocationReference.Create(idxbuffer, false);
 
 
 
 
-        var aabb = stream.DeserializeKnownType<AABB>();
+        var aabb = reader.ReadUnmanaged<AABB>();
 
         return new ModelResource(
             attributes,
@@ -295,12 +285,14 @@ public class ModelResource : GameResource, GameResource.ILoads,
 #if DEBUG
 
 
-    public static bool ForceReconversion(byte[] bytes, byte[] currentCache) => false;
-
-    public static async Task<byte[]> ConvertToFinalAssetBytes(byte[] bytes, string filePath)
+    public static async Task<byte[]> ConvertToFinalAssetBytes(Loading.Bytes bytes, string filePath)
     {
-        var dict = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(bytes, Loading.JsonAssetLoadingOptions);
-        var attribs = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(dict["AttributeData"], Loading.JsonAssetLoadingOptions);
+        var dict = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(bytes.ByteArray, Parsing.JsonAssetLoadingOptions);
+
+        bytes.Dispose();
+
+
+        var attribs = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(dict["AttributeData"], Parsing.JsonAssetLoadingOptions);
 
 
 
@@ -311,13 +303,13 @@ public class ModelResource : GameResource, GameResource.ILoads,
 
         foreach (var kv in attribs)
         {
-            var componentFormat = Parsing.EnumParse<VertexAttributeBufferComponentFormat>(kv.Value.GetProperty("ComponentFormat").GetString());
+            var componentFormat = Enum.Parse<VertexAttributeBufferComponentFormat>(kv.Value.GetProperty("ComponentFormat").GetString(), true);
 
             var componentCount = kv.Value.GetProperty("ComponentCount").GetByte();
 
 
 
-            var scope = Parsing.EnumParse<VertexAttributeScope>(kv.Value.GetProperty("Scope").GetString());
+            var scope = Enum.Parse<VertexAttributeScope>(kv.Value.GetProperty("Scope").GetString(), true);
 
             var data = Convert.FromBase64String(kv.Value.GetProperty("Base64Data").GetString());
 
@@ -349,37 +341,32 @@ public class ModelResource : GameResource, GameResource.ILoads,
 
 
 
+        var write = ValueWriter.CreateWithBufferWriter();
 
-        List<byte> final =
-        [
-            
-            //attribute count
-            (byte)interwoven.Count,
+        //attribute count
+        write.WriteUnmanaged((byte)interwoven.Count);
 
-            //buffer count
-            1,
+        //buffer count
+        write.WriteUnmanaged<byte>(1);
 
-            //buffer writeable
-            0,
+        //buffer 0 writeable
+        write.WriteUnmanaged<byte>(0);
 
-            //buffer
-            .. Parsing.SerializeType(interwoven.FirstOrDefault().Value.data, false),
-        ];
-
-
+        //buffer 0 content
+        write.WriteLengthPrefixedUnmanagedSpan<byte>(interwoven.FirstOrDefault().Value.data);
 
 
         //attributes
         foreach (var kv in interwoven)
         {
-            final.AddRange(Parsing.SerializeType(kv.Key, false));
+            write.WriteString(kv.Key);
 
-            final.Add((byte)kv.Value.def.ComponentFormat);
-            final.Add((byte)kv.Value.def.Offset);
-            final.Add((byte)kv.Value.def.Stride);
-            final.Add((byte)kv.Value.def.Scope);
+            write.WriteUnmanaged<byte>((byte)kv.Value.def.ComponentFormat);
+            write.WriteUnmanaged<byte>((byte)kv.Value.def.Offset);
+            write.WriteUnmanaged<byte>((byte)kv.Value.def.Stride);
+            write.WriteUnmanaged<byte>((byte)kv.Value.def.Scope);
 
-            final.Add(0);
+            write.WriteUnmanaged<byte>(0);
         }
 
 
@@ -387,32 +374,32 @@ public class ModelResource : GameResource, GameResource.ILoads,
 
 
         // Submeshes
-        final.AddRange(Parsing.SerializeType(dict["SubMeshes"].Deserialize<SubmeshRange[]>(Loading.JsonAssetLoadingOptions), false));
+        write.WriteLengthPrefixedUnmanagedSpan<SubmeshRange>(dict["SubMeshes"].Deserialize<SubmeshRange[]>(Parsing.JsonAssetLoadingOptions));
+
 
 
         // Index buffer
         if (dict.TryGetValue("IndexBufferBase64Data", out var idxbuf))
         {
-
             byte[] b = Convert.FromBase64String(idxbuf.GetString());
             uint[] uints = new uint[b.Length / 4];
             Buffer.BlockCopy(b, 0, uints, 0, b.Length);
 
-
-            final.AddRange(Parsing.SerializeType(uints, false));
+            write.WriteLengthPrefixedUnmanagedSpan<uint>(uints);
         }
         else
-            final.AddRange(Parsing.SerializeType(Array.Empty<uint>(), false));
+            write.WriteVariableLengthUnsigned(0);
 
 
 
         // AABB
-        final.AddRange(Parsing.SerializeType(dict.TryGetValue("LocalAABB", out var aabb) ? aabb.Deserialize<AABB>(Loading.JsonAssetLoadingOptions) : AABB.MaxValue, false));
+        write.WriteUnmanaged(dict.TryGetValue("LocalAABB", out var aabb) ? aabb.Deserialize<AABB>(Parsing.JsonAssetLoadingOptions) : AABB.MaxValue);
 
 
 
-        return final.ToArray();
+        return write.GetSpan().ToArray();
     }
+    
 
 
 

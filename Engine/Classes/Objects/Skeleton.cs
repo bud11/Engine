@@ -26,7 +26,7 @@ public partial class Skeleton : GameObject
 
 
 
-    [DataValue]
+    [Indexable]
     public GameObject[] BoneObjects
     {
         set
@@ -34,7 +34,7 @@ public partial class Skeleton : GameObject
             var arr = new Bone[value.Length];
             var dict = new Dictionary<string, Bone>();
 
-            var thisinv = GlobalTransform.Matrix;
+            var thisinv = GlobalTransform;
 
             for (ushort i = 0; i < value.Length; i++)
             {
@@ -42,7 +42,7 @@ public partial class Skeleton : GameObject
 
                 OnGlobalTransformChangedEvent.Add(BoneTransformChanged);
 
-                var inst = new Bone(i, b, b.Transform.Matrix, thisinv * b.GlobalTransform.AffineInverse().Matrix);
+                var inst = new Bone(i, b, b.Transform, thisinv * b.GlobalTransform.Inverse());
 
                 dict[b.Name] = arr[i] = inst;
 
@@ -79,13 +79,13 @@ public partial class Skeleton : GameObject
     {
         if (NeedsSkeletonRecalc)
         {
-            var thisinv = GlobalTransform.AffineInverse().Matrix;
+            var thisinv = GlobalTransform.Inverse();
 
 
             for (ushort boneIndex = 0; boneIndex < BonesByIndex.Length; boneIndex++)
             {
                 var bone = BonesByIndex[boneIndex];
-                FinalBoneMatrices[boneIndex] = bone.RestInv * bone.Object.GlobalTransform.Matrix * thisinv;
+                FinalBoneMatrices[boneIndex] = bone.RestInv * bone.Object.GlobalTransform * thisinv;
             }
 
 

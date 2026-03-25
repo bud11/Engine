@@ -3,6 +3,8 @@ using Engine.GameObjects;
 using Engine.GameResources;
 using System.Numerics;
 using ImGuiNET;
+using static Engine.Core.EngineMath;
+
 
 
 
@@ -135,10 +137,11 @@ public static partial class Entry
 
             Attributes: new Dictionary<string, ShaderCompilation.ShaderAttributeDefinition>()
             {
-                { "position", new(RenderingBackend.ShaderAttributeBufferFinalFormat.Vec3, ShaderCompilation.ShaderAttributeStageMask.VertexIn) },
-                { "normal", new(RenderingBackend.ShaderAttributeBufferFinalFormat.Vec2, ShaderCompilation.ShaderAttributeStageMask.VertexIn | ShaderCompilation.ShaderAttributeStageMask.VertexOutFragmentIn) },
+                { "position", new(RenderingBackend.ShaderAttributeBufferFinalFormat.Vec3, ShaderCompilation.ShaderAttributeStageMask.VertexIn | ShaderCompilation.ShaderAttributeStageMask.VertexOutFragmentIn) },
+                { "normal", new(RenderingBackend.ShaderAttributeBufferFinalFormat.Vec2, ShaderCompilation.ShaderAttributeStageMask.VertexIn) },
                 { "UVMap", new(RenderingBackend.ShaderAttributeBufferFinalFormat.Vec2, ShaderCompilation.ShaderAttributeStageMask.VertexIn | ShaderCompilation.ShaderAttributeStageMask.VertexOutFragmentIn) },
 
+                { "Normal", new(RenderingBackend.ShaderAttributeBufferFinalFormat.Vec3, ShaderCompilation.ShaderAttributeStageMask.VertexOutFragmentIn ) },
 
 
                 { "FinalColor", new(RenderingBackend.ShaderAttributeBufferFinalFormat.Vec4, ShaderCompilation.ShaderAttributeStageMask.FragmentOut) }
@@ -154,12 +157,37 @@ public static partial class Entry
 
                 gl_Position = GlobalUBO.ProjectionMatrix * GlobalUBO.ViewMatrix * ModelUBO.ModelMatrix * vec4(position, 1.0);   
                 
+                Fragposition = (ModelUBO.ModelMatrix * vec4(position, 1.0)).xyz;
+                
+
+                
+                FragNormal = normalize(vec3(
+                    normal.x * 2.0 - 1.0,
+                    normal.y * 2.0 - 1.0,
+                    1.0 - abs(normal.x * 2.0 - 1.0) - abs(normal.y * 2.0 - 1.0)
+                ));
+                if (FragNormal.z < 0.0) FragNormal.xy = (1.0 - abs(FragNormal.yx)) * sign(FragNormal.xy);
+
+
+                mat3 normalMatrix = transpose(inverse(mat3(ModelUBO.ModelMatrix)));
+                FragNormal = normalize(normalMatrix * FragNormal);
+
+
                 """,
 
-
-
             FragmentMainBody:
-                "FragOutFinalColor = vec4(texture(AlbedoTexture, FragUVMap).rgb, 1.0);"
+                """
+                
+
+                vec3 albedo = texture(AlbedoTexture, FragUVMap).rgb;
+                vec3 viewDir = normalize(inverse(GlobalUBO.ViewMatrix)[3].xyz - Fragposition);
+                float fresnel = pow(1.0 - dot(FragNormal, viewDir), 3.0) * 0.3;
+
+
+                FragOutFinalColor = vec4(clamp(albedo + vec3(fresnel), 0.0, 1.0), 1.0);
+                //FragOutFinalColor = vec4(FragNormal, 1.0);
+                
+                """
 
 
 
@@ -223,7 +251,7 @@ public static partial class Entry
 
     //global resources + metadata
 
-    public static RenderingBackend.BackendResourceSetReference GlobalResources;
+    private static RenderingBackend.BackendResourceSetReference GlobalResources;
     private static RenderingBackend.BackendUniformBufferAllocationReference GlobalUniformBuffer;
 
 
@@ -247,7 +275,7 @@ public static partial class Entry
     /// <summary>
     /// <inheritdoc cref="_InitSummary"/>
     /// </summary>
-    public static partial async Task Init()
+    public static partial void Init()
     {
 
 
@@ -265,12 +293,58 @@ public static partial class Entry
         // Now we can load and instantiate a scene.
 
         // Certain objects and resources may not have enough information when loaded rather than manually created.
-        
+
+        // Given that we might like to keep the window responsive and rendering, we can push this as a task.
 
 
-        var sceneResource = await Loading.LoadResource<SceneResource>("Assets/Scene");
+        Task.Run(async () =>
+        {
+            var sceneResource = await Loading.LoadResource<SceneResource>("Assets/Scene");
 
-        var sceneInstance = sceneResource.Instantiate();
+            var sceneInstance = sceneResource.Instantiate();
+
+            foreach (var obj in sceneInstance.GetChildrenRecursive())
+            {
+
+                if (obj is ModelInstance mod)
+                {
+                    mod.ModelInstanceResourceSets.Add("GlobalResources", GlobalResources);
+
+                    mod.ModelInstanceResourceSets.Add("ModelResources", RenderingBackend.BackendResourceSetReference.CreateFromMetadata(RenderingBackend.BackendShaderReference.Get("basicPBR"), "ModelResources", createInitialBuffers: ["ModelUBO"]));
+
+
+                    mod.OnPreDraw.Add(() =>
+                    {
+                        var buffer = mod.ModelInstanceResourceSets["ModelResources"].GetUniformBuffer("ModelUBO");
+
+                        var writehandle = buffer.StartWrite(false);
+                        writehandle.PushWriteFromOffsetOf("ModelMatrix", mod.GlobalTransform);
+                        writehandle.EndWrite();
+
+                    });
+
+
+                    foreach (var mat in mod.Materials)
+                    {
+                        if (mat != null)
+                        {
+                            var matresources = RenderingBackend.BackendResourceSetReference.CreateFromMetadata(mat.Shader, "MaterialResources");
+
+                            mat.MaterialResourceSets.Add("MaterialResources", matresources);
+
+
+                            var wr = matresources.StartWrite(true);
+
+                            foreach (var t in mat.Textures)
+                                if (matresources.Metadata.Textures.ContainsKey(t.Key))
+                                    wr.PushWrite(t.Key, t.Value);
+
+                            wr.EndWrite();
+                        }
+                    }
+                }
+            }
+        });
 
 
 
@@ -293,7 +367,7 @@ public static partial class Entry
 
 
         Camera = new Camera();
-        Camera.Resolution = new EngineMath.Vector2<uint>(1920, 1080);
+        Camera.Resolution = new Vector2<uint>(1920, 1080);
         Camera.GlobalPosition = new Vector3(0, 0, -10);
 
         Camera.Init();
@@ -374,8 +448,40 @@ public static partial class Entry
 
 
 
+    private static void CameraMove()
+    {
+        var WASD = ((Vector2)Input.KeyboardInputInstance.Get().GetAxisFromFour(SDL3.SDL.Scancode.A, SDL3.SDL.Scancode.D, SDL3.SDL.Scancode.S, SDL3.SDL.Scancode.W)) / (float)short.MaxValue;
 
 
+        var mouse = Input.MouseInputInstance.Get();
+        mouse.SetMouseRelative(true);
+        //mouse.SetMouseVisible(true);
+
+
+        var mouseMove = mouse.GetMousePositionDelta();
+
+
+
+
+        var euler = Camera.GlobalTransform.GetEuler() + (new Vector3(mouseMove.Y, mouseMove.X, 0) * 0.05f * Logic.Delta);
+
+        var rotation =
+            Matrix4x4.CreateRotationX(euler.X) *
+            Matrix4x4.CreateRotationY(euler.Y);
+
+        Camera.GlobalTransform = rotation with { Translation = Camera.GlobalTransform.Translation };
+
+
+
+        //wasd
+        var move = new Vector3(WASD.X, 0, WASD.Y) * Logic.Delta * 10f;
+        Camera.GlobalPosition += Vector3.TransformNormal(move, Camera.GlobalTransform);
+
+        //up down
+        Camera.GlobalPosition += new Vector3(0, (Input.KeyboardInputInstance.Get().GetAxisFromTwo(SDL3.SDL.Scancode.LShift, SDL3.SDL.Scancode.Space) / (float)short.MaxValue) * Logic.Delta * 10f, 0);
+
+
+    }
 
 
 
@@ -401,7 +507,7 @@ public static partial class Entry
             GameObject.AllGameObjects[i].Loop();
 
 
-
+        CameraMove();
 
 
 
@@ -445,7 +551,7 @@ public static partial class Entry
         EngineDebug.ThrowIfVertexBufferMissing =
         EngineDebug.ThrowIfResourceSetMissing =
         EngineDebug.ThrowIfResourceMissing =
-        EngineDebug.DeferredCommandStackTraceStorage = true;
+        EngineDebug.DeferredCommandStackTraceStorage = false;
 
 #endif
 
@@ -493,14 +599,9 @@ public static partial class Entry
 
         var fb = Rendering.StartFrameBufferPipeline(Camera.FrameBuffer, [new RenderingBackend.FrameBufferPipelineStage().SpecifyColorAttachment(0, RenderingBackend.FrameBufferPipelineAttachmentAccessFlags.Write, false)]);
 
-
         ImGUIController.BeginFrame();
 
-        ImGui.Begin("Hello");
-
-        EngineDebug.DisplayObjectHeirarchyViaImGUI();
-
-        ImGui.End();
+        EngineDebug.DisplayBasicInspectorViaIMGUI();
 
         ImGUIController.EndFrame();
 

@@ -237,8 +237,8 @@
 
 		<!-- execute debug -->
 		<Exec
-		  Command="&quot;$(TargetPath)&quot; $(ZStdCompressionQuality)"
-		  WorkingDirectory="$(TargetDir)"
+		  Command="&quot;$(ProjectDir)bin\Debug\$(TargetFramework)\$(RuntimeIdentifier)\$(AssemblyName).exe&quot; $(ZStdCompressionQuality)"
+		  WorkingDirectory="$(ProjectDir)bin\Debug\$(TargetFramework)\$(RuntimeIdentifier)"
 		  IgnoreExitCode="false"
 		  ConsoleToMSBuild="true" />
 

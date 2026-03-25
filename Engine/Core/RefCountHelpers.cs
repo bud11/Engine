@@ -1,7 +1,6 @@
 ﻿
 
 using System.Collections;
-using System.Collections.Generic;
 using System.Diagnostics.CodeAnalysis;
 using System.Runtime.CompilerServices;
 
@@ -21,21 +20,37 @@ public static class RefCountCollections
     /// <typeparam name="T"></typeparam>
     /// <param name="Length"></param>
     [CollectionBuilder(typeof(RefCountCollections), nameof(CreateRefCountedArray))]
-    public class RefCountedArray<T>(int Length) : RefCounted, IEnumerable<T>
+    public class RefCountedArray<T> : RefCounted, IEnumerable<T>
         where T : RefCounted
     {
-        private T[] array = new T[Length];
+
+        public RefCountedArray(int Length)
+        {
+            _arr = new T[Length];
+        }
+
+        public RefCountedArray(T[] arr)
+        {
+            for (int i = 0; i < arr.Length; i++)
+                arr[i]?.AddUser();
+
+            _arr = arr.ToArray();
+        }
+
+
+
+        private T[] _arr;
 
         public T this[int idx]
         {
-            get => array[idx];
+            get => _arr[idx];
             set
             {
-                var ret = ReferenceReplaceLogic(array[idx], value);
+                var ret = ReferenceReplaceLogic(_arr[idx], value);
 
                 if (ret.changed)
                 {
-                    array[idx] = value;
+                    _arr[idx] = value;
                     OnValueChanged.Invoke((idx, value));
                 }
             }
@@ -44,17 +59,22 @@ public static class RefCountCollections
         public readonly ThreadSafeEventAction<(int idx, T newvalue)> OnValueChanged = new();
 
         public IEnumerator<T> GetEnumerator()
-            => ((IEnumerable<T>)array).GetEnumerator();
+            => ((IEnumerable<T>)_arr).GetEnumerator();
 
         IEnumerator IEnumerable.GetEnumerator() => GetEnumerator();
 
         protected override void OnFree()
         {
-            for (int i = 0; i < Length; i++)
-                array[i]?.RemoveUser();
+            for (int i = 0; i < _arr.Length; i++)
+                _arr[i]?.RemoveUser();
 
-            array = null!;
+            _arr = null!;
         }
+
+
+        public static explicit operator RefCountedArray<T>(T[] arr)
+            => new(arr);
+
     }
 
 
@@ -81,27 +101,41 @@ public static class RefCountCollections
     public class RefCountedDictionary<TKey, TValue> : RefCounted, IDictionary<TKey, TValue> where TKey : notnull where TValue : RefCounted
     {
         public RefCountedDictionary(int Length) 
-            => dict = new(Length);
+            => _dict = new(Length);
 
         public RefCountedDictionary()
-            => dict = new();
+            => _dict = new();
+
+        public RefCountedDictionary(IDictionary<TKey, TValue> from)
+        {
+            foreach (var v in from.Values) 
+                v?.AddUser();
+
+            _dict = from.ToDictionary();
+        }
 
 
-        private readonly Dictionary<TKey, TValue> dict;
+        public static explicit operator RefCountedDictionary<TKey, TValue>(Dictionary<TKey, TValue> from) 
+            => new(from);
+
+
+
+
+        private readonly Dictionary<TKey, TValue> _dict;
 
 
         public TValue this[TKey idx]
         {
-            get => dict[idx];
+            get => _dict[idx];
             set
             {
-                dict.TryGetValue(idx, out var get);
+                _dict.TryGetValue(idx, out var get);
 
                 var (res, changed) = ReferenceReplaceLogic(get, value);
 
                 if (changed)
                 {
-                    dict[idx] = value;
+                    _dict[idx] = value;
                     OnValueChanged.Invoke((idx, value));
                 }
             }
@@ -111,20 +145,20 @@ public static class RefCountCollections
 
         protected override void OnFree()
         {
-            foreach (var val in dict.Values) 
+            foreach (var val in _dict.Values) 
                 val.RemoveUser();
         }
 
 
 
 
-        public ICollection<TKey> Keys => ((IDictionary<TKey, TValue>)dict).Keys;
+        public ICollection<TKey> Keys => ((IDictionary<TKey, TValue>)_dict).Keys;
 
-        public ICollection<TValue> Values => ((IDictionary<TKey, TValue>)dict).Values;
+        public ICollection<TValue> Values => ((IDictionary<TKey, TValue>)_dict).Values;
 
-        public int Count => ((ICollection<KeyValuePair<TKey, TValue>>)dict).Count;
+        public int Count => ((ICollection<KeyValuePair<TKey, TValue>>)_dict).Count;
 
-        public bool IsReadOnly => ((ICollection<KeyValuePair<TKey, TValue>>)dict).IsReadOnly;
+        public bool IsReadOnly => ((ICollection<KeyValuePair<TKey, TValue>>)_dict).IsReadOnly;
 
 
 
@@ -135,15 +169,15 @@ public static class RefCountCollections
 
         public bool ContainsKey(TKey key)
         {
-            return ((IDictionary<TKey, TValue>)dict).ContainsKey(key);
+            return ((IDictionary<TKey, TValue>)_dict).ContainsKey(key);
         }
 
         public bool Remove(TKey key)
         {
-            if (dict.TryGetValue(key, out var get))
+            if (_dict.TryGetValue(key, out var get))
             {
                 get.RemoveUser();
-                return ((IDictionary<TKey, TValue>)dict).Remove(key);
+                return ((IDictionary<TKey, TValue>)_dict).Remove(key);
             }
             return false;
         }
@@ -153,7 +187,7 @@ public static class RefCountCollections
 
         public bool TryGetValue(TKey key, [MaybeNullWhen(false)] out TValue value)
         {
-            return ((IDictionary<TKey, TValue>)dict).TryGetValue(key, out value);
+            return ((IDictionary<TKey, TValue>)_dict).TryGetValue(key, out value);
         }
 
         public void Add(KeyValuePair<TKey, TValue> item) 
@@ -163,18 +197,18 @@ public static class RefCountCollections
 
         public void Clear()
         {
-            foreach (var k in dict.Keys) 
-                dict.Remove(k);
+            foreach (var k in _dict.Keys) 
+                _dict.Remove(k);
         }
 
         public bool Contains(KeyValuePair<TKey, TValue> item)
         {
-            return ((ICollection<KeyValuePair<TKey, TValue>>)dict).Contains(item);
+            return ((ICollection<KeyValuePair<TKey, TValue>>)_dict).Contains(item);
         }
 
         public void CopyTo(KeyValuePair<TKey, TValue>[] array, int arrayIndex)
         {
-            ((ICollection<KeyValuePair<TKey, TValue>>)dict).CopyTo(array, arrayIndex);
+            ((ICollection<KeyValuePair<TKey, TValue>>)_dict).CopyTo(array, arrayIndex);
         }
 
         public bool Remove(KeyValuePair<TKey, TValue> item) 
@@ -183,12 +217,12 @@ public static class RefCountCollections
 
         public IEnumerator<KeyValuePair<TKey, TValue>> GetEnumerator()
         {
-            return ((IEnumerable<KeyValuePair<TKey, TValue>>)dict).GetEnumerator();
+            return ((IEnumerable<KeyValuePair<TKey, TValue>>)_dict).GetEnumerator();
         }
 
         IEnumerator IEnumerable.GetEnumerator()
         {
-            return ((IEnumerable)dict).GetEnumerator();
+            return ((IEnumerable)_dict).GetEnumerator();
         }
     }
 

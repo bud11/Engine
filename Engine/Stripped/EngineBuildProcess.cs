@@ -105,7 +105,10 @@ public static class EngineBuildProcess
 
 
 
-                        List<byte> header = new();
+                        Parsing.ValueWriter header = new();
+
+                        //List<byte> header = new();
+
 
 
 
@@ -207,12 +210,12 @@ public static class EngineBuildProcess
                                     Print($"File written to archive '{archiveName}' successfully ({i}/{allFiles.Length}): {result.path}");
 
 
-                                    offsetsToCorrect.Add((ulong)header.Count);
+                                    offsetsToCorrect.Add((ulong)header.GetSpan().Length);
 
-                                    header.AddRange(BitConverter.GetBytes((ulong)currentOffset));
-                                    header.AddRange(BitConverter.GetBytes((ulong)result.uncompressedLength));
-                                    header.AddRange(Parsing.SerializeType(result.path, false));
-                                    header.AddRange(BitConverter.GetBytes(Parsing.GetGameResourceTypeID(result.type)));
+                                    header.WriteUnmanaged((ulong)currentOffset);
+                                    header.WriteUnmanaged((ulong)result.uncompressedLength);
+                                    header.WriteString(result.path);
+                                    header.WriteUnmanaged(GameResource.GetGameResourceTypeID(result.type));
 
 
                                     currentOffset += (ulong)result.data.Length;
@@ -226,10 +229,10 @@ public static class EngineBuildProcess
 
                         ulong headerSize =
                              sizeof(uint) +          // actualFiles uint at start
-                             (ulong)header.Count;    // header itself
+                             (ulong)header.GetSpan().Length;    // header itself
 
 
-                        Span<byte> headerSpan = CollectionsMarshal.AsSpan(header);
+                        Span<byte> headerSpan = header.GetSpan().ToArray().AsSpan();
 
 
                         foreach (var p in offsetsToCorrect)
@@ -252,7 +255,7 @@ public static class EngineBuildProcess
                         {
                             outStream.Write(BitConverter.GetBytes(actualFiles));
 
-                            outStream.Write(header.ToArray());
+                            outStream.Write(headerSpan);
 
 
                             using var tempStream = new FileStream(tempPath, FileMode.Open, FileAccess.Read);
@@ -397,7 +400,13 @@ public static partial class Loading
 
 
 
-
+    /// <summary>
+    /// Emits in-memory objects as generated code.
+    /// </summary>
+    /// <param name="obj"></param>
+    /// <param name="indentation"></param>
+    /// <param name="dedup"></param>
+    /// <returns></returns>
     private static string Emit(object obj, int indentation = 1, DedupFields dedup = null)
     {
 
