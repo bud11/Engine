@@ -5,8 +5,8 @@ This project aims to offer a platform agnostic and mostly unopinionated foundati
 
 ## Features:
 
-- Full platform/backend agnostic control over the entire rendering process
-- An extensive easy to use shader metadata/generation system surrounding authoring and interaction 
+- Full platform/backend agnostic control over the entire rendering process (currently featuring a Vulkan backend)
+- An extensive easy to use shader metadata/authoring system with support for multiple shader languages (currently featuring GLSL and HLSL)
 - Complete support for custom object and resource types
 - A robust easy to use serialization/deserialization system fit for all types of data (for example, resources, save data, etc)
 - Extensive multithreading/async support
@@ -17,7 +17,6 @@ This project aims to offer a platform agnostic and mostly unopinionated foundati
 - <b>Release builds</b> come with shader precompilation, zstd asset compression, and can safely target NativeAOT when published 
 
 ## Todos/considerations:
-- Shader system rework (current glsl generation is slightly ugly and restrictive, and I'd like to offer the option to use any shader language)
 - Some mild rendering backend abstraction reworking to make it feel more robust, extensible and less vulkan-centric
 - Finishing compute shaders properly, and in tandem, solidifying asynchronous gpu work and gpu -> cpu communication
 - Likely some form of rendering pipeline rework, such that materials are moreso compiled/cached rather than assembled fresh
@@ -28,11 +27,11 @@ This project aims to offer a platform agnostic and mostly unopinionated foundati
 
 To start, clone the repo, then install the following development-time cli dependencies:
 
-| Dependency                                                |   Detection                                                                                 |
-| ----------------------------------------------------------| ------------------------------------------------------------------------------------------- |
-| glslangvalidator                                          |   PATH variable                                                                             |
-| spirv-cross                                               |   PATH variable                                                                             |
-| Nvidia Texture Tools 3 (does not require an nvidia gpu)   |   PATH varible (to the directory containing nvtt_export.exe; may need to be added manually) |
+| Dependency                                                |   Detection                                                                                  |
+| ----------------------------------------------------------| -------------------------------------------------------------------------------------------- |
+| glslangvalidator                                          |   PATH variable                                                                              |
+| spirv-cross                                               |   PATH variable                                                                              |
+| Nvidia Texture Tools 3 (does not require an nvidia gpu)   |   PATH variable (to the directory containing nvtt_export.exe; may need to be added manually) |
 
 Then open some of the demo projects to get a fundamental grasp of the engine, or create your own and simply import EntryProps via something like ``` <Import Project="..\EntryProps.props" /> ``` in your .csproj's Project body.
 
@@ -46,7 +45,7 @@ A blender addon aiming to be capable of supporting a full production pipeline is
 
 # Demo images
 
-This section will be further populated with more advanced demos as they become avaliable within the demos folder.
+This section will be further populated with more advanced demos as they become available within the demos folder.
 
 Manually drawn NDC triangle:
 <img width="1282" height="752" alt="triangle" src="https://github.com/user-attachments/assets/de1aa505-3bd5-4ab0-9043-cce0854c0464" />
