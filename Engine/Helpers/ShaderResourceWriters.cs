@@ -244,10 +244,10 @@ public static partial class ShaderResourceWriters
 
                     resource = get.Metadata.SamplerType switch
                     {
-                        TextureSamplerTypes.Texture2D => Dummy2DTextureSamplerPair,
-                        TextureSamplerTypes.Texture2DShadow => Dummy2DShadowTextureSamplerPair,
-                        TextureSamplerTypes.TextureCubeMap => DummyCubeTextureSamplerPair,
-                        TextureSamplerTypes.Texture3D => Dummy3DTextureSamplerPair,
+                        TextureSamplerTypes.Sampler2D => Dummy2DTextureSamplerPair,
+                        TextureSamplerTypes.Sampler2DShadow => Dummy2DShadowTextureSamplerPair,
+                        TextureSamplerTypes.SamplerCubeMap => DummyCubeTextureSamplerPair,
+                        TextureSamplerTypes.Sampler3D => Dummy3DTextureSamplerPair,
                         _ => throw new NotImplementedException(),
                     };
 

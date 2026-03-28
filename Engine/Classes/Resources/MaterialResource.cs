@@ -30,15 +30,18 @@ public partial class MaterialResource :
 
 
     public readonly UnmanagedKeyValueHandleCollectionOwner<string, BackendResourceSetReference> MaterialResourceSets = new();
-    
-    public readonly BackendShaderReference Shader;
+
+
+    public readonly string ShaderName;
+    public BackendShaderReference Shader { get; private set; }
+
 
     public readonly RefCountCollections.RefCountedDictionary<string, BackendTextureAndSamplerReferencesPair> Textures;
     public readonly Dictionary<string, object> Parameters;
 
 
 
-    public MaterialResource(BackendShaderReference shader,
+    public MaterialResource(string shaderName,
 
                             Dictionary<string, object> parameters,
                             RefCountCollections.RefCountedDictionary<string, BackendTextureAndSamplerReferencesPair> textures,
@@ -46,7 +49,12 @@ public partial class MaterialResource :
                             string key = null) : base(key)
     
     {
-        Shader = shader;
+        ShaderName = shaderName;
+        ObtainShader();
+
+        Shader.OnFreeEvent.Add(ObtainShader);  // <-- hot reload support
+
+
         Textures = textures;
         Parameters = parameters;
 
@@ -61,6 +69,19 @@ public partial class MaterialResource :
 
         base.OnFree();
     }
+
+
+    /// <summary>
+    /// (Re)obtains the shader currently registered under <see cref="ShaderName"/>.
+    /// </summary>
+    public void ObtainShader()
+    {
+        Shader?.RemoveUser();
+        Shader = BackendShaderReference.Get(ShaderName);
+        Shader.AddUser();
+    }
+
+
 
 
 
@@ -89,7 +110,7 @@ public partial class MaterialResource :
 
         // --- reads ---
 
-        var Shader = BackendShaderReference.Get(reader.ReadString());
+        var shaderName = reader.ReadString();
 
 
 
@@ -123,7 +144,7 @@ public partial class MaterialResource :
 
         var arguments = MaterialPropertySerializerDeserializer.Instance.ReadKnownType<Dictionary<string, object>>(ref reader); 
 
-        return new MaterialResource(Shader, arguments, finaltextures, key);
+        return new MaterialResource(shaderName, arguments, finaltextures, key);
     }
 
 

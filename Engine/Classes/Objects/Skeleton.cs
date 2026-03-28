@@ -4,8 +4,7 @@ namespace Engine.GameObjects;
 
 using Engine.Attributes;
 using Engine.Core;
-
-
+using System.Collections.Frozen;
 using System.Collections.Immutable;
 using System.Numerics;
 
@@ -19,7 +18,7 @@ public partial class Skeleton : GameObject
 
 
 
-    public ImmutableDictionary<string, Bone> Bones { get; private set; }
+    public FrozenDictionary<string, Bone> Bones { get; private set; }
     public ImmutableArray<Bone> BonesByIndex { get; private set; }
 
     public Bone RootBone { get; private set; }
@@ -60,7 +59,7 @@ public partial class Skeleton : GameObject
 
 
             BonesByIndex = ImmutableArray.Create(arr);
-            Bones = ImmutableDictionary.ToImmutableDictionary(dict);
+            Bones = FrozenDictionary.ToFrozenDictionary(dict);
         }
     }
     

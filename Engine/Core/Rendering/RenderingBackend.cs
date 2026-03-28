@@ -4,6 +4,7 @@
 namespace Engine.Core;
 
 using System;
+using System.Collections.Frozen;
 using System.Collections.Generic;
 using System.Collections.Immutable;
 using System.Linq;
@@ -93,6 +94,14 @@ public static partial class RenderingBackend
 
 
 
+
+
+
+
+
+#if DEBUG
+    public static Dictionary<string, ShaderMetadata.ShaderResourceSetMetadata> GlobalResourceSetMetadata = new();
+#endif
 
 
 
@@ -732,6 +741,15 @@ public static partial class RenderingBackend
         /// <summary>
         /// <inheritdoc cref="CreateFromMetadata(ShaderMetadata.ShaderResourceSetMetadata, string[], Dictionary{string, IResourceSetResource})"/>
         /// </summary>
+        public static BackendResourceSetReference CreateFromMetadata(string SetName, string[] createInitialBuffers = null, Dictionary<string, IResourceSetResource> setInitial = null)
+            => CreateFromMetadata(GlobalResourceSetMetadata[SetName], createInitialBuffers, setInitial);
+
+
+
+
+        /// <summary>
+        /// <inheritdoc cref="CreateFromMetadata(ShaderMetadata.ShaderResourceSetMetadata, string[], Dictionary{string, IResourceSetResource})"/>
+        /// </summary>
         public static BackendResourceSetReference CreateFromMetadata(BackendShaderReference Shader, string SetName, string[] createInitialBuffers = null, Dictionary<string, IResourceSetResource> setInitial = null)
             => CreateFromMetadata(Shader.Metadata.ResourceSets[SetName].Metadata, createInitialBuffers, setInitial);
 
@@ -757,16 +775,16 @@ public static partial class RenderingBackend
             {
                 switch (v.Value.Metadata.SamplerType)
                 {
-                    case TextureSamplerTypes.Texture2D:
+                    case TextureSamplerTypes.Sampler2D:
                         setWriteHandle.PushWrite(v.Value.Binding, Dummy2DTextureSamplerPair);
                         break;
-                    case TextureSamplerTypes.Texture2DShadow:
+                    case TextureSamplerTypes.Sampler2DShadow:
                         setWriteHandle.PushWrite(v.Value.Binding, Dummy2DShadowTextureSamplerPair);
                         break;
-                    case TextureSamplerTypes.TextureCubeMap:
+                    case TextureSamplerTypes.SamplerCubeMap:
                         setWriteHandle.PushWrite(v.Value.Binding, DummyCubeTextureSamplerPair);
                         break;
-                    case TextureSamplerTypes.Texture3D:
+                    case TextureSamplerTypes.Sampler3D:
                         setWriteHandle.PushWrite(v.Value.Binding, Dummy3DTextureSamplerPair);
                         break;
                     default:
@@ -1245,7 +1263,7 @@ public static partial class RenderingBackend
 
 
 
-    public static unsafe ImmutableArray<BackendResourceSetReference> CreateDefaultResourceSets(ImmutableDictionary<string, (uint Binding, ShaderMetadata.ShaderResourceSetMetadata Metadata)> ResourceSets)
+    public static unsafe ImmutableArray<BackendResourceSetReference> CreateDefaultResourceSets(FrozenDictionary<string, (byte Binding, ShaderMetadata.ShaderResourceSetMetadata Metadata)> ResourceSets)
     {
 
         var ResourceSetBinds = new BackendResourceSetReference[ResourceSets.Count];
@@ -1274,9 +1292,9 @@ public static partial class RenderingBackend
 
 
     public record class ShaderMetadata(
-        ImmutableDictionary<string, (byte Location, ShaderMetadata.ShaderInOutAttributeMetadata Metadata)> VertexInputAttributes,
-        ImmutableDictionary<string, (byte Location, ShaderMetadata.ShaderInOutAttributeMetadata Metadata)> FragmentOutputAttributes,
-        ImmutableDictionary<string, (uint Binding, ShaderMetadata.ShaderResourceSetMetadata Metadata)> ResourceSets
+        FrozenDictionary<string, (byte Location, ShaderMetadata.ShaderInOutAttributeMetadata Metadata)> VertexInputAttributes,
+        FrozenDictionary<string, (byte Location, ShaderMetadata.ShaderInOutAttributeMetadata Metadata)> FragmentOutputAttributes,
+        FrozenDictionary<string, (byte Binding, ShaderMetadata.ShaderResourceSetMetadata Metadata)> ResourceSets
         )
     {
 
@@ -1289,16 +1307,16 @@ public static partial class RenderingBackend
             uint ArrayLength);
 
         public record class ShaderBufferMetadata(
-           ImmutableDictionary<string, uint> FieldOffsets,
+           FrozenDictionary<string, uint> FieldOffsets,
            ImmutableArray<ContiguousRegion> ContiguousRegions,
            uint SizeRequirement);
 
         public record class ShaderResourceSetMetadata(
 
             ImmutableArray<ResourceSetResourceDeclaration> Declaration,
-            ImmutableDictionary<string, (uint Binding, ShaderTextureMetadata Metadata)> Textures,
-            ImmutableDictionary<string, (uint Binding, ShaderBufferMetadata Metadata)> UniformBuffers,
-            ImmutableDictionary<string, (uint Binding, ShaderBufferMetadata Metadata)> StorageBuffers
+            FrozenDictionary<string, (byte Binding, ShaderTextureMetadata Metadata)> Textures,
+            FrozenDictionary<string, (byte Binding, ShaderBufferMetadata Metadata)> UniformBuffers,
+            FrozenDictionary<string, (byte Binding, ShaderBufferMetadata Metadata)> StorageBuffers
 
             );
 
@@ -1306,10 +1324,7 @@ public static partial class RenderingBackend
 
 #if DEBUG
 
-        /// <summary>
-        /// Debug-only field containing originating glsl.
-        /// </summary>
-        public string GeneratedVertexGLSL, GeneratedFragmentGLSL;
+        public string VertexSourceCodeForDebugging, FragmentSourceCodeForDebugging;
 
 #endif
 
@@ -1318,15 +1333,12 @@ public static partial class RenderingBackend
 
 
     public record class ComputeShaderMetadata(
-        ImmutableDictionary<string, (uint Binding, ShaderMetadata.ShaderResourceSetMetadata Metadata)> ResourceSets
+        FrozenDictionary<string, (byte Binding, ShaderMetadata.ShaderResourceSetMetadata Metadata)> ResourceSets
         )
     {
 #if DEBUG
 
-        /// <summary>
-        /// Debug-only field containing originating glsl.
-        /// </summary>
-        public string GeneratedGLSL;
+        public string GeneratedSourceForDebugging;
 
 #endif
 

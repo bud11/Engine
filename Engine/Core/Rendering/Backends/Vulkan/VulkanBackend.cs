@@ -17,6 +17,7 @@ using Silk.NET.Core.Native;
 using Silk.NET.Vulkan;
 using Silk.NET.Vulkan.Extensions.EXT;
 using Silk.NET.Vulkan.Extensions.KHR;
+using System.Diagnostics;
 using System.Numerics;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
@@ -1874,6 +1875,7 @@ public static partial class RenderingBackend
                     uint width = Math.Max(1u, Dimensions.X >> mip);
                     uint height = Math.Max(1u, Dimensions.Y >> mip);
 
+
                     for (uint layer = 0; layer < LayerCount; layer++)
                     {
                         regions[mip * (int)LayerCount + (int)layer] = new BufferImageCopy
@@ -1910,6 +1912,7 @@ public static partial class RenderingBackend
                 }
 
             }
+
 
 
 

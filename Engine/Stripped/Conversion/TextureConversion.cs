@@ -9,6 +9,7 @@ using System.Diagnostics;
 using System.IO.MemoryMappedFiles;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
+using System.Text;
 using System.Threading.Tasks;
 using TinyEXR;
 using TinyEXR.Native;
@@ -270,8 +271,8 @@ public static class TextureConversion
     public static async Task<TextureGenData> ConvertTextureToRuntimeFormat(Loading.Bytes src, string extension, TextureInspectData ImageHeader, TextureLoadOptions options)
     {
 
-        //var stopwatch = new Stopwatch();
-        //stopwatch.Start();
+        var stopwatch = new Stopwatch();
+        stopwatch.Start();
 
 
 
@@ -550,31 +551,24 @@ public static class TextureConversion
 
 
 
-
-
-
-        await NVTTLock.WaitAsync();
-
-        string texpathtemp = Path.Combine(Path.GetTempPath(), $"tempimage.exr");
-        string texpathtempOut = Path.Combine(Path.GetTempPath(), $"tempimageOut.ktx");
-
+        string texpathtemp = Path.Combine(Path.GetTempPath(), $"{Guid.NewGuid()}.exr");
+        string texpathtempOut = Path.Combine(Path.GetTempPath(), $"{Guid.NewGuid()}.ktx");
 
         await File.WriteAllBytesAsync(texpathtemp, GetExr((int)ImageHeader.Dimensions.X, (int)ImageHeader.Dimensions.Y, TargetChannelCount, finalBuffer.Ref));
-
-
 
         finalBuffer.Return();
         finalBuffer = default;
 
-        //stopwatch.Stop();
-        //Debug.Print($"TEXTURE TOOK {stopwatch.Elapsed.TotalSeconds} SECONDS TO GET TO FINAL EXR");
 
 
+        Debug.Print($"Data -> final exr took {stopwatch.Elapsed.TotalSeconds} seconds");
+        
 
-        await RunProcess.Run(
-                "nvtt_export",
-                $""" "{texpathtemp}" --format {nvttFormat} --output "{texpathtempOut}" --mip-filter box --export-transfer-function 2 --quality 0"""
-            );
+        await EnqueueNvttGate($"""{texpathtemp} --format {nvttFormat} --output {texpathtempOut} --mip-filter box --export-transfer-function 2 --quality fastest""");
+
+        
+        stopwatch.Restart();
+
 
 
 
@@ -610,10 +604,9 @@ public static class TextureConversion
                     0, 0, mip);
 
 
-                var arr = ArrayPools.RentArrayFromPool<byte>(sub.size_bytes);
-                Buffer.MemoryCopy(sub.buff, Unsafe.AsPointer(ref arr.Ref[0]), sub.size_bytes, sub.size_bytes);
-                mipLevels[mip] = arr.Ref;
-
+                var arr = new byte[sub.size_bytes];
+                Buffer.MemoryCopy(sub.buff, Unsafe.AsPointer(ref arr[0]), sub.size_bytes, sub.size_bytes);
+                mipLevels[mip] = arr;
             }
 
 
@@ -627,7 +620,10 @@ public static class TextureConversion
             File.Delete(texpathtempOut);
 
 
-            NVTTLock.Release();
+
+            Debug.Print($"Ktx extraction and finalization took {stopwatch.Elapsed.TotalSeconds} seconds");
+            stopwatch.Restart();
+
 
 
             return new TextureGenData()
@@ -648,7 +644,73 @@ public static class TextureConversion
     }
 
 
-    private static SemaphoreSlim NVTTLock = new(1,1);
+
+
+
+    // batches into nvtt to reduce repeated nvtt startup overhead
+
+    private static readonly object _nvttGateLock = new();
+    private static readonly List<(string cmd, TaskCompletionSource tcs)> _nvttPending = new();
+    private static bool _nvttBatchRunning = false;
+    private static Task _nvttDebounceTask = null;
+    private static readonly TimeSpan _nvttDebounce = TimeSpan.FromSeconds(0.5);
+
+
+
+
+    private static Task EnqueueNvttGate(string cmd)
+    {
+        var tcs = new TaskCompletionSource();
+        lock (_nvttGateLock)
+        {
+            _nvttPending.Add((cmd, tcs));
+
+            if (_nvttBatchRunning)
+                return tcs.Task; 
+
+            if (_nvttDebounceTask == null)
+                _nvttDebounceTask = DebounceBatchAsync();
+        }
+        return tcs.Task;
+    }
+
+
+
+    private static async Task DebounceBatchAsync()
+    {
+        await Task.Delay(_nvttDebounce);
+
+        List<(string cmd, TaskCompletionSource tcs)> batch;
+        lock (_nvttGateLock)
+        {
+            batch = _nvttPending.ToList();
+            _nvttPending.Clear();
+            _nvttBatchRunning = true;
+            _nvttDebounceTask = null;
+        }
+
+        string batchFile = Path.Combine(Path.GetTempPath(), $"{Guid.NewGuid()}.txt");
+        await File.WriteAllLinesAsync(batchFile, batch.Select(x => x.cmd));
+
+        await RunProcess.Run("nvtt_export", $@"--batch-file ""{batchFile}""");
+        
+        File.Delete(batchFile);
+
+
+        foreach (var (_, tcs) in batch)
+            tcs.SetResult();
+
+
+        lock (_nvttGateLock)
+        {
+            _nvttBatchRunning = false;
+            if (_nvttPending.Count > 0)
+                _nvttDebounceTask = DebounceBatchAsync();
+        }
+    }
+
+
+
 
 
 
@@ -677,20 +739,10 @@ public static class TextureConversion
 
 
 
-            int Remap(int c) => (channelCount >= 3) ? c switch
-            {
-                0 => 2, // R -> B
-                1 => 1, // G -> G
-                2 => 0, // B -> R
-                3 => 3, // A -> A
-                _ => c
-            } : c;
-
             for (int c = 0; c < channelCount; c++)
-            {
-                int srcC = Remap(c);
-                channelPtrsManaged[c] = (IntPtr)(basePtr + (srcC * numPixels * elementSize));
-            }
+                channelPtrsManaged[channelCount-1-c] = (IntPtr)(basePtr + (c * numPixels * elementSize));
+
+
 
 
 
@@ -742,9 +794,11 @@ public static class TextureConversion
                 {
                     1 => ["R"],
                     2 => ["R", "G"],
-                    3 => ["B", "G", "R"],
-                    4 => ["B", "G", "R", "A"],
+                    3 => ["R", "G", "B"],
+                    4 => ["R", "G", "B", "A"],
+                    _ => throw new NotImplementedException(),
                 };
+
 
 
 

@@ -1,21 +1,16 @@
-﻿
-
-namespace Engine.Stripped;
-
-using Engine.Core;
+﻿using System.Collections.Frozen;
 using System.Collections.Immutable;
 using System.Diagnostics;
 using System.Numerics;
 using System.Reflection;
-using System.Runtime.InteropServices;
+using System.Runtime.CompilerServices;
 using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
-using static Engine.Core.EngineMath;
-using static Engine.Core.Rendering;
 using static Engine.Core.RenderingBackend;
 using static Engine.Core.RenderingBackend.ResourceSetResourceDeclaration;
-using static RunProcess;
+
+namespace Engine.Stripped;
 
 
 
@@ -28,181 +23,89 @@ public static partial class ShaderCompilation
 
 
 
-    /// <summary>
-    /// Unmanaged types that correspond directly to built-in glsl types (and therefore won't be reflected on and defined as custom structs in shader)
-    /// </summary>
-    private static readonly ImmutableDictionary<Type, string> CoreGLSLTypes = ImmutableDictionary.ToImmutableDictionary(new Dictionary<Type, string>
-    {
-        // Primitives
-        { typeof(float), "float" },
-        { typeof(bool),  "bool" },
-        { typeof(uint),  "uint" },
-        { typeof(int),   "int" },
-
-        // Vectors
-        { typeof(Vector2),       "vec2" },
-        { typeof(Vector2<int>),  "ivec2" },
-        { typeof(Vector2<uint>), "uvec2" },
-        { typeof(Vector3),       "vec3" },
-        { typeof(Vector3<int>),  "ivec3" },
-        { typeof(Vector3<uint>), "uvec3" },
-        { typeof(Vector4),       "vec4" },
-        { typeof(Vector4<int>),  "ivec4" },
-        { typeof(Vector4<uint>), "uvec4" },
-
-        // Matrices
-        { typeof(Matrix4x4), "mat4" }
-    });
 
 
+    private static readonly SemaphoreSlim ShaderModifyLock = new SemaphoreSlim(1,1);
+    private static readonly List<Task> ShaderCompilationTasks = new();
 
 
+    private static readonly Dictionary<string, ShaderMetadata.ShaderResourceSetMetadata> GlobalResourceSetContracts = new();
 
 
-
-    //RESOURCE SET
-    public record class ShaderResourceSetDefinition(OrderedDictionary<string, IResourceSetResourceSetResourceDefinition> Content);
-
-
-    //RESOURCES
-    public interface IResourceSetResourceSetResourceDefinition;
-
-
-    private interface IShaderDataBufferDefinition
-    {
-        public OrderedDictionary<string, IShaderBufferStructDeclaration> Vars { get; }
-    }
+    private static object SuccessLock = new();
+    private static bool Success = true;
 
 
 
     /// <summary>
-    /// Defines a uniform buffer / array within a resource set.
+    /// Reconstruct and recompile all shaders.
     /// </summary>
-    /// <param name="vars"></param>
-    public record class ShaderUniformBufferDefinition(OrderedDictionary<string, IShaderBufferStructDeclaration> vars) : IResourceSetResourceSetResourceDefinition, IShaderDataBufferDefinition
+    public static async Task<bool> CompileShaders()
     {
-        public OrderedDictionary<string, IShaderBufferStructDeclaration> Vars => vars;
-    }
 
-    /// <summary>
-    /// Defines a storage buffer / array within a resource set.
-    /// </summary>
-    /// <param name="vars"></param>
-    public record class ShaderStorageBufferDefinition(OrderedDictionary<string, IShaderBufferStructDeclaration> vars, SSBOReadWriteFlags allowedAccess) : IResourceSetResourceSetResourceDefinition, IShaderDataBufferDefinition
-    {
-        public OrderedDictionary<string, IShaderBufferStructDeclaration> Vars => vars;
-    }
+        await ShaderModifyLock.WaitAsync();
+
+        Success = true;
+
+        GlobalResourceSetContracts.Clear();
 
 
+        // collect outgoing shader register calls 
 
-    /// <summary>
-    /// Defines a texture (texture sampler combination) / array within a resource set.
-    /// <inheritdoc cref="_arraylengthexplanation"/>
-    /// </summary>
-    /// <param name="SamplerType"></param>
-    /// <param name="ArrayLength"></param>
-    public record class ShaderTextureDefinition(TextureSamplerTypes SamplerType, uint ArrayLength = 0) : IResourceSetResourceSetResourceDefinition;
+        Entry.InitShaders();
+        EngineDebug.InitShaders();
 
 
 
+        // execute
+
+        await Task.WhenAll(ShaderCompilationTasks);
+
+        ShaderCompilationTasks.Clear();
+
+        var ret = Success;
 
 
+        ShaderModifyLock.Release();
 
-    //BUFFER CONTENT
-    public interface IShaderBufferStructDeclaration
-    {
-        public uint arrayLength { get; }
-    }
+        return ret;
 
-    /// <summary>
-    /// Defines an unmanaged struct field/array inside of a shader buffer. 
-    /// <br/> <typeparamref name="StructT"/> can be any unmanaged struct (and its fields will be reflected as you'd expect, if it isn't present in <see cref="CoreGLSLTypes"/>), but if the struct contains padding, marshalling won't work correctly.
-    /// <inheritdoc cref="_arraylengthexplanation"/>
-    /// </summary>
-    /// <typeparam name="StructT"></typeparam>
-    /// <param name="ArrayLength"></param>
-    public record class ShaderBufferStructDeclaration<StructT>(uint ArrayLength = 0) : IShaderBufferStructDeclaration where StructT : unmanaged
-    {
-        public uint arrayLength => ArrayLength;
+
     }
 
 
 
 
-
-
-    //ATTRIBUTES
     /// <summary>
-    /// Declares an unmanaged struct field/array inside of a shader buffer. 
-    /// <inheritdoc cref="_arraylengthexplanation"/>
+    /// Declares a resource set consistent in terms of its layout and contents across all of its usages. Naturally, the first shader to define a set of the given name acts as the one to lock it in. The underlying numerical index across shaders does not need to match.
+    /// <br/> Once called, this becomes contractual, and violations will throw.
+    /// <br/> <b>This must be called before any shaders are registered!</b>
     /// </summary>
-    /// <param name="Format"></param>
-    /// <param name="StageMask"></param>
-    /// <param name="ArrayLength"></param>
-    public record class ShaderAttributeDefinition(ShaderAttributeBufferFinalFormat Format, ShaderAttributeStageMask StageMask, uint ArrayLength = 0);
-
-
-
-
-    /// <summary>
-    /// <br/> If <see cref="ArrayLength"/> is less or equal to 1, it'll be treated as a single element. Any higher and it'll be treated as an array.
-    /// </summary>
-    private struct _arraylengthexplanation;
-
-
-
-
-
-    /// <summary>
-    /// Determines which shader stages a shader attribute will show up in.
-    /// <br/> <see cref="VertexIn"/> will add the attribute as a vertex stage input.
-    /// <br/> <see cref="VertexOutFragmentIn"/> will add the attribute to the fragment stage with an added "Frag" prefix, and will add an automatic assignment if <see cref="VertexIn"/> is also present.
-    /// <br/> <see cref="FragmentOut"/> will add the attribute as a fragment stage output, with an added "FragOut" prefix, and will add an automatic assignment if <see cref="VertexOutFragmentIn"/> is also present.
-    /// 
-    /// <br/> 
-    /// <br/> For example, using all values on a single attribute named "Color" would generate glsl like this:
-    /// <br/>
-    /// 
-    /// <br/> <b>Vertex Stage</b>:
-    /// <br/> 
-    /// <code>
-    /// 
-    /// layout(location = 0) in vec4 Color;                // --- VertexIn
-    /// layout(location = 0) out vec4 FragColor;           // --- VertexOutFragmentIn
-    /// 
-    /// void main()
-    /// {
-    ///     FragColor = Color;                            // --- VertexOutFragmentIn (only if VertexIn is also present)
-    ///     //Your main vertex shader body
-    /// }
-    /// 
-    /// </code>
-    /// <br/>
-    /// 
-    /// <br/> <b>Fragment Stage</b>:
-    /// <br/> 
-    /// <code>
-    /// 
-    /// layout(location = 0) in vec4 FragColor;             // --- VertexOutFragmentIn
-    /// layout(location = 0) out vec4 FragOutColor;         // --- FragmentOut
-    /// 
-    /// void main()
-    /// {
-    ///     FragOutColor = FragColor;                      // --- FragmentOut (only if VertexOutFragmentIn is also present)
-    ///     //Your main fragment shader body
-    /// }
-    /// 
-    /// 
-    /// 
-    /// </code>
-    /// 
-    /// </summary>
-    [Flags]
-    public enum ShaderAttributeStageMask
+    [Conditional("DEBUG")]
+    public static void DeclareResourceSetConsistent(string name)
     {
-        VertexIn = 1,
-        VertexOutFragmentIn = 2,
-        FragmentOut = 4
+        ThrowOutsideOfShaderRegister();
+
+        if (ShaderCompilationTasks.Count != 0) 
+            throw new Exception("Must be called before any shaders are registered.");
+
+        GlobalResourceSetContracts.Add(name, null);
+    }
+
+
+    private static void ShaderRegister(Task register)
+    {
+        ThrowOutsideOfShaderRegister();
+
+        ShaderCompilationTasks.Add(register);
+    }
+
+
+
+    private static void ThrowOutsideOfShaderRegister()
+    {
+        if (ShaderModifyLock.CurrentCount != 0) 
+            throw new Exception($"Must be called from inside of {nameof(Entry.InitShaders)} or {nameof(Entry.InitDebugShaders)}.");
     }
 
 
@@ -211,77 +114,285 @@ public static partial class ShaderCompilation
 
 
 
-    private static bool CompilingShaders;
+
+    private static List<ShaderError> ValidateResourceSetContracts(FrozenDictionary<string, (byte Binding, ShaderMetadata.ShaderResourceSetMetadata Metadata)> sets, ShaderRegisterCallInformation shaderInfo)
+    {
+
+        var err = new List<ShaderError>();
+
+
+        foreach (var set in sets)
+        {
+            if (GlobalResourceSetContracts.TryGetValue(set.Key, out var contract))
+            {
+
+                // add
+                if (contract == null)
+                {
+                    GlobalResourceSetMetadata[set.Key] = set.Value.Metadata;
+                }
+
+
+                // validate match
+                else
+                {
+                    var actual = set.Value.Metadata;
+
+
+
+
+                    // -------- TEXTURES --------
+
+                    foreach (var tex in contract.Textures)
+                    {
+                        if (!actual.Textures.TryGetValue(tex.Key, out var texget))
+                            err.Add(new ShaderError(-1, $"Missing texture '{tex.Key}' in set '{set.Key}'"));
+
+                        if (texget.Binding != tex.Value.Binding
+                            || texget.Metadata.SamplerType != tex.Value.Metadata.SamplerType
+                            || texget.Metadata.ArrayLength != tex.Value.Metadata.ArrayLength)
+                            err.Add(new ShaderError(-1, $"Mismatch for texture '{tex.Key}' in set '{set.Key}'"));
+                    }
+
+                    foreach (var tex in actual.Textures)
+                    {
+                        if (!contract.Textures.ContainsKey(tex.Key))
+                            err.Add(new ShaderError(-1, $"Extra texture '{tex.Key}' in set '{set.Key}'"));
+                    }
+
+
+
+
+                    // -------- UNIFORM BUFFERS --------
+
+                    foreach (var ubo in contract.UniformBuffers)
+                    {
+                        if (!actual.UniformBuffers.TryGetValue(ubo.Key, out var uboget))
+                            err.Add(new ShaderError(-1, $"Missing uniform buffer '{ubo.Key}' in set '{set.Key}'"));
+
+                        if (uboget.Binding != ubo.Value.Binding
+                            || uboget.Metadata.SizeRequirement != ubo.Value.Metadata.SizeRequirement
+                            || !uboget.Metadata.FieldOffsets.SequenceEqual(ubo.Value.Metadata.FieldOffsets)
+                            || !uboget.Metadata.ContiguousRegions.SequenceEqual(ubo.Value.Metadata.ContiguousRegions))
+                            err.Add(new ShaderError(-1, $"Mismatch for uniform buffer '{ubo.Key}' in set '{set.Key}'"));
+                    }
+
+                    foreach (var ubo in actual.UniformBuffers)
+                    {
+                        if (!contract.UniformBuffers.ContainsKey(ubo.Key))
+                            err.Add(new ShaderError(-1, $"Extra uniform buffer '{ubo.Key}' in set '{set.Key}'"));
+                    }
+
+
+
+
+                    // -------- STORAGE BUFFERS --------
+
+                    foreach (var ssbo in contract.StorageBuffers)
+                    {
+                        if (!actual.StorageBuffers.TryGetValue(ssbo.Key, out var ssboget))
+                            err.Add(new ShaderError(-1, $"Missing storage buffer '{ssbo.Key}' in set '{set.Key}'"));
+
+                        if (ssboget.Binding != ssbo.Value.Binding
+                            || ssboget.Metadata.SizeRequirement != ssbo.Value.Metadata.SizeRequirement
+                            || !ssboget.Metadata.FieldOffsets.SequenceEqual(ssbo.Value.Metadata.FieldOffsets)
+                            || !ssboget.Metadata.ContiguousRegions.SequenceEqual(ssbo.Value.Metadata.ContiguousRegions))
+                            err.Add(new ShaderError(-1, $"Mismatch for storage buffer '{ssbo.Key}' in set '{set.Key}'"));
+                    }
+
+                    foreach (var ssbo in actual.StorageBuffers)
+                    {
+                        if (!contract.StorageBuffers.ContainsKey(ssbo.Key))
+                            err.Add(new ShaderError(-1, $"Extra storage buffer '{ssbo.Key}' in set '{set.Key}'"));
+                    }
+                }
+            }
+        }
+
+        return err;
+    }
+
+
+
+
+
+
+    public readonly record struct ShaderRegisterCallInformation(string shaderName, string sourceFile, uint line);
+
+
 
 
 
     /// <summary>
-    /// Compiles a full set of shader stages (or registers them to be compiled during building in release builds) along with metadata to interact with.
+    /// Compiles a full set of shader stages (or registers them to be precompiled during building in release builds) along with metadata to interact with.
+    /// <br/> The entry point for each stage must be named "main".
+    /// <br/> <paramref name="resourceSetNames"/> should be populated to give names to resource sets for later access. 
+    /// <br/> This method can only be called from <see cref="Entry.InitShaders"/> or <see cref="Entry.InitDebugShaders"/>.
     /// </summary>
-    /// <param name="ShaderName"></param>
-    /// <param name="ResourceSets"></param>
-    /// <param name="Attributes"></param>
-    /// <param name="VertexMainBody"></param>
-    /// <param name="FragmentMainBody"></param>
-    /// <param name="VertexExtra"></param>
-    /// <param name="FragmentExtra"></param>
-    public static void RegisterShader(string ShaderName, Dictionary<string, ShaderResourceSetDefinition> ResourceSets, Dictionary<string, ShaderAttributeDefinition> Attributes, string VertexMainBody, string FragmentMainBody)
-    {
-        ResourceSets ??= new();
-        Attributes ??= new();
+    /// <param name="vertexSource"></param>
+    /// <param name="fragmentSource"></param>
+    /// <param name="languageHandler"></param>
+    [Conditional("DEBUG")]
+    public static async void RegisterShader(string shaderName,
 
-        ShaderRegister(ShaderName, method());
+                                            string[] resourceSetNames,
+
+                                            string vertexSource,
+                                            string fragmentSource,
+
+                                            ShaderLanguageHandler languageHandler,
+
+                                            [CallerFilePath] string file = "",
+                                            [CallerLineNumber] uint line = 0
+        )
+    {
+
+        resourceSetNames ??= [];
+
+        ShaderRegister(method());
 
 
         async Task method()
         {
-            var result = await ConstructShaderSource(ShaderName, ResourceSets, Attributes, VertexMainBody, FragmentMainBody, GetRequiredShaderFormatForBackend(CurrentBackend));
 
-            if (result != null)
+            var info = new ShaderRegisterCallInformation(shaderName, file, line);
+
+            var result = await languageHandler.CompileShader(vertexSource, fragmentSource, resourceSetNames, info);
+
+            bool error = false;
+
+
+            if (result.Vertex.Errors != null && result.Vertex.Errors.Count != 0)
             {
-                var src = new ShaderSource(result.Value.Item3, result.Value.Item1.Source.ToImmutableArray(), result.Value.Item2.Source.ToImmutableArray());
+                ShowShaderDebugHtml(shaderName + " [Vertex Stage Error]", result.Vertex.SourceForUserDebugging, result.Vertex.Errors, languageHandler);
+                error = true;
+            }
+
+            else if (result.Fragment.Errors != null && result.Fragment.Errors.Count != 0)
+            {
+                ShowShaderDebugHtml(shaderName + " [Fragment Stage Error]", result.Fragment.SourceForUserDebugging, result.Fragment.Errors, languageHandler);
+                error = true;
+            }
+
+            else if (result.GeneralErrors != null && result.GeneralErrors.Count != 0)
+            {
+                ShowShaderDebugHtml(shaderName + " [Link Error]", string.Empty, result.GeneralErrors, languageHandler);
+                error = true;
+            }
+
+
+            else if (ValidateResourceSetContracts(result.Metadata.ResourceSets, info).Count != 0)
+                error = true;
+
+
+
+            if (!error)
+            {
+                var src = new ShaderSource(result.Metadata, ImmutableArray.Create(result.Vertex.Spirv), ImmutableArray.Create(result.Fragment.Spirv));
 
 #if ENGINE_BUILD_PASS
-                EngineBuildProcess.ShaderSources[CurrentBackend].Add(ShaderName, src);                
+                EngineBuildProcess.ShaderSources[CurrentBackend].Add(shaderName, src);                
 #else
-                BackendShaderReference.Create(ShaderName, src);
+                BackendShaderReference.Create(shaderName, src);
 #endif
 
             }
+
+#if !ENGINE_BUILD_PASS
+            else
+            {
+                lock (SuccessLock) 
+                    Success = false;
+
+                EngineDebug.GoToSourceFile(info.sourceFile, info.line);
+            }
+#endif
+
         }
     }
 
 
-    /// <summary>
-    /// Compiles a compute shader (or registers it to be compiled during building in release builds) along with metadata to interact with.
-    /// </summary>
-    /// <param name="ShaderName"></param>
-    /// <param name="ResourceSets"></param>
-    /// <param name="MainBody"></param>
-    /// <param name="LocalSize"></param>
-    /// <param name="Extra"></param>
-    public static void RegisterComputeShader(string ShaderName, Dictionary<string, ShaderResourceSetDefinition> ResourceSets, string MainBody, Vector3<uint> LocalSize)
-    {
-        ResourceSets ??= new();
 
-        ShaderRegister(ShaderName, method());
+    /// <summary>
+    /// Compiles a compute shader (or registers it to be precompiled during building in release builds) along with metadata to interact with.
+    /// <br/> The entry point must be named "main".
+    /// <br/> <paramref name="resourceSetNames"/> should be populated to give names to resource sets for later access. 
+    /// <br/> This method can only be called from <see cref="Entry.InitShaders"/> or <see cref="Entry.InitDebugShaders"/>.
+    /// </summary>
+    /// <param name="shaderName"></param>
+    /// <param name="source"></param>
+    /// <param name="resourceSetNames"></param>
+    /// <param name="languageHandler"></param>
+    [Conditional("DEBUG")]
+    public static async void RegisterComputeShader(string shaderName,
+
+                                            string source,
+
+                                            string[] resourceSetNames,
+
+                                            ShaderLanguageHandler languageHandler,
+
+                                            [CallerFilePath] string file = "",
+                                            [CallerLineNumber] uint line = 0
+        )
+    {
+
+        ShaderRegister(method());
 
 
         async Task method()
         {
-            var result = await ConstructComputeShaderSource(ShaderName, ResourceSets, LocalSize, MainBody, GetRequiredShaderFormatForBackend(CurrentBackend));
 
-            if (result != null)
+            var info = new ShaderRegisterCallInformation(shaderName, file, line);
+
+            var result = await languageHandler.CompileComputeShader(source, resourceSetNames, info);
+
+            bool error = false;
+
+
+            if (result.Main.Errors != null)
             {
+                ShowShaderDebugHtml(shaderName + " [Compute Shader Error]", result.Main.SourceForUserDebugging, result.Main.Errors, languageHandler);
+                error = true;
+            }
 
-                var src = new ComputeShaderSource(result.Value.Item2, result.Value.Item1.Source.ToImmutableArray());
+
+            else if(result.GeneralErrors != null && result.GeneralErrors.Count != 0)
+            {
+                ShowShaderDebugHtml(shaderName + " [General Error]", string.Empty, result.GeneralErrors, languageHandler);
+                error = true;
+            }
+
+
+
+            else if (ValidateResourceSetContracts(result.Metadata.ResourceSets, info).Count != 0)
+                error = true;
+
+
+
+
+            if (!error)
+            {
+                var src = new ComputeShaderSource(result.Metadata, ImmutableArray.Create(result.Main.Spirv));
 
 #if ENGINE_BUILD_PASS
-                EngineBuildProcess.ComputeShaderSources[CurrentBackend].Add(ShaderName, src);                
+                EngineBuildProcess.ShaderSources[CurrentBackend].Add(shaderName, src);                
 #else
-                BackendComputeShaderReference.Create(ShaderName, src);
+                BackendComputeShaderReference.Create(shaderName, src);
 #endif
+
             }
+
+#if !ENGINE_BUILD_PASS
+            else
+            {
+                lock (SuccessLock)
+                    Success = false;
+
+                EngineDebug.GoToSourceFile(info.sourceFile, info.line);
+            }
+#endif
+
         }
     }
 
@@ -292,21 +403,18 @@ public static partial class ShaderCompilation
 
 
 
-    private static void ShaderRegister(string ShaderName, Task register)
-    {
-        if (!CompilingShaders) throw new Exception("Shaders can't be registered outside of Entry.InitShaders.");
 
 
-        if (refreshingJust != null && refreshingJust != ShaderName)
-            return;
 
+    private record struct SpirvReflectResults(
+            
+            List<ShaderError> Errors,
 
-        lock (RegisteringTasks)
-            RegisteringTasks.Add(register);
+            FrozenDictionary<string, (byte Location, ShaderMetadata.ShaderInOutAttributeMetadata Metadata)> VertexInputAttributes,
+            FrozenDictionary<string, (byte Location, ShaderMetadata.ShaderInOutAttributeMetadata Metadata)> FragmentOutputAttributes,
+            FrozenDictionary<string, (byte Binding, ShaderMetadata.ShaderResourceSetMetadata Metadata)> ResourceSets
 
-    }
-
-
+        );
 
 
 
@@ -314,122 +422,433 @@ public static partial class ShaderCompilation
 
 
 
+    private static readonly string[][] StageOrders =
+    [
+        ["comp"],
 
+        ["vert", "tesc", "tese", "geom", "frag"],
 
+        ["task", "mesh", "frag"],
+    ];
 
 
 
     /// <summary>
-    ///  Reconstruct and recompile all shaders.
+    /// Produces shader metadata given compiled standard-pipeline spirv shader stages.
+    /// <br/> This also validates usage, contracts and linkage.
     /// </summary>
-    [Conditional("DEBUG")]
-    public static void CompileShaders()
+    /// <returns></returns>
+    private static async Task<SpirvReflectResults> SpirvReflectOnMultipleStages(List<byte[]> stages, string[] SetNames)
     {
 
-        lock (ModifyingShaders)
+
+
+        var err = new List<ShaderError>();
+
+
+
+
+        // ------------ REFLECT ON ALL STAGES ------------
+
+        List<Task<JsonDocument>> stageTasks = new();
+
+        foreach (var s in stages)
+            stageTasks.Add(GetSpirvReflectJSON(s));
+
+        await Task.WhenAll(stageTasks);
+
+
+
+
+
+
+        // ------------ DERIVE TARGET PIPELINE ------------
+
+        var spirvStages = stageTasks
+            .Select(x => x.Result)
+            .ToDictionary(
+                x => x.RootElement
+                      .GetProperty("entryPoints")
+                      .EnumerateArray()
+                      .First()
+                      .GetProperty("mode")
+                      .GetString()!,
+        x => x);
+
+
+        var presentStages = new HashSet<string>(spirvStages.Keys);
+
+
+
+        string[] matchedPipeline = null;
+
+        foreach (var pipeline in StageOrders)
         {
-            CompilingShaders = true;
+            bool allContained = presentStages.All(s => pipeline.Contains(s));
+            if (!allContained)
+                continue;
 
+            if (!IsValidSubsequence(pipeline, presentStages))
+                continue;
 
-            lock (RegisteringTasks)
-                RegisteringTasks.Clear();
-
-
-            Entry.InitShaders();
-            EngineDebug.InitShaders();
-
-
-            lock (RegisteringTasks)
-                Task.WaitAll(RegisteringTasks);
-
-
-            CompilingShaders = false;
-
+            matchedPipeline = pipeline;
+            break;
         }
-    }
 
-    /// <summary>
-    /// (Re)compile one specific shader.
-    /// </summary>
-    /// <param name="name"></param>
-    [Conditional("DEBUG")]
-    public static void CompileShader(string name)
-    {
-        lock (ModifyingShaders)
+
+
+
+        static bool IsValidSubsequence(string[] fullPipeline, HashSet<string> present)
         {
-            refreshingJust = name;
-            CompileShaders();
-            refreshingJust = null;
-        }
-    }
+            int lastSeen = -1;
 
-
-
-
-
-
-
-    private static string refreshingJust = null;
-
-    private static List<Task> RegisteringTasks = new();
-
-    private static object ModifyingShaders = new();
-
-
-
-
-
-
-
-    private static (string glslTypeName, string structDeclaration, Dictionary<string, string> structDependencies) GetGLSLTypeInformation(Type structtype)
-    {
-
-        if (CoreGLSLTypes.TryGetValue(structtype, out var g))
-            return (g, null, null);
-
-
-
-
-
-
-        var glslName = structtype.FullName.Replace("+", "_");
-
-        var deps = new Dictionary<string, string>();
-        var sb = new StringBuilder();
-
-
-        sb.AppendLine($"//{structtype}");
-        sb.AppendLine($"struct {glslName}\n{{");
-
-
-        foreach (var field in structtype.GetFields(
-             BindingFlags.Public | BindingFlags.Instance))
-        {
-            var info = GetGLSLTypeInformation(field.FieldType);
-
-            sb.AppendLine($"    //{field.FieldType};");
-            sb.AppendLine($"    {info.glslTypeName} {field.Name};");
-
-
-            if (info.structDeclaration != null)
+            for (int i = 0; i < fullPipeline.Length; i++)
             {
-                if (!deps.ContainsKey(info.glslTypeName))
-                    deps[info.glslTypeName] = info.structDeclaration;
+                if (!present.Contains(fullPipeline[i]))
+                    continue;
+
+                if (i < lastSeen)
+                    return false;
+
+                lastSeen = i;
+            }
+
+            // --- Special rules ---
+
+            bool hasTesc = present.Contains("tesc");
+            bool hasTese = present.Contains("tese");
+            if (hasTesc ^ hasTese)
+                return false;
+
+            if (present.Contains("mesh") && !present.Contains("task"))
+                return false;
+
+            if (present.Contains("comp") && present.Count > 1)
+                return false;
+
+            return true;
+        }
 
 
-                if (info.structDependencies != null)
+        if (matchedPipeline == null)
+            throw new Exception($"Invalid shader stage combination: [{string.Join(", ", presentStages)}]");
+
+
+
+
+
+
+        Dictionary<string, (byte, ShaderMetadata.ShaderInOutAttributeMetadata)> InputAttributes = new();
+        Dictionary<string, (byte, ShaderMetadata.ShaderInOutAttributeMetadata)> OutputAttributes = new();
+
+        Dictionary<byte, Dictionary<string, (byte, ShaderMetadata.ShaderTextureMetadata)>> Textures = new();
+
+        Dictionary<byte, Dictionary<string, (byte, ShaderMetadata.ShaderBufferMetadata)>> UBOS = new();
+        Dictionary<byte, Dictionary<string, (byte, ShaderMetadata.ShaderBufferMetadata)>> SSBOS = new();
+
+
+
+
+
+
+
+        // ------------ VALIDATE LINKING ------------
+
+
+        Dictionary<byte, ShaderMetadata.ShaderInOutAttributeMetadata> PriorStageOutputAttributes = new();
+        Dictionary<byte, ShaderMetadata.ShaderInOutAttributeMetadata> CurrentStageInputAttributes = new();
+
+        string priorStageName = null;
+
+
+
+        int matched = 0;
+
+        for (int i = 0; i < matchedPipeline.Length; i++)
+        {
+            string pipelineStage = matchedPipeline[i];
+
+
+            if (spirvStages.TryGetValue(pipelineStage, out var doc))
+            {
+
+                doc.RootElement.TryGetProperty("types", out var typesElement);
+
+
+                var mode = doc.RootElement.GetProperty("entryPoints").EnumerateArray().First().GetProperty("mode").ToString();
+
+
+
+
+                // ------------ ATTRIBUTES ------------
+
+                if (matched == 0)
                 {
-                    foreach (var kv in info.structDependencies)
-                        deps[kv.Key] = kv.Value;
+                    priorStageName = pipelineStage;
+                    ProcessAttributesByName("inputs", doc, InputAttributes);
                 }
+
+
+                if (matched == matchedPipeline.Length - 1)
+                    ProcessAttributesByName("outputs", doc, OutputAttributes);
+
+
+
+
+
+                // ------------ LINK VALIDATION ------------
+
+
+                CurrentStageInputAttributes.Clear();
+                ProcessAttributesByIndex("inputs", doc, CurrentStageInputAttributes);
+
+
+
+
+                if (matched > 0)
+                {
+                    foreach (var kv in CurrentStageInputAttributes)
+                    {
+                        if (!PriorStageOutputAttributes.TryGetValue(kv.Key, out var prev))
+                        {
+                            err.Add(new(-1,
+                                $"Stage '{pipelineStage}' expects input at location {kv.Key} ({kv.Value.Format}) " +
+                                $"but previous stage '{priorStageName}' does not provide it"));
+                            continue;
+                        }
+
+                        if (prev.Format != kv.Value.Format)
+                        {
+                            err.Add(new(-1,
+                                $"Location {kv.Key}: type mismatch between stages. " +
+                                $"Previous: {prev.Format}, Current: {kv.Value.Format}"));
+                        }
+
+                        if (prev.ArrayLength != kv.Value.ArrayLength)
+                        {
+                            err.Add(new(-1,
+                                $"Location {kv.Key}: array length mismatch. " +
+                                $"Previous: {prev.ArrayLength}, Current: {kv.Value.ArrayLength}"));
+                        }
+                    }
+
+                    foreach (var kv in PriorStageOutputAttributes)
+                    {
+                        if (!CurrentStageInputAttributes.ContainsKey(kv.Key))
+                        {
+                            err.Add(new(-1,
+                                $"Stage '{priorStageName}' outputs location {kv.Key} ({kv.Value.Format}) " +
+                                $"but it is not consumed by stage '{pipelineStage}'"));
+                        }
+                    }
+                }
+
+
+
+
+                // ------------ PREP NEXT STAGE ------------
+
+                PriorStageOutputAttributes.Clear();
+                ProcessAttributesByIndex("outputs", doc, PriorStageOutputAttributes);
+
+
+                priorStageName = pipelineStage;
+
+
+
+
+
+
+
+
+
+
+
+                static void ProcessAttributesByName(string group, JsonDocument doc, Dictionary<string, (byte, ShaderMetadata.ShaderInOutAttributeMetadata)> addTo)
+                {
+                    if (doc.RootElement.TryGetProperty(group, out var get))
+                    {
+                        foreach (var attr in get.EnumerateArray())
+                        {
+                            if (Enum.TryParse<ShaderAttributeBufferFinalFormat>(attr.GetProperty("type").GetString(), true, out var parse))
+                                addTo[attr.GetProperty("name").GetString()] = (attr.GetProperty("location").GetByte(), new ShaderMetadata.ShaderInOutAttributeMetadata(parse, 1));
+
+                            else
+                                throw new NotImplementedException();
+                        }
+                    }
+                }
+
+
+
+                static void ProcessAttributesByIndex(string group, JsonDocument doc, Dictionary<byte, ShaderMetadata.ShaderInOutAttributeMetadata> addTo)
+                {
+                    if (doc.RootElement.TryGetProperty(group, out var get))
+                    {
+                        foreach (var attr in get.EnumerateArray())
+                        {
+                            if (Enum.TryParse<ShaderAttributeBufferFinalFormat>(attr.GetProperty("type").GetString(), true, out var parse))
+                                addTo[attr.GetProperty("location").GetByte()] = new ShaderMetadata.ShaderInOutAttributeMetadata(parse, 1);
+
+                            else
+                                throw new NotImplementedException();
+                        }
+                    }
+                }
+
+
+
+
+                // ------------ TEXTURES  ------------
+
+                if (doc.RootElement.TryGetProperty("textures", out var texGet))
+                {
+                    foreach (var tex in texGet.EnumerateArray())
+                    {
+                        if (Enum.TryParse<TextureSamplerTypes>(tex.GetProperty("type").GetString(), true, out var parse))
+                        {
+                            var set = tex.GetProperty("set").GetByte();
+                            if (!Textures.TryGetValue(set, out var setGet)) Textures[set] = setGet = new();
+
+                            setGet[tex.GetProperty("name").GetString()] = (tex.GetProperty("binding").GetByte(), new ShaderMetadata.ShaderTextureMetadata(parse, 1));
+                        }
+
+                        else
+                            throw new NotImplementedException();
+                    }
+                }
+
+
+                // ------------ UNIFORM / STORAGE BUFFERS ------------
+
+                ProcessBuffers("ubos", doc, typesElement, UBOS);
+                ProcessBuffers("ssbos", doc, typesElement, SSBOS);
+
+
+
+                static void ProcessBuffers(string group, JsonDocument doc, JsonElement types, Dictionary<byte, Dictionary<string, (byte, ShaderMetadata.ShaderBufferMetadata)>> addTo)
+                {
+
+                    if (types.ValueKind != JsonValueKind.Undefined && doc.RootElement.TryGetProperty(group, out var buffers))
+                    {
+                        foreach (var buf in buffers.EnumerateArray())
+                        {
+
+                            var bufName = buf.GetProperty("name").GetString();
+
+                            var bufTypeInfo = types.GetProperty(buf.GetProperty("type").ToString());
+
+                            var bufBlockSize = buf.GetProperty("block_size").GetUInt32();
+
+
+
+
+
+                            List<(uint start, uint end)> datastartendpoints = new();
+
+                            Dictionary<string, uint> offsets = new();
+
+
+
+
+                            var members = bufTypeInfo.GetProperty("members").EnumerateArray();
+
+                            foreach (var m in members)
+                            {
+                                string name = m.GetProperty("name").GetString();
+                                uint offset = m.GetProperty("offset").GetUInt32();
+
+                                offsets[name] = offset;
+
+                                AddRegionsForType(m, offset, types, datastartendpoints);
+                            }
+
+
+                            static void AddRegionsForType(
+                                JsonElement typeInfo,
+                                uint baseOffset,
+                                JsonElement types,
+                                List<(uint start, uint end)> datastartendpoints)
+                            {
+                                if (typeInfo.TryGetProperty("type", out var typeProp))
+                                {
+                                    string type = typeProp.GetString();
+
+                                    var size = GetSPIRVPrimitiveSize(type);
+
+                                    if (size.HasValue)
+                                    {
+                                        datastartendpoints.Add((baseOffset, baseOffset + size.Value));
+                                        return;
+                                    }
+
+                                    typeInfo = types.GetProperty(type);
+                                }
+
+                                var members = typeInfo.GetProperty("members").EnumerateArray();
+
+                                foreach (var m in members)
+                                {
+                                    uint memberOffset = m.GetProperty("offset").GetUInt32();
+                                    AddRegionsForType(m, baseOffset + memberOffset, types, datastartendpoints);
+                                }
+                            }
+
+
+
+
+
+                            var regionsList = new List<ContiguousRegion>();
+                            if (datastartendpoints.Count != 0)
+                            {
+                                datastartendpoints.Sort((a, b) => a.start.CompareTo(b.start));
+
+                                uint mergedStart = datastartendpoints[0].start;
+                                uint mergedEnd = datastartendpoints[0].end;
+
+                                for (int i = 1; i < datastartendpoints.Count; i++)
+                                {
+                                    var (start, end) = datastartendpoints[i];
+
+                                    if (start <= mergedEnd)
+                                    {
+                                        mergedEnd = Math.Max(mergedEnd, end);
+                                    }
+                                    else
+                                    {
+                                        regionsList.Add(new ContiguousRegion(mergedStart, mergedEnd));
+                                        mergedStart = start;
+                                        mergedEnd = end;
+                                    }
+                                }
+
+                                regionsList.Add(new ContiguousRegion(mergedStart, mergedEnd));
+                            }
+
+
+
+                            var set = buf.GetProperty("set").GetByte();
+                            if (!addTo.TryGetValue(set, out var setGet)) addTo[set] = setGet = new();
+
+
+                            setGet[bufName] = new(
+                                buf.GetProperty("binding").GetByte(), new ShaderMetadata.ShaderBufferMetadata
+                                (
+                                    FieldOffsets: FrozenDictionary.ToFrozenDictionary(offsets),
+                                    ContiguousRegions: regionsList.ToImmutableArray(),
+                                    SizeRequirement: buf.GetProperty("block_size").GetUInt32()
+                                ));
+
+
+                        }
+                    }
+                }
+
+
+                matched++;
             }
         }
 
-        sb.AppendLine("};");
-
-        return (glslName, sb.ToString(), deps);
-
-    }
 
 
 
@@ -438,613 +857,95 @@ public static partial class ShaderCompilation
 
 
 
+        // ------------ RESOURCE SET GROUPING / VALIDATION ------------
 
 
-    public enum ShaderSuffix
-    {
-        _vert,  //vertex
-
-        _frag,  //fragment
-
-        _comp,  //compute
-    }
+        var allSetIndices = new HashSet<byte>();
+        allSetIndices.UnionWith(Textures.Keys);
+        allSetIndices.UnionWith(UBOS.Keys);
+        allSetIndices.UnionWith(SSBOS.Keys);
 
 
-
-    private static async Task<(ShaderStageResultStruct, ShaderStageResultStruct, ShaderMetadata)?> ConstructShaderSource(string ShaderName, Dictionary<string, ShaderResourceSetDefinition> ResourceSets, Dictionary<string, ShaderAttributeDefinition> Attributes, string VertexMainBody, string FragmentMainBody, ShaderFormat targetFormat, bool strip = true)
-    {
-
-
-        var resourceglsl = GenerateResourceGLSL(ResourceSets, [VertexMainBody, FragmentMainBody], strip);
-
-
-        string vertexFinalGLSL, fragmentFinalGLSL;
-
-        vertexFinalGLSL = 
-        fragmentFinalGLSL 
-            = gencommentdividerline("RESOURCES") + resourceglsl.code;
-
-
-
-
-        Dictionary<ShaderAttributeStageMask, byte> locationCounters = new();
-
-        string VSins = string.Empty;
-        string VSouts = string.Empty;
-        string FSins = string.Empty;
-        string FSouts = string.Empty;
-
-
-        Dictionary<string, (byte, ShaderMetadata.ShaderInOutAttributeMetadata)> VertexInAttributes = new();
-        Dictionary<string, (byte, ShaderMetadata.ShaderInOutAttributeMetadata)> FragmentOutAttributes = new();
-
-
-
-        foreach (var attr in Attributes)
+        // Ensure contiguous
+        if (allSetIndices.Count > 0)
         {
-            byte sizeRequirement = attr.Value.Format switch
+            byte maxIndex = allSetIndices.Max();
+            for (byte i = 0; i <= maxIndex; i++)
             {
-                ShaderAttributeBufferFinalFormat.Mat4 => 4,
-                ShaderAttributeBufferFinalFormat.Mat3 => 3,
-                _ => 1,
-            };
-
-            // Iterate over the stages we care about
-            foreach (var stage in new[] {
-                 ShaderAttributeStageMask.VertexIn,
-                 ShaderAttributeStageMask.VertexOutFragmentIn,
-                 ShaderAttributeStageMask.FragmentOut })
-            {
-                if ((attr.Value.StageMask & stage) == 0) continue;
-
-                if (!locationCounters.TryGetValue(stage, out var loc))
-                    loc = locationCounters[stage] = 0;
-
-                string prefix = stage switch
-                {
-                    ShaderAttributeStageMask.VertexIn => "",
-                    ShaderAttributeStageMask.VertexOutFragmentIn => "Frag",
-                    ShaderAttributeStageMask.FragmentOut => "FragOut",
-                    _ => ""
-                };
-
-                string decl = $"\nlayout(location = {loc}) {(stage == ShaderAttributeStageMask.FragmentOut || stage == ShaderAttributeStageMask.VertexOutFragmentIn && false ? "out" : "in")} {attr.Value.Format.ToString().ToLower()} {prefix}{attr.Key}" +
-                              (attr.Value.ArrayLength > 1 ? $"[{attr.Value.ArrayLength}]" : "") + ";";
-
-                // Append to correct string
-                switch (stage)
-                {
-                    case ShaderAttributeStageMask.VertexIn:
-                        VSins += decl;
-                        VertexInAttributes[attr.Key] = (loc, new ShaderMetadata.ShaderInOutAttributeMetadata(attr.Value.Format, attr.Value.ArrayLength));
-                        break;
-                    case ShaderAttributeStageMask.VertexOutFragmentIn:
-                        VSouts += decl.Replace("in", "out");   // VS out
-                        FSins += decl;                        // FS in
-                        break;
-                    case ShaderAttributeStageMask.FragmentOut:
-                        FSouts += decl;
-                        FragmentOutAttributes[attr.Key] = (loc, new ShaderMetadata.ShaderInOutAttributeMetadata(attr.Value.Format, attr.Value.ArrayLength));
-                        break;
-                }
-
-                // Increment location counter by how many slots this attribute consumes
-                locationCounters[stage] = (byte)(loc + sizeRequirement);
+                if (!allSetIndices.Contains(i))
+                    err.Add(new ShaderError(-1, $"Missing resource set at index {i}, sets must be contiguous starting from 0"));
             }
-
-            // Add automatic assignments
-            if ((attr.Value.StageMask & ShaderAttributeStageMask.VertexIn) != 0 &&
-                (attr.Value.StageMask & ShaderAttributeStageMask.VertexOutFragmentIn) != 0)
-                VertexMainBody = $"\tFrag{attr.Key} = {attr.Key};\n" + VertexMainBody;
-
-            if ((attr.Value.StageMask & ShaderAttributeStageMask.VertexOutFragmentIn) != 0 &&
-                (attr.Value.StageMask & ShaderAttributeStageMask.FragmentOut) != 0)
-                FragmentMainBody = $"\tFragOut{attr.Key} = {attr.Key};\n" + FragmentMainBody;
         }
 
 
-
-
-        vertexFinalGLSL +=
-            gencommentdividerline("INPUTS")
-            + VSins
-            + gencommentdividerline("OUTPUTS")
-            + VSouts
-            + "\n\n\nvoid main()\n{\n" + VertexMainBody + "\n}";
-
-        fragmentFinalGLSL +=
-            gencommentdividerline("INPUTS")
-            + FSins
-            + gencommentdividerline("OUTPUTS")
-            + FSouts
-            + "\n\n\nvoid main()\n{\n" + FragmentMainBody + "\n}";
+        var sets = new Dictionary<string, (byte Binding, ShaderMetadata.ShaderResourceSetMetadata Metadata)>();
 
 
 
-
-
-
-        var vertexFinalTask = CompileIndividualStageShader(ShaderName, vertexFinalGLSL, ShaderSuffix._vert, targetFormat);
-        var fragmentFinalTask = CompileIndividualStageShader(ShaderName, fragmentFinalGLSL, ShaderSuffix._frag, targetFormat);
-
-        var vertexFinal = await vertexFinalTask;
-        var fragmentFinal = await fragmentFinalTask;
-        if (vertexFinal == null || fragmentFinal == null) return null;
-
-
-
-
-        var reflection = JsonSerializer.Deserialize<JsonElement>(vertexFinal!.Value.reflection);
-
-
-
-
-
-
-
-        var meta = new ShaderMetadata(
-            ImmutableDictionary.ToImmutableDictionary(VertexInAttributes),
-            ImmutableDictionary.ToImmutableDictionary(FragmentOutAttributes),
-            CreateResourceSetMetadataDictionary(ResourceSets, resourceglsl.finalsets, resourceglsl.buffertypenamelookup, reflection));
-
-
-        meta.GeneratedVertexGLSL = vertexFinalGLSL;
-        meta.GeneratedFragmentGLSL = fragmentFinalGLSL;
-
-
-        return new (vertexFinal!.Value, fragmentFinal!.Value, meta);
-
-
-
-    }
-
-
-
-
-    public static async Task<(ShaderStageResultStruct, ComputeShaderMetadata)?> ConstructComputeShaderSource(string ShaderName, Dictionary<string, ShaderResourceSetDefinition> ResourceSets, Vector3<uint> LocalSize, string MainBody, ShaderFormat targetFormat, bool strip = true)
-    {
-        var resourceglsl = GenerateResourceGLSL(ResourceSets, [MainBody], strip);
-
-
-        string finalglsl =
-            gencommentdividerline("RESOURCES")
-            + resourceglsl.code
-            + "\n\n\nvoid main()\n{\n" + MainBody + "\n}";
-
-
-
-        var comp = await CompileIndividualStageShader(ShaderName, finalglsl, ShaderSuffix._vert, targetFormat);
-        if (comp == null) return null;
-
-
-        var reflection = JsonSerializer.Deserialize<JsonElement>(comp!.Value.reflection);
-
-        var meta = new ComputeShaderMetadata(
-            CreateResourceSetMetadataDictionary(ResourceSets, resourceglsl.finalsets, resourceglsl.buffertypenamelookup, reflection));
-
-        meta.GeneratedGLSL = finalglsl;
-
-        return new(comp.Value, meta);
-
-    }
-
-
-
-    private static ImmutableDictionary<string, (uint, ShaderMetadata.ShaderResourceSetMetadata)> CreateResourceSetMetadataDictionary(Dictionary<string, ShaderResourceSetDefinition> ResourceSets, List<string> FinalSetBindings, Dictionary<string, string> BufferTypeNameLookup, JsonElement reflection)
-    {
-
-        Dictionary<string, (uint, ShaderMetadata.ShaderResourceSetMetadata)> ResourceSetMetadataFinal = new();
-
-
-
-        for (byte i = 0; i < FinalSetBindings.Count; i++)
+        foreach (byte setIndex in allSetIndices.OrderBy(x => x))
         {
-            var setName = FinalSetBindings[i];
-
-
-
-            Dictionary<string, (uint, ShaderMetadata.ShaderTextureMetadata)> texdict = new();
-
-            if (reflection.TryGetProperty("textures", out var textures))
+            if (setIndex >= SetNames.Length)
             {
-                foreach (var v in textures.EnumerateArray())
-                {
-                    var set = v.GetProperty("set").GetByte();
-                    if (set != i) continue;
+                err.Add(new ShaderError(-1, $"No set name provided for set index {setIndex}"));
+                continue;
+            }
 
-                    var texname = v.GetProperty("name").GetString();
 
-                    var definition = ((ShaderTextureDefinition)ResourceSets[setName].Content[texname]);
+            string setName = SetNames[setIndex];
 
-                    texdict.Add(texname, new (v.GetProperty("binding").GetUInt32(), new ShaderMetadata.ShaderTextureMetadata(definition.SamplerType, definition.ArrayLength)));
-                }
+
+
+            // Gather the resources for this set
+            var textures = Textures.TryGetValue(setIndex, out var t) ? t : new Dictionary<string, (byte, ShaderMetadata.ShaderTextureMetadata)>();
+            var ubos = UBOS.TryGetValue(setIndex, out var u) ? u : new Dictionary<string, (byte, ShaderMetadata.ShaderBufferMetadata)>();
+            var ssbos = SSBOS.TryGetValue(setIndex, out var s) ? s : new Dictionary<string, (byte, ShaderMetadata.ShaderBufferMetadata)>();
+
+
+            int resCount = textures.Count + ubos.Count + ssbos.Count;
+            if (resCount == 0)
+            {
+                err.Add(new ShaderError(-1, $"Resource set '{setName}' is empty"));
+                continue;
             }
 
 
 
-            var texes = ImmutableDictionary.ToImmutableDictionary(texdict);
-            var ubos = ImmutableDictionary.ToImmutableDictionary(GetShaderDataBufferMetadataDictionary("ubos"));
-            var ssbos = ImmutableDictionary.ToImmutableDictionary(GetShaderDataBufferMetadataDictionary("ssbos"));
+            // Build the ResourceSetResourceDeclaration array
+            var dec = new ResourceSetResourceDeclaration[resCount];
 
-
-
-           var dec = new ResourceSetResourceDeclaration[texes.Count + ubos.Count + ssbos.Count];
-
-
-            foreach (var v in texes)
-                dec[(int)v.Value.Item1] = new ResourceSetResourceDeclaration(ResourceSetResourceType.Texture, v.Value.Item2.ArrayLength);
+            foreach (var v in textures)
+                dec[v.Value.Item1] = new ResourceSetResourceDeclaration(ResourceSetResourceType.Texture, v.Value.Item2.ArrayLength);
 
             foreach (var v in ubos)
-                dec[(int)v.Value.Item1] = new ResourceSetResourceDeclaration(ResourceSetResourceType.UniformBuffer, 1);
+                dec[v.Value.Item1] = new ResourceSetResourceDeclaration(ResourceSetResourceType.UniformBuffer, 1);
 
             foreach (var v in ssbos)
-                dec[(int)v.Value.Item1] = new ResourceSetResourceDeclaration(ResourceSetResourceType.StorageBuffer, 1);
+                dec[v.Value.Item1] = new ResourceSetResourceDeclaration(ResourceSetResourceType.StorageBuffer, 1);
 
-
-
-            ResourceSetMetadataFinal[setName] = new (i, 
-                new ShaderMetadata.ShaderResourceSetMetadata(
-                    ImmutableArray.ToImmutableArray(dec),
-                    texes,
-                    ubos,
-                    ssbos));
-
-
-
-
-            Dictionary<string, (uint, ShaderMetadata.ShaderBufferMetadata)> GetShaderDataBufferMetadataDictionary(string reflectionProperty)
-            {
-                var ret = new Dictionary<string, (uint, ShaderMetadata.ShaderBufferMetadata)>();
-
-
-
-                if (reflection.TryGetProperty(reflectionProperty, out var all))
-                {
-                    foreach (var v in all.EnumerateArray())
-                    {
-                        var bufferTypeName = v.GetProperty("name").GetString();
-                        var set = v.GetProperty("set").GetByte();
-
-                        if (set != i) continue;
-
-
-                        //the instance name given by user
-                        var usableName = BufferTypeNameLookup[bufferTypeName];
-
-
-                        var spirvInternalTypeDec = reflection.GetProperty("types").GetProperty(v.GetProperty("type").GetString());
-
-
-                        List<(uint start, uint end)> datastartendpoints = new();
-
-
-                        Dictionary<string, uint> offsets = new();
-
-
-                        foreach (var member in spirvInternalTypeDec.GetProperty("members").EnumerateArray())
-                        {
-
-                            var MEMBER_NAME = member.GetProperty("name");
-                            var MEMBER_TYPE = member.GetProperty("type").GetString();
-                            if (MEMBER_TYPE.StartsWith('_')) MEMBER_TYPE = reflection.GetProperty("types").GetProperty(MEMBER_TYPE).GetProperty("name").ToString();
-
-                            MEMBER_TYPE = MEMBER_TYPE.Replace("_", ".");
-
-
-
-                            uint realsize = 0;
-
-
-                            //type is core so we have an entry for it
-                            if (CoreGLSLTypes.ContainsValue(MEMBER_TYPE))
-                            {
-                                var type = CoreGLSLTypes.Where(x => x.Value == MEMBER_TYPE).FirstOrDefault().Key;
-                                realsize = (uint)Marshal.SizeOf(type);
-                            }
-
-                            //look type up otherwise (must not be padded)
-                            else
-                            {
-                                realsize = (uint)Marshal.SizeOf(Type.GetType(MEMBER_TYPE));
-                            }
-
-
-                            var offs = member.GetProperty("offset").GetUInt32();
-                            datastartendpoints.Add(new (offs, offs+realsize));
-
-
-                            offsets[MEMBER_NAME.ToString()] = offs;
-
-                        }
-
-
-
-                        var regionsList = new List<ContiguousRegion>();
-                        if (datastartendpoints.Count != 0)
-                        {
-                            // Sort by start offset
-                            datastartendpoints.Sort((a, b) => a.start.CompareTo(b.start));
-
-                            // Initialize first merged region
-                            uint mergedStart = datastartendpoints[0].start;
-                            uint mergedEnd = datastartendpoints[0].end;
-
-                            for (int i = 1; i < datastartendpoints.Count; i++)
-                            {
-                                var (start, end) = datastartendpoints[i];
-
-                                if (start <= mergedEnd)
-                                {
-                                    // Overlapping or touching → extend the current region
-                                    mergedEnd = Math.Max(mergedEnd, end);
-                                }
-                                else
-                                {
-                                    // Gap → emit previous merged region
-                                    regionsList.Add(new ContiguousRegion(mergedStart, mergedEnd));
-                                    mergedStart = start;
-                                    mergedEnd = end;
-                                }
-                            }
-
-                            regionsList.Add(new ContiguousRegion(mergedStart, mergedEnd));
-                        }
-
-
-                        //if (offsets.Count == 3) throw new Exception(); 
-
-
-
-                        ret.Add(usableName, new(
-                            v.GetProperty("binding").GetUInt32(), new ShaderMetadata.ShaderBufferMetadata
-                            (
-                                FieldOffsets: ImmutableDictionary.ToImmutableDictionary(offsets),
-                                ContiguousRegions: regionsList.ToImmutableArray(),
-                                SizeRequirement: v.GetProperty("block_size").GetUInt32()
-                            )));
-
-                    }
-                }
-
-                return ret;
-            }
+            sets[setName] = (setIndex, new ShaderMetadata.ShaderResourceSetMetadata(
+                ImmutableArray.Create(dec),
+                FrozenDictionary.ToFrozenDictionary(textures),
+                FrozenDictionary.ToFrozenDictionary(ubos),
+                FrozenDictionary.ToFrozenDictionary(ssbos)
+            ));
         }
 
-        return ImmutableDictionary.ToImmutableDictionary(ResourceSetMetadataFinal);
-    }
 
 
-
-
-
-
-
-
-
-
-
-
-    const string commentslashes = "////////////";
-    static string gencommentdividerline(string name) => $"\n\n\n\n\n{commentslashes}{name}{commentslashes}\n\n";
-
-
-
-
-    public static (string code, List<string> finalsets, Dictionary<string, string> buffertypenamelookup) GenerateResourceGLSL(Dictionary<string, ShaderResourceSetDefinition> resourceSets, string[] bodiesToCheck, bool strip = true)
-    {
-
-
-        OrderedDictionary<string, ShaderResourceSetDefinition> FinalResourceSets = new();
-
-
-
-        foreach (var kv in resourceSets)
+        for (byte i = 0; i < SetNames.Length; i++)
         {
-            bool used = false;
-
-            if (strip)
-            {
-                foreach (var get in kv.Value.Content)
-                {
-                    if (get.Value is IShaderDataBufferDefinition buffer)
-                    {
-                        foreach (var varGet in buffer.Vars)
-                        {
-                            check(varGet.Key);
-                            if (used) break;
-                        }
-                        if (used) break;
-                    }
-
-
-                    else if (get.Value is ShaderTextureDefinition tex)
-                    {
-                        check(get.Key);
-                        if (used) break;
-                    }
-
-                    else throw new Exception("Unimplemented resource set resource type");
-
-
-                    if (used) break;
-
-
-                    void check(string n)
-                    {
-                        foreach (var value in bodiesToCheck)
-                        {
-                            if (value.Contains($"{kv.Key}.{n}"))  //<-- buffer name qualified
-                            {
-                                resourceSets.TryAdd(kv.Key, kv.Value);
-                                used = true;
-                                return;
-                            }
-                        }
-
-                        used = true;
-                    }
-                }
-            }
-            else used = true;
-
-
-            if (used)
-                FinalResourceSets.Add(kv.Key, kv.Value);
+            string name = SetNames[i];
+            if (!sets.ContainsKey(name))
+                err.Add(new ShaderError(-1, $"Set name '{name}' does not correspond to any resources"));
         }
 
 
 
 
+        // ------------ RETURN ------------
 
+        return new(err, FrozenDictionary.ToFrozenDictionary(InputAttributes), FrozenDictionary.ToFrozenDictionary(OutputAttributes), FrozenDictionary.ToFrozenDictionary(sets));
 
-
-        OrderedDictionary<string, string> structDeclarations = new();
-
-
-        void SerializeStructs(Type[] defs)
-        {
-            foreach (var def in defs)
-            {
-                var chk = GetGLSLTypeInformation(def);
-
-                if (chk.structDependencies != null) foreach (var kv in chk.structDependencies) pushStructDec(kv.Key, kv.Value);
-                if (chk.structDeclaration != null) pushStructDec(chk.glslTypeName, chk.structDeclaration);
-
-                void pushStructDec(string typeName, string content) => structDeclarations[typeName] = content;
-            }
-        }
-
-
-
-
-        string final = string.Empty;
-
-
-        var setIndex = 0;
-
-        var bufferDecIndex = 0;
-
-
-        var buffertypenamelookup = new Dictionary<string, string>();
-
-
-
-        foreach (var resSet in FinalResourceSets)
-        {
-            string n = gencommentdividerline($"Set {setIndex} - {resSet.Key}");
-
-            final += n;
-
-
-            var resourceIndex = 0;
-            var resfields = resSet.Value.Content;
-
-            foreach (var get in resfields)
-            {
-                string rep = null;
-
-
-                if (get.Value is IShaderDataBufferDefinition buf)
-                {
-
-                    var buffertypename = $"_buffer_{bufferDecIndex++}";
-
-                    rep = $"\n" +
-
-                        //buffer layout
-                        $"layout({(get.Value is ShaderStorageBufferDefinition ssbochk1 ? "std430" : "std140")}, " +
-
-
-                        //set/binding
-                        $"set = {setIndex}, binding = {resourceIndex}) " +
-
-
-                        //buffer declaration
-                        $"{(get.Value is ShaderStorageBufferDefinition ssbochk2 ? ((ssbochk2.allowedAccess switch
-                        {
-                            SSBOReadWriteFlags.Read => "readonly",
-                            SSBOReadWriteFlags.Write => "writeonly",
-                            SSBOReadWriteFlags.Read | SSBOReadWriteFlags.Write => string.Empty,
-                            _ => throw new Exception()
-                        }) + " buffer") : "uniform")} {buffertypename}\n";
-
-
-
-                    buffertypenamelookup[buffertypename] = get.Key;
-
-
-
-                    //buffer content
-
-                    var bufferElements = buf.Vars;
-                    var sb = new StringBuilder();
-
-
-                    sb.AppendLine("{");
-
-                    int i = 0;
-                    foreach (var v in bufferElements)
-                    {
-                        var info = GetGLSLTypeInformation(v.Value.GetType().GetGenericArguments()[0]);
-
-                        sb.Append("\t");
-                        sb.Append(info.glslTypeName);
-                        sb.Append(' ');
-                        sb.Append(v.Key);
-
-                        if (v.Value.arrayLength > 1) sb.Append($"[{v.Value.arrayLength}]");
-
-                        sb.AppendLine(";");
-
-                        i++;
-                    }
-
-
-                    sb.AppendLine($"}} {get.Key};\n");
-
-                    rep += sb.ToString();
-
-                    SerializeStructs(bufferElements.Select(x => x.Value.GetType().GetGenericArguments()[0]).ToArray());
-                }
-
-
-
-                else if (get.Value is ShaderTextureDefinition tex)
-                {
-                    rep = $"\nlayout(set = {setIndex}, binding = {resourceIndex}) uniform {(tex.SamplerType switch
-                    {
-                        TextureSamplerTypes.Texture2D => "sampler2D",
-                        TextureSamplerTypes.Texture2DShadow => "sampler2DShadow",
-                        TextureSamplerTypes.TextureCubeMap => "samplerCube",
-                        TextureSamplerTypes.Texture3D => "sampler3D",
-                        _ => throw new NotImplementedException(),
-
-                    })} {get.Key}" +
-                        (tex.ArrayLength > 1 ? $"[{(tex.ArrayLength == 0 ? string.Empty : tex.ArrayLength.ToString())}]" : string.Empty) + ";";
-
-                }
-
-                else throw new Exception();
-
-                resourceIndex++;
-
-                final += rep;
-            }
-
-
-            setIndex++;
-        }
-
-
-
-
-
-        var structs = gencommentdividerline("STRUCTS");
-        var structsfinal = "\n";
-        foreach (var kv in structDeclarations) structsfinal += kv.Value + "\n";
-
-
-        return (structsfinal + final, FinalResourceSets.Keys.ToList(), buffertypenamelookup);
 
     }
 
@@ -1052,42 +953,33 @@ public static partial class ShaderCompilation
 
 
 
-
-
-
-    private static async Task<List<ShaderError>> ValidateShader(string glslFile)
+    private static uint? GetSPIRVPrimitiveSize(string typeName)
     {
-        var errors = new List<ShaderError>();
-
-        var tmp = Path.Combine(Path.GetTempPath(), $"{Path.GetFileNameWithoutExtension(glslFile)}__dummy.spv");
-
-        var psi = new ProcessStartInfo
+        return typeName switch
         {
-            FileName = "glslangValidator",
-            Arguments = $"-V \"{glslFile}\" -o " + tmp,
-            RedirectStandardOutput = true,
-            RedirectStandardError = true,
-            UseShellExecute = false,
-            CreateNoWindow = true
+            "float" => 4,
+            "int" => 4,
+            "uint" => 4,
+            "bool" => 4,
+
+            "vec2" => 8,
+            "vec3" => 12,
+            "vec4" => 16,
+
+            "ivec2" => 8,
+            "ivec3" => 12,
+            "ivec4" => 16,
+
+            "uvec2" => 8,
+            "uvec3" => 12,
+            "uvec4" => 16,
+
+            "mat2" => 16,
+            "mat3" => 36,
+            "mat4" => 64,
+
+            _ => null
         };
-
-        using var proc = Process.Start(psi);
-        string output = await proc.StandardOutput.ReadToEndAsync();
-        await proc.WaitForExitAsync();
-
-        var regex = new Regex(@"^(ERROR|WARNING):\s*(.*):(\d+):\s*(.+)$", RegexOptions.Multiline);
-
-        foreach (Match m in regex.Matches(output))
-        {
-            int line = int.Parse(m.Groups[3].Value);
-            string msg = m.Groups[4].Value;
-
-            errors.Add(new ShaderError(line - 1, msg));
-        }
-
-        File.Delete(tmp);    
-
-        return errors;
     }
 
 
@@ -1096,127 +988,48 @@ public static partial class ShaderCompilation
 
 
 
+    private static async Task<JsonDocument> GetSpirvReflectJSON(byte[] stage)
+    {
+        var temp = Path.Combine(Path.GetTempPath(), $"{Guid.NewGuid()}.spv");
+        var reflection = Path.Combine(Path.GetTempPath(), $"{Guid.NewGuid()}.json");
 
-    private static List<string> ShaderFilesInProgress = new();
+
+        await File.WriteAllBytesAsync(temp, stage); 
+        await RunProcess.Run("spirv-cross", $"\"{temp}\" --reflect --output \"{reflection}\"");
+
+        var doc = JsonDocument.Parse(await File.ReadAllTextAsync(reflection));
+
+        File.Delete(temp);
+        File.Delete(reflection);
+
+        return doc;
+    }
+
+
 
 
 
     /// <summary>
-    /// Contains the shader compiled to the target format, the generated glsl used to construct it, and the json reflection data provided by spirv-cross.
+    /// Optimizes spirv non-destructively (will not remove or rearrange inputs, outputs or resources, but will optimize logic and remove names/metadata)
     /// </summary>
-    /// <param name="Source"></param>
-    /// <param name="glsl"></param>
-    /// <param name="reflection"></param>
-    public record struct ShaderStageResultStruct(byte[] Source, string glsl, string reflection);
-
-
-
-
-    /// <summary>
-    /// Returns null if failed to compile.
-    /// </summary>
-    /// <param name="ShaderName"></param>
-    /// <param name="glsl"></param>
-    /// <param name="stage"></param>
-    /// <param name="format"></param>
     /// <returns></returns>
-    /// <exception cref="Exception"></exception>
-    /// <exception cref="NotImplementedException"></exception>
-    private static async Task<ShaderStageResultStruct?> CompileIndividualStageShader(string ShaderName, string glsl, ShaderSuffix stage, ShaderFormat format)
+    private static async Task<byte[]> OptimizeSpirv(byte[] spirv)
     {
 
-        //save glsl to disk to feed into spirv cross, optimize spirv but keep reflection info, gather reflection info, then strip reflection info
+        var spvPath = Path.Combine(Path.GetTempPath(), $"{Guid.NewGuid()}_spv.spv");
 
-        //returns null if failed
-
-
-        ShaderName += stage.ToString();
+        await File.WriteAllBytesAsync(spvPath, spirv);
 
 
 
+        var outputPath = Path.Combine(Path.GetTempPath(), $"{Guid.NewGuid()}_spv_opt.spv");
 
-        lock (ShaderFilesInProgress)
+        using var proc = Process.Start(new ProcessStartInfo
         {
-            while (true)
-            {
-                if (!ShaderFilesInProgress.Contains(ShaderName))
-                {
-                    ShaderFilesInProgress.Add(ShaderName);
-                    break;
-                }
-            }
-        }
+            FileName = "spirv-opt",
+            Arguments =
 
-
-        glsl = $"""
-            # version 450 core
-
-            ///////////////////////
-            //{ShaderName}
-            ///////////////////////
-
-            """ + glsl;
-
-
-        string glslFile = Path.Combine(Path.GetTempPath(), $"{ShaderName}_glsl.{(stage switch
-        {
-            ShaderSuffix._vert => "vert",
-            ShaderSuffix._frag => "frag",
-            ShaderSuffix._comp => "comp",
-            _ => throw new Exception()
-        })}");             //written code to disk
-
-
-
-
-
-        string spirvFile = Path.Combine(Path.GetTempPath(), $"{ShaderName}_Spirv.spv");   //written code on disk -> spirv
-
-        string spirvOptimizedFile = Path.Combine(Path.GetTempPath(), $"{ShaderName}_SpirvOptimized.spv");   //spirv -> optimized stripped spirv
-
-        string spirvReflectionFile = Path.Combine(Path.GetTempPath(), $"{ShaderName}_SpirvOptimizedReflection.json");   //optimized spirv reflection
-
-
-        string outputFile = Path.Combine(Path.GetTempPath(), $"{ShaderName}_Final.{(format switch
-        {
-            ShaderFormat.GLSL => ".glsl",
-            ShaderFormat.SPIRV => ".spv",
-            ShaderFormat.HLSL => ".hlsl",
-            _ => throw new NotImplementedException(),
-        })}");                                                            //optimized spirv -> final requested shader format
-
-
-
-        File.WriteAllText(glslFile, glsl);
-
-
-
-        //validation
-        var errs = await ValidateShader(glslFile);
-
-
-        if (errs.Count != 0)
-        //if (true)
-        {
-            ShowShaderDebugHtml(glsl, errs);
-            
-            if (errs.Count != 0)  return null;
-        }
-
-
-
-        //this should NOT remove, modify or rearrange any resources even if apparently redundant within the scope of the shader - resource/attribute stripping should be done manually within the context of generation or by user
-
-
-        //glsl -> spirv
-        await Run("glslangValidator", $"-V \"{glslFile}\" -o \"{spirvFile}\"");
-
-
-
-
-        //spirv -> optimized spirv (keeps reflection info until later)
-        await Run("spirv-opt",
-            $"\"{spirvFile}\" " +
+            $"\"{spvPath}\" " +
             "--inline-entry-points-exhaustive " +
             "--convert-local-access-chains " +
             "--eliminate-insert-extract " +
@@ -1224,139 +1037,51 @@ public static partial class ShaderCompilation
             "--merge-blocks " +
             "--eliminate-local-multi-store " +
             "--eliminate-dead-functions " +
-            $"-o \"{spirvOptimizedFile}\""
-        );
+            $"-o \"{outputPath}\"",
 
 
+            RedirectStandardOutput = false,
+            RedirectStandardError = false,
+            UseShellExecute = false,
+            CreateNoWindow = true
+        });
 
-        //optimized spirv -> target format (so we can get the correct offsets in reflection)
-
-
-        switch (format)
-        {
-            case ShaderFormat.SPIRV:
-                break;
-
-            case ShaderFormat.GLSL:
-                await Run("spirv-cross", $"\"{spirvOptimizedFile}\" --version 450 --output \"{outputFile}\"");
-                break;
-
-            case ShaderFormat.HLSL:
-                await Run("spirv-cross", $"\"{spirvOptimizedFile}\" --hlsl --shader-model 50 --output \"{outputFile}\"");
-                break;
+        await proc.WaitForExitAsync();
 
 
-            default:
-                throw new NotImplementedException();
-        }
+        var ret = await File.ReadAllBytesAsync(outputPath);
+
+        File.Delete(spvPath);
+        File.Delete(outputPath);
 
 
+        return ret;
 
-        //target format -> back to spirv
-
-
-        switch (format)
-        {
-            case ShaderFormat.SPIRV:
-                break;
-
-            case ShaderFormat.GLSL:
-                await Run("glslangValidator", $"-V \"{outputFile}\" -o \"{spirvOptimizedFile}\"");
-                break;
-
-            case ShaderFormat.HLSL:
-                await Run("dxc",
-                    $"-T {stage switch
-                    {
-                        ShaderSuffix._vert => "vs_6_0",
-                        ShaderSuffix._frag => "ps_6_0",
-                        ShaderSuffix._comp => "cs_6_0",
-                        _ => throw new Exception()
-                    }} " +
-                    "-E main " +
-                    "-spirv " +
-                    "-fvk-use-dx-layout " +    
-                    $"\"{outputFile}\" -Fo \"{spirvOptimizedFile}\""
-                );
-                break;
-
-
-            default:
-                throw new NotImplementedException();
-        }
-
-
-
-
-        //reflection from the spirv
-        await Run("spirv-cross", $"\"{spirvOptimizedFile}\" --reflect --output \"{spirvReflectionFile}\"");
-
-
-        var reflect = await File.ReadAllTextAsync(spirvReflectionFile);
-
-
-        //now strip reflection
-
-        await Run("spirv-opt",
-            $"--strip-reflect --strip-debug \"{spirvOptimizedFile}\" -o \"{spirvFile}\""
-        );
-
-
-
-
-        byte[] src = null;
-
-
-        //spirv -> target format
-        switch (format)
-        {
-            case ShaderFormat.SPIRV:
-                src = await File.ReadAllBytesAsync(spirvFile);
-                break;
-
-            case ShaderFormat.GLSL:
-                await Run("spirv-cross", $"\"{spirvFile}\" --version 450 --output \"{outputFile}\"");
-                src = Encoding.UTF8.GetBytes(await File.ReadAllTextAsync(outputFile));
-                break;
-
-            case ShaderFormat.HLSL:
-                await Run("spirv-cross", $"\"{spirvFile}\" --hlsl --shader-model 50 --output \"{outputFile}\"");
-                src = Encoding.UTF8.GetBytes(await File.ReadAllTextAsync(outputFile));
-                break;
-
-
-            default:
-                throw new NotImplementedException();
-        }
-
-
-
-        File.Delete(glslFile);
-        File.Delete(spirvFile);
-        File.Delete(outputFile);
-        File.Delete(spirvReflectionFile);
-
-
-
-
-        lock (ShaderFilesInProgress)
-        {
-            ShaderFilesInProgress.Remove(ShaderName);
-        }
-
-
-
-        return new ShaderStageResultStruct(src, glsl, reflect);
     }
 
 
 
 
 
+    /// <summary>
+    /// <inheritdoc cref="GLSLHandler"/>
+    /// </summary>
+    public static readonly ShaderLanguageHandler GLSL = new GLSLHandler();
 
 
-    private record ShaderError(int Line, string Message);
+    /// <summary>
+    /// <inheritdoc cref="HLSLHandler"/>
+    /// </summary>
+    public static readonly ShaderLanguageHandler HLSL = new HLSLHandler();
 
+
+
+
+
+
+
+
+    public readonly record struct ShaderError(int Line, string Message);
 
 
 
@@ -1365,8 +1090,15 @@ public static partial class ShaderCompilation
     /// </summary>
     /// <param name="source"></param>
     /// <param name="errors"></param>
-    private static void ShowShaderDebugHtml(string source, List<ShaderError> errors)
+    private static void ShowShaderDebugHtml(string shaderName, string source, List<ShaderError> errors, ShaderLanguageHandler interpreter)
     {
+
+
+        var rules = interpreter.GetHighlighting();
+
+
+
+
         string htmlPath = Path.Combine(Path.GetTempPath(), "shader_debug_" + Guid.NewGuid() + ".html");
 
         string escape(string s) => s.Replace("&", "&amp;").Replace("<", "&lt;").Replace(">", "&gt;");
@@ -1385,25 +1117,33 @@ public static partial class ShaderCompilation
                 string rawLine = lines[line];
                 string escapedLine = string.IsNullOrWhiteSpace(rawLine) ? "&nbsp;" : escape(rawLine);
 
-                // Highlight comments
-                escapedLine = Regex.Replace(escapedLine, @"(//.*$)", "<span class='comment'>$1</span>", RegexOptions.Compiled);
 
-                // Highlight GLSL types
-                escapedLine = Regex.Replace(escapedLine, @"\b(bool|int|uint|float|vec[234]|ivec[234]|mat[234]|sampler[123]D|samplerCube|sampler2DShadow)\b",
-                                            "<span class='type'>$1</span>", RegexOptions.Compiled);
 
-                // Highlight GLSL keywords
-                escapedLine = Regex.Replace(escapedLine, @"\b(attribute|const|uniform|buffer|readonly|writeonly|varying|layout|in|out|inout|void|if|else|for|while|return|discard|struct|switch|case|default|break|continue)\b",
-                                            "<span class='keyword'>$1</span>", RegexOptions.Compiled);
+                if (rules != null)
+                {
+                    if (rules.TypePattern != null)
+                        escapedLine = Regex.Replace(escapedLine, rules.TypePattern, "<span class='type'>$1</span>");
 
-                // Highlight built-in functions
-                escapedLine = Regex.Replace(escapedLine, @"\b(texture|normalize|mix|dot|clamp|length|sin|cos|abs|pow|max|min|floor|ceil|fract|mod|step|smoothstep|reflect|refract|cross|distance|exp|log)\b",
-                                            "<span class='builtin'>$1</span>", RegexOptions.Compiled);
+                    if (rules.KeywordPattern != null)
+                        escapedLine = Regex.Replace(escapedLine, rules.KeywordPattern, "<span class='keyword'>$1</span>");
 
-                // Highlight numeric literals
-                escapedLine = Regex.Replace(escapedLine, @"(?<![\w.])(\d+\.\d+|\d+)(f)?\b", "<span class='number'>$1</span>", RegexOptions.Compiled);
+                    if (rules.BuiltinPattern != null)
+                        escapedLine = Regex.Replace(escapedLine, rules.BuiltinPattern, "<span class='builtin'>$1</span>");
 
-                string errorAttr = err != null ? $" class='error' title='{escape(err.Message)}'" : "";
+                    if (rules.NumberPattern != null)
+                        escapedLine = Regex.Replace(escapedLine, rules.NumberPattern, "<span class='number'>$1</span>");
+
+                    if (rules.CommentPattern != null)
+                        escapedLine = Regex.Replace(escapedLine, rules.CommentPattern, "<span class='comment'>$1</span>");
+
+                }
+
+
+                string errorAttr = err.Message != null
+                    ? $" class='error' title='{escape(err.Message)}'"
+                    : "";
+
+
                 sb.AppendLine($"<div{errorAttr}><code>{escapedLine}</code></div>");
             }
 
@@ -1412,39 +1152,111 @@ public static partial class ShaderCompilation
         }
 
         string html = $@"
-<!DOCTYPE html>
-<html lang='en'>
-<head>
-<meta charset='UTF-8'>
-<title>Shader Debug</title>
-<style>
-body {{ background: #1e1e1e; color: #d4d4d4; font-family: Consolas, monospace; margin: 0; padding: 0; }}
-.console {{ background: #111; padding: 1em; color: #f55; font-weight: bold; border-bottom: 2px solid #444; overflow-x: auto; }}
-.container {{ padding: 1em; overflow-y: auto; height: calc(100vh - 60px); }}
-.code-block div {{ white-space: pre; position: relative; display: block; width: 100%; }}
-.code-block div code {{ display: inline-block; min-width: 100%; }}
-.error {{ background: rgba(255, 0, 0, 0.2); border-left: 3px solid red; padding-left: 4px; }}
-.error:hover::after {{ content: attr(title); position: absolute; top: 100%; left: 0; margin-top: 4px; background: #300; color: #faa; padding: 4px 8px; border: 1px solid red; z-index: 9999; max-width: 400px; white-space: normal; box-shadow: 0 2px 6px rgba(0,0,0,0.5); }}
-.comment {{ color: #6a9955; font-style: italic; }}
-.keyword {{ color: #569CD6; font-weight: bold; }}
-.type {{ color: #4EC9B0; }}
-.builtin {{ color: #DCDCAA; }}
-.number {{ color: #B5CEA8; }}
-</style>
-</head>
-<body>
+            <!DOCTYPE html>
+            <html lang='en'>
+            <head>
+            <meta charset='UTF-8'>
+            <title>{shaderName}</title>
+            <style>
+            body {{ background: #1e1e1e; color: #d4d4d4; font-family: Consolas, monospace; margin: 0; padding: 0; }}
 
-<div class='console'>
-{string.Join("<br>", errors.Select(e => e.Line >= 0 ? $"line {e.Line + 1}: {escape(e.Message)}" : escape(e.Message)))}
-</div>
+            .title {{
+                font-size: 28px;
+                font-weight: bold;
+                padding: 16px 20px;
+                border-bottom: 2px solid #333;
+                background: linear-gradient(90deg, #222, #1a1a1a);
+                letter-spacing: 0.5px;
+            }}
 
-<div class='container'>
-{renderCodeBlock(lines)}
-</div>
+            .console {{
+                background: #111;
+                padding: 12px 16px;
+                border-bottom: 3px solid #444;
+                overflow-x: auto;
+            }}
 
-</body>
-</html>
-";
+            /* error rows */
+            .error-line {{
+                display: flex;
+                gap: 10px;
+                padding: 6px 0;
+                border-left: 3px solid #f55;
+                padding-left: 10px;
+            }}
+
+            .error-line + .error-line {{
+                margin-top: 6px;
+            }}
+
+            .error-line::before {{
+                content: ""•"";
+                color: #f55;
+                margin-right: 6px;
+            }}
+
+            .error-line .line {{
+                color: #888;
+                min-width: 70px;
+            }}
+
+            .error-line .msg {{
+                color: #f55;
+                flex: 1;
+            }}
+
+            .container {{ padding: 1em; overflow-y: auto; height: calc(100vh - 110px); }}
+
+            .code-block div {{ white-space: pre; position: relative; display: block; width: 100%; }}
+            .code-block div code {{ display: inline-block; min-width: 100%; }}
+
+            .error {{ background: rgba(255, 0, 0, 0.2); border-left: 3px solid red; padding-left: 4px; }}
+
+            .error:hover::after {{
+                content: attr(title);
+                position: absolute;
+                top: 100%;
+                left: 0;
+                margin-top: 4px;
+                background: #300;
+                color: #faa;
+                padding: 4px 8px;
+                border: 1px solid red;
+                z-index: 9999;
+                max-width: 400px;
+                white-space: normal;
+                box-shadow: 0 2px 6px rgba(0,0,0,0.5);
+            }}
+
+            .comment {{ color: #6a9955; font-style: italic; }}
+            .keyword {{ color: #569CD6; font-weight: bold; }}
+            .type {{ color: #4EC9B0; }}
+            .builtin {{ color: #DCDCAA; }}
+            .number {{ color: #B5CEA8; }}
+            </style>
+            </head>
+            <body>
+
+            <div class='title'>
+            {shaderName}
+            </div>
+
+            <div class='console'>
+            {string.Join("", errors.Select(e =>
+                $"<div class='error-line'>" +
+                (e.Line >= 0 ? $"<span class='line'>line {e.Line + 1}</span>" : "") +
+                $"<span class='msg'>{escape(e.Message)}</span>" +
+                "</div>"
+            ))}
+            </div>
+
+            <div class='container'>
+            {renderCodeBlock(lines)}
+            </div>
+
+            </body>
+            </html>
+            ";
 
         File.WriteAllText(htmlPath, html);
         Process.Start(new ProcessStartInfo
@@ -1459,6 +1271,959 @@ body {{ background: #1e1e1e; color: #d4d4d4; font-family: Consolas, monospace; m
             try { File.Delete(htmlPath); } catch { }
         };
     }
+
+
+
+
+
+    private static string SanitizeTypeName(Type t) 
+        => t.FullName.Replace('.', '_').Replace("+", "_");
+
+
+
+
+
+    /// <summary>
+    /// A basis for implementing support for a specific shader language.
+    /// </summary>
+    public abstract class ShaderLanguageHandler
+    {
+
+        public sealed class SyntaxHighlightingRules
+        {
+            public string CommentPattern { get; init; }
+            public string TypePattern { get; init; }
+            public string KeywordPattern { get; init; }
+            public string BuiltinPattern { get; init; }
+            public string NumberPattern { get; init; }
+        }
+
+
+        /// <summary>
+        /// An optional method that can be used to supply regex patterns to help make shader code more readable for user shader code debugging.
+        /// </summary>
+        /// <returns></returns>
+        public virtual SyntaxHighlightingRules GetHighlighting() => null;
+
+
+
+
+        public readonly record struct SpirvDrawCompilationResult(SpirvStageCompilationResult Vertex, SpirvStageCompilationResult Fragment, ShaderMetadata Metadata, List<ShaderError> GeneralErrors);
+
+        public readonly record struct SpirvComputeCompilationResult(SpirvStageCompilationResult Main, ComputeShaderMetadata Metadata, List<ShaderError> GeneralErrors);
+
+
+        public readonly record struct SpirvStageCompilationResult(byte[] Spirv, List<ShaderError> Errors, string? SourceForUserDebugging);
+
+
+
+
+        /// <summary>
+        /// Compiles and reflects upon a full set of drawing pipeline shader stages.
+        /// <br/> If shader compilation fails, one or more of the respective error lists will be populated.
+        /// </summary>
+        /// <param name="vertexSource"></param>
+        /// <param name="fragmentSource"></param>
+        /// <param name="setNames"></param>
+        /// <returns></returns>
+        public abstract Task<SpirvDrawCompilationResult> CompileShader(string vertexSource, string fragmentSource, string[] setNames, ShaderRegisterCallInformation shaderInfo);
+
+
+
+        /// <summary>
+        /// Compiles and reflects upon a compute shader.
+        /// <br/> If shader compilation fails, one or more of the respective error lists will be populated.
+        /// </summary>
+        /// <param name="source"></param>
+        /// <param name="setNames"></param>
+        /// <returns></returns>
+        public abstract Task<SpirvComputeCompilationResult> CompileComputeShader(string source, string[] setNames, ShaderRegisterCallInformation shaderInfo);
+
+
+
+
+
+        /// <summary>
+        /// Converts the unmanaged struct type <typeparamref name="T"/> into a struct type definition within the target language. Uses <see cref="GetShaderStructName{T}"/> to name the type.
+        /// <br/> An exception will be thrown if the type cannot be represented, or already has a native representation within the target language which would make a definition redundant or impossible.
+        /// </summary>
+        /// <typeparam name="T"></typeparam>
+        /// <returns></returns>
+        public abstract string GetShaderStructDefinition<T>() where T : unmanaged;
+
+        /// <summary>
+        /// Gets a shader-safe name for the unmanaged struct type <typeparamref name="T"/>.
+        /// </summary>
+        /// <typeparam name="T"></typeparam>
+        /// <returns></returns>
+        public abstract string GetShaderStructName<T>() where T : unmanaged;
+
+    }
+
+
+
+
+
+
+
+
+    /// <summary>
+    /// Supports modern vulkan-style GLSL. Requires GlslangValidator.
+    /// <br/> • "#version 450" is added to shaders. A version should NOT be specified.
+    /// <br/> • In and out attributes should NOT be given explicit locations.
+    /// <br/> • Resources should be given explicit sets, but should NOT be given set BINDINGS.
+    /// </summary>
+    private partial class GLSLHandler : ShaderLanguageHandler
+    {
+
+        public override SyntaxHighlightingRules GetHighlighting() => new()
+        {
+            CommentPattern = @"(//.*$)",
+
+            TypePattern =
+                @"\b(bool|int|uint|float|vec[234]|ivec[234]|mat[234]|sampler[123]D|samplerCube|sampler2DShadow)\b",
+
+            KeywordPattern =
+                @"\b(attribute|const|uniform|buffer|readonly|writeonly|varying|layout|in|out|inout|void|if|else|for|while|return|discard|struct|switch|case|default|break|continue)\b",
+
+            BuiltinPattern =
+                @"\b(texture|normalize|mix|dot|clamp|length|sin|cos|abs|pow|max|min|floor|ceil|fract|mod|step|smoothstep|reflect|refract|cross|distance|exp|log)\b",
+
+            NumberPattern =
+                @"(?<![\w.])(\d+\.\d+|\d+)(f)?\b"
+        };
+
+
+
+
+
+        private static async Task<List<ShaderError>> GlslangValidateCheckForErrors(string src, string stage)
+        {
+
+            // ---------------------------------------- SAVE ----------------------------------------
+
+            var path = Path.Combine(Path.GetTempPath(), $"{Guid.NewGuid()}_shader.{stage}");
+            await File.WriteAllTextAsync(path, src);
+
+
+
+            // ---------------------------------------- VALIDATE/OUTPUT ----------------------------------------
+
+
+            var errors = new List<ShaderError>();
+
+            var psi = new ProcessStartInfo
+            {
+                FileName = "glslangValidator",
+                Arguments = $"-V \"{path}\"",
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                UseShellExecute = false,
+                CreateNoWindow = true
+            };
+
+
+            using var proc = Process.Start(psi);
+            string output = await proc.StandardOutput.ReadToEndAsync();
+            await proc.WaitForExitAsync();
+
+
+            // ---------------------------------------- GATHER ERRORS ----------------------------------------
+
+            var regex = new Regex(@"^(ERROR|WARNING):\s*(.*):(\d+):\s*(.+)$", RegexOptions.Multiline);
+
+            foreach (Match m in regex.Matches(output))
+            {
+                int line = int.Parse(m.Groups[3].Value);
+                string msg = m.Groups[4].Value;
+
+                errors.Add(new ShaderError(line - 1, msg));
+            }
+
+
+            File.Delete(path);
+
+            return errors;
+        }
+
+
+
+
+        private static async Task<byte[]> GlslangValidateCompileToSpirv(string src, string stage)
+        {
+
+            // ---------------------------------------- SAVE ----------------------------------------
+
+            var glslPath = Path.Combine(Path.GetTempPath(), $"{Guid.NewGuid()}_shader.{stage}");
+            await File.WriteAllTextAsync(glslPath, src);
+
+
+            // ---------------------------------------- GLSL -> SPIRV ----------------------------------------
+
+            var spvPath = Path.Combine(Path.GetTempPath(), $"{Guid.NewGuid()}_spv.spv");
+
+
+            using var proc = Process.Start(new ProcessStartInfo
+            {
+                FileName = "glslangValidator",
+                Arguments = $"-V \"{glslPath}\" -o {spvPath}",
+                RedirectStandardOutput = false,
+                RedirectStandardError = false,
+                UseShellExecute = false,
+                CreateNoWindow = true
+            });
+            await proc.WaitForExitAsync();
+
+
+            // ---------------------------------------- RETURN ----------------------------------------
+
+            var spv = await File.ReadAllBytesAsync(spvPath);
+
+            File.Delete(glslPath);
+            File.Delete(spvPath);
+
+            return spv;
+        }
+
+
+
+
+
+
+        private static async Task<SpirvStageCompilationResult> CompileShaderStage(string src, string stage)
+        {
+
+            // ---------------------------------------- VALIDATION ----------------------------------------
+
+            var errors = await GlslangValidateCheckForErrors(src, stage);
+
+            if (errors.Count != 0)
+                return new SpirvStageCompilationResult(null, errors, src);
+
+
+            // ---------------------------------------- COMPILATION ----------------------------------------
+
+            return new SpirvStageCompilationResult(await GlslangValidateCompileToSpirv(src, stage), null, src);
+
+        }
+
+
+
+        const string GLSLHeader = "#version 450\n\n\n";
+
+
+        public override async Task<SpirvDrawCompilationResult> CompileShader(string vertexSource, string fragmentSource, string[] setNames, ShaderRegisterCallInformation shaderInfo)
+        {
+            
+            vertexSource = GLSLHeader + vertexSource;
+            fragmentSource = GLSLHeader + fragmentSource;
+
+
+            var final = InjectLocationsAndBindings([vertexSource, fragmentSource], out var locErrors);
+
+
+            if (locErrors[0].Count != 0)
+                return new(new(null, locErrors[0], vertexSource), default, null, null);
+
+            if (locErrors[1].Count != 0)
+                return new(new(null, locErrors[1], fragmentSource), default, null, null);
+
+            vertexSource = final[0];
+            fragmentSource = final[1];
+
+
+
+
+
+            var vertTask = CompileShaderStage(vertexSource, "vert");
+            var fragTask = CompileShaderStage(fragmentSource, "frag");
+
+            await vertTask;
+            await fragTask;
+
+
+
+            if (vertTask.Result.Spirv != null && fragTask.Result.Spirv != null)
+            {
+                var reflect = await SpirvReflectOnMultipleStages([vertTask.Result.Spirv, fragTask.Result.Spirv], setNames);
+
+                if (reflect.Errors.Count != 0)
+                    return new(vertTask.Result, fragTask.Result, null, reflect.Errors);
+
+                return new SpirvDrawCompilationResult(vertTask.Result,
+                                                      fragTask.Result,
+                                                      new ShaderMetadata(reflect.VertexInputAttributes, reflect.FragmentOutputAttributes, reflect.ResourceSets),
+                                                      null);
+            }
+
+            return new SpirvDrawCompilationResult(vertTask.Result, fragTask.Result, null, null);
+
+        }
+
+
+
+
+        public override async Task<SpirvComputeCompilationResult> CompileComputeShader(string source, string[] setNames, ShaderRegisterCallInformation shaderInfo)
+        {
+
+            source = GLSLHeader + source;
+
+
+            var final = InjectLocationsAndBindings([source], out var locErrors);
+
+            if (locErrors[0].Count != 0)
+                return new(new(null, locErrors[0], source), default, null);
+
+            source = final[0];
+
+
+
+            var result = await CompileShaderStage(source, "comp");
+
+            var reflect = await SpirvReflectOnMultipleStages([result.Spirv], setNames);
+
+            if (reflect.Errors.Count != 0)
+                return new SpirvComputeCompilationResult(result, null, reflect.Errors);
+
+            return new SpirvComputeCompilationResult(result, result.Errors == null ? new ComputeShaderMetadata(reflect.ResourceSets) : null, null);
+        }
+
+
+
+        /// <summary>
+        /// Injects explicit in/out attribute locations and explicit resource binding assignments, both based on order of appearance within their respective contexts.
+        /// </summary>
+        /// <param name="stages"></param>
+        /// <param name="errors"></param>
+        /// <returns></returns>
+        private static string[] InjectLocationsAndBindings(string[] stages, out List<ShaderError>[] errors)
+        {
+
+            errors = new List<ShaderError>[stages.Length];
+
+
+            var outputs = new string[stages.Length];
+
+            // Global binding map: (set, name) → binding
+            var globalBindings = new Dictionary<(int set, string name), int>();
+            var nextBindingPerSet = new Dictionary<int, int>();
+
+            for (int s = 0; s < stages.Length; s++)
+            {
+                string src = stages[s];
+                var sb = new StringBuilder();
+
+                int i = 0;
+                int len = src.Length;
+
+                int inLoc = 0;
+                int outLoc = 0;
+
+                errors[s] = new();
+
+
+                while (i < len)
+                {
+                    // ---------- COPY WHITESPACE ----------
+                    if (char.IsWhiteSpace(src[i]))
+                    {
+                        sb.Append(src[i++]);
+                        continue;
+                    }
+
+                    // ---------- LAYOUT ----------
+                    if (IsWordAt(src, i, "layout"))
+                    {
+                        int layoutStart = i;
+
+                        int parenStart = src.IndexOf('(', i);
+                        int parenEnd = FindMatching(src, parenStart, '(', ')');
+
+                        string layout = src.Substring(layoutStart, parenEnd - layoutStart + 1);
+
+                        i = parenEnd + 1;
+                        SkipWhitespace(src, ref i);
+
+                        string keyword = ReadWord(src, ref i);
+
+                        // ❌ layout + in/out
+                        if (keyword == "in" || keyword == "out")
+                        {
+                            errors[s].Add(new ShaderError(GetLine(src, layoutStart),
+                                "layout() not allowed on in/out"));
+
+                            SkipWhitespace(src, ref i);
+                            string type = ReadWord(src, ref i);
+
+                            SkipWhitespace(src, ref i);
+                            string name = ReadUntil(src, ref i, ';');
+
+                            int loc = keyword == "out" ? outLoc++ : inLoc++;
+                            sb.Append($"layout(location={loc}) {keyword} {type} {name};");
+
+                            i++; // skip ;
+                            continue;
+                        }
+
+                        // ---------- RESOURCE ----------
+                        if (keyword == "uniform" || keyword == "buffer")
+                        {
+                            if (!layout.Contains("set"))
+                            {
+                                errors[s].Add(new ShaderError(GetLine(src, layoutStart),
+                                    "Missing layout(set=...)"));
+                            }
+
+                            if (layout.Contains("binding"))
+                            {
+                                errors[s].Add(new ShaderError(GetLine(src, layoutStart),
+                                    "Explicit binding not allowed"));
+                            }
+
+                            int set = ExtractSet(layout);
+
+                            SkipWhitespace(src, ref i);
+                            string type = ReadWord(src, ref i);
+
+                            SkipWhitespace(src, ref i);
+
+                            string name;
+
+                            // ----- BLOCK -----
+                            if (i < len && src[i] == '{')
+                            {
+                                int blockStart = i;
+                                int blockEnd = FindMatching(src, blockStart, '{', '}');
+
+                                string block = src.Substring(blockStart, blockEnd - blockStart + 1);
+
+                                i = blockEnd + 1;
+                                if (i < len && src[i] == ';') i++;
+
+                                name = type; // block name is the type (UBO name)
+
+                                int binding = GetBinding(set, name);
+
+                                sb.Append($"layout(set={set}, binding={binding}) {keyword} {type} {block};");
+                            }
+                            else
+                            {
+                                name = ReadUntil(src, ref i, ';').Trim();
+
+                                int binding = GetBinding(set, name);
+
+                                sb.Append($"layout(set={set}, binding={binding}) {keyword} {type} {name};");
+                                i++;
+                            }
+
+                            continue;
+                        }
+
+                        // fallback
+                        sb.Append(layout);
+                        continue;
+                    }
+
+                    // ---------- IN / OUT ----------
+                    if (IsWordAt(src, i, "in") || IsWordAt(src, i, "out"))
+                    {
+                        string keyword = ReadWord(src, ref i);
+
+                        SkipWhitespace(src, ref i);
+                        string type = ReadWord(src, ref i);
+
+                        SkipWhitespace(src, ref i);
+                        string name = ReadUntil(src, ref i, ';');
+
+                        int loc = keyword == "out" ? outLoc++ : inLoc++;
+
+                        sb.Append($"layout(location={loc}) {keyword} {type} {name};");
+
+                        i++; // skip ;
+                        continue;
+                    }
+
+                    // ---------- DEFAULT ----------
+                    sb.Append(src[i++]);
+                }
+
+                outputs[s] = sb.ToString();
+            }
+
+            return outputs;
+
+
+            // ================= HELPERS =================
+
+            int GetBinding(int set, string name)
+            {
+                var key = (set, name);
+
+                if (globalBindings.TryGetValue(key, out var existing))
+                    return existing;
+
+                if (!nextBindingPerSet.TryGetValue(set, out var next))
+                    next = 0;
+
+                globalBindings[key] = next;
+                nextBindingPerSet[set] = next + 1;
+
+                return next;
+            }
+
+            static void SkipWhitespace(string s, ref int i)
+            {
+                while (i < s.Length && char.IsWhiteSpace(s[i])) i++;
+            }
+
+            static string ReadWord(string s, ref int i)
+            {
+                int start = i;
+                while (i < s.Length && (char.IsLetterOrDigit(s[i]) || s[i] == '_')) i++;
+                return s.Substring(start, i - start);
+            }
+
+            static string ReadUntil(string s, ref int i, char end)
+            {
+                int start = i;
+                while (i < s.Length && s[i] != end) i++;
+                return s.Substring(start, i - start);
+            }
+
+            static int FindMatching(string s, int start, char open, char close)
+            {
+                int depth = 0;
+                for (int i = start; i < s.Length; i++)
+                {
+                    if (s[i] == open) depth++;
+                    else if (s[i] == close)
+                    {
+                        depth--;
+                        if (depth == 0) return i;
+                    }
+                }
+                return -1;
+            }
+
+            static int ExtractSet(string layout)
+            {
+                var m = Regex.Match(layout, @"set\s*=\s*(\d+)");
+                return int.Parse(m.Groups[1].Value);
+            }
+
+            static int GetLine(string text, int index)
+            {
+                int line = 1;
+                for (int i = 0; i < index && i < text.Length; i++)
+                    if (text[i] == '\n') line++;
+                return line-1;
+            }
+
+            static bool IsWordAt(string s, int index, string word)
+            {
+                if (index + word.Length > s.Length)
+                    return false;
+
+                if (s.Substring(index, word.Length) != word)
+                    return false;
+
+                bool leftOk = index == 0 || !char.IsLetterOrDigit(s[index - 1]);
+                bool rightOk = index + word.Length >= s.Length || !char.IsLetterOrDigit(s[index + word.Length]);
+
+                return leftOk && rightOk;
+            }
+        }
+
+
+
+
+
+        public override string GetShaderStructDefinition<T>()
+        {
+            var map = MapToGlslType(typeof(T));
+
+            if (map.builtIn)
+                throw new Exception("Type maps to glsl primitive");
+
+            var t = typeof(T);
+            var sb = new StringBuilder();
+
+            sb.AppendLine($"struct {map.name}");
+            sb.AppendLine("{");
+
+            foreach (var f in t.GetFields(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic))
+            {
+                AppendField(sb, f);
+            }
+
+            sb.AppendLine("};");
+
+            return sb.ToString();
+
+
+
+            static void AppendField(StringBuilder sb, FieldInfo f)
+            {
+                var type = f.FieldType;
+
+
+                // ------------- FIXED BUFFER -------------
+
+                if (f.IsDefined(typeof(System.Runtime.CompilerServices.FixedBufferAttribute), false))
+                {
+                    var attr = f.GetCustomAttribute<System.Runtime.CompilerServices.FixedBufferAttribute>();
+                    var elemType = MapToGlslType(attr.ElementType).name;
+                    int length = attr.Length;
+
+                    sb.AppendLine($"    {elemType} {f.Name}[{length}];");
+                    return;
+                }
+
+
+                // ------------- INLINE ARRAY -------------
+
+                var inlineAttr = type.GetCustomAttribute<System.Runtime.CompilerServices.InlineArrayAttribute>();
+                if (inlineAttr != null)
+                {
+                    int length = inlineAttr.Length;
+
+                    var elementField = type.GetFields(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic)
+                                           .First();
+
+                    var elemType = MapToGlslType(elementField.FieldType).name;
+
+                    sb.AppendLine($"    {elemType} {f.Name}[{length}];");
+                    return;
+                }
+
+
+                // ------------- FIELD -------------
+
+                var glslType = MapToGlslType(type).name;
+                sb.AppendLine($"    {glslType} {f.Name};");
+            }
+        }
+
+
+
+
+        private static (string name, bool builtIn) MapToGlslType(Type t)
+        {
+            if (t == typeof(float)) return ("float", true);
+            if (t == typeof(int)) return ("int", true);
+            if (t == typeof(uint)) return ("uint", true);
+            if (t == typeof(bool)) return ("bool", true);
+
+            if (t == typeof(Vector2)) return ("vec2", true);
+            if (t == typeof(Vector3)) return ("vec3", true);
+            if (t == typeof(Vector4)) return ("vec4", true);
+
+            if (t == typeof(Matrix4x4)) return ("mat4", true);
+
+            if (t.IsEnum)
+                return ("int", true);
+
+            if (t.IsValueType && !t.IsPrimitive)
+                return (SanitizeTypeName(t), false); 
+
+            throw new NotSupportedException();
+        }
+
+
+
+
+        public override string GetShaderStructName<T>() => MapToGlslType(typeof(T)).name;
+
+    }
+
+
+
+
+
+
+    /// <summary>
+    /// Supports modern HLSL. Requires DXC.
+    /// <br/> This class treats explicit register bindings as resource sets.
+    /// </summary>
+    private partial class HLSLHandler : ShaderLanguageHandler
+    {
+
+        public override SyntaxHighlightingRules GetHighlighting() => new()
+        {
+            CommentPattern = @"(//.*$)",
+
+            TypePattern =
+                @"\b(bool|int|uint|float|float[1-4]|float[1-4]x[1-4]|Texture2D|SamplerState)\b",
+
+            KeywordPattern =
+                @"\b(cbuffer|struct|register|packoffset|in|out|inout|return|if|else|for|while|break|continue)\b",
+
+            BuiltinPattern =
+                @"\b(lerp|mul|dot|normalize|clamp|length|sin|cos|abs|pow|max|min|floor|ceil|frac|fmod|step|smoothstep|reflect|refract|cross|distance|exp|log)\b",
+
+            NumberPattern =
+                @"(?<![\w.])(\d+\.\d+|\d+)(f)?\b"
+        };
+
+
+
+        public override async Task<SpirvDrawCompilationResult> CompileShader(string vertexSource, string fragmentSource, string[] setNames, ShaderRegisterCallInformation shaderInfo)
+        {
+            var vertTask = CompileShaderStage(vertexSource, "vs_6_0");
+            var fragTask = CompileShaderStage(fragmentSource, "ps_6_0");
+
+            await vertTask;
+            await fragTask;
+
+            bool success =
+                vertTask.Result.Spirv != null &&
+                fragTask.Result.Spirv != null;
+
+
+
+            var reflect = await SpirvReflectOnMultipleStages([vertTask.Result.Spirv, fragTask.Result.Spirv], setNames);
+
+            if (reflect.Errors.Count != 0)
+                return new(vertTask.Result, fragTask.Result, null, reflect.Errors);
+
+
+            return new SpirvDrawCompilationResult(vertTask.Result,
+                                                  fragTask.Result,
+                                                  success ? new ShaderMetadata(reflect.VertexInputAttributes, reflect.FragmentOutputAttributes, reflect.ResourceSets) : null,
+                                                  null);
+        }
+
+
+
+
+
+        public override async Task<SpirvComputeCompilationResult> CompileComputeShader(string source, string[] setNames, ShaderRegisterCallInformation shaderInfo)
+        {
+            var result = await CompileShaderStage(source, "cs_6_0");
+
+            var reflect = await SpirvReflectOnMultipleStages([result.Spirv], setNames);
+
+            if (reflect.Errors.Count != 0)
+                return new(result, null, reflect.Errors);
+
+            return new SpirvComputeCompilationResult(result, result.Errors == null ? new ComputeShaderMetadata(reflect.ResourceSets) : null, null);
+        }
+
+
+
+
+
+
+
+
+        private static async Task<SpirvStageCompilationResult> CompileShaderStage(
+            string src,
+            string stage)
+        {
+            var errors = await DxcValidateCheckForErrors(src, stage);
+
+            if (errors.Count != 0)
+                return new SpirvStageCompilationResult(null, errors, src);
+
+            var spirv = await DxcCompileToSpirv(src, stage);
+
+            return new SpirvStageCompilationResult(spirv, null, src);
+        }
+
+
+
+
+        private static async Task<List<ShaderError>> DxcValidateCheckForErrors(
+            string src,
+            string stage)
+        {
+            var path = Path.Combine(Path.GetTempPath(), $"{Guid.NewGuid()}.hlsl");
+            await File.WriteAllTextAsync(path, src);
+
+            var errors = new List<ShaderError>();
+
+
+            var psi = new ProcessStartInfo
+            {
+                FileName = "dxc",
+                Arguments =
+                    $"-T {stage} " +
+                    $"-E main " +
+                    "-spirv " +
+                    "-fspv-target-env=vulkan1.2 " +
+                    $"\"{path}\"",
+                RedirectStandardError = true,
+                RedirectStandardOutput = true,
+                UseShellExecute = false,
+                CreateNoWindow = true
+            };
+
+
+
+            using var proc = Process.Start(psi);
+            string output = await proc.StandardError.ReadToEndAsync();
+            await proc.WaitForExitAsync();
+
+
+
+            // DXC errors are a bit different format
+            var regex = new Regex(@"^(.*)\((\d+),\d+\):\s*(error|warning).*:\s*(.+)$", RegexOptions.Multiline);
+
+
+            foreach (Match m in regex.Matches(output))
+            {
+                int line = int.Parse(m.Groups[2].Value);
+                string msg = m.Groups[4].Value;
+
+                errors.Add(new ShaderError(line - 1, msg));
+            }
+
+
+            File.Delete(path);
+
+            return errors;
+        }
+
+
+
+
+        private static async Task<byte[]> DxcCompileToSpirv(
+            string src,
+            string stage)
+        {
+            var path = Path.Combine(Path.GetTempPath(), $"{Guid.NewGuid()}.hlsl");
+            var spvPath = Path.Combine(Path.GetTempPath(), $"{Guid.NewGuid()}.spv");
+
+            await File.WriteAllTextAsync(path, src);
+
+
+            using var proc = Process.Start(new ProcessStartInfo
+            {
+                FileName = "dxc",
+                Arguments =
+                    $"-T {stage} " +
+                    $"-E main " +
+                    "-spirv " +
+                    "-fspv-target-env=vulkan1.2 " +
+                    "-fvk-use-dx-layout " +   
+                    $"-Fo \"{spvPath}\" " +
+                    $"\"{path}\"",
+                UseShellExecute = false,
+                CreateNoWindow = true
+            });
+
+            await proc.WaitForExitAsync();
+
+            var bytes = await File.ReadAllBytesAsync(spvPath);
+
+            File.Delete(path);
+            File.Delete(spvPath);
+
+            return bytes;
+        }
+
+
+
+
+        public override string GetShaderStructDefinition<T>()
+        {
+            var t = typeof(T);
+
+
+            var map = MapToHlslType(t);
+
+
+            if (map.builtIn)
+                throw new Exception("Type maps to HLSL primitive");
+
+            var sb = new StringBuilder();
+
+            sb.AppendLine($"struct {map.name}");
+            sb.AppendLine("{");
+
+            foreach (var field in t.GetFields(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic)
+                                   .OrderBy(f => f.MetadataToken))
+            {
+                var fieldType = field.FieldType;
+
+
+
+                // ------------- FIXED BUFFER -------------
+
+                var fixedAttr = field.GetCustomAttribute<System.Runtime.CompilerServices.FixedBufferAttribute>();
+                if (fixedAttr != null)
+                {
+                    var elementType = fixedAttr.ElementType;
+                    int length = fixedAttr.Length;
+
+                    var (elemName, _) = MapToHlslType(elementType);
+
+                    sb.AppendLine($"    {elemName} {field.Name}[{length}];");
+                    continue;
+                }
+
+
+
+                // ------------- INLINE ARRAY -------------
+
+                var inlineAttr = fieldType.GetCustomAttribute<System.Runtime.CompilerServices.InlineArrayAttribute>();
+                if (inlineAttr != null)
+                {
+                    int length = inlineAttr.Length;
+
+                    var innerField = fieldType.GetFields(BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.Public)
+                                              .First();
+
+                    var elementType = innerField.FieldType;
+                    var (elemName, _) = MapToHlslType(elementType);
+
+                    sb.AppendLine($"    {elemName} {field.Name}[{length}];");
+                    continue;
+                }
+
+
+
+                // ------------- FIELD -------------
+
+                var (typeName, _) = MapToHlslType(fieldType);
+
+                sb.AppendLine($"    {typeName} {field.Name};");
+            }
+
+            sb.AppendLine("};");
+
+            return sb.ToString();
+        }
+
+
+
+        private static (string name, bool builtIn) MapToHlslType(Type t)
+        {
+            if (t == typeof(float)) return ("float", true);
+            if (t == typeof(int)) return ("int", true);
+            if (t == typeof(uint)) return ("uint", true);
+            if (t == typeof(bool)) return ("bool", true);
+
+            if (t == typeof(Vector2)) return ("float2", true);
+            if (t == typeof(Vector3)) return ("float3", true);
+            if (t == typeof(Vector4)) return ("float4", true);
+
+            if (t == typeof(Matrix4x4)) return ("float4x4", true);
+
+            if (t.IsEnum)
+                return ("int", true);
+
+            if (t.IsValueType && !t.IsPrimitive)
+                return (SanitizeTypeName(t), false);
+
+            throw new NotSupportedException();
+        }
+
+        public override string GetShaderStructName<T>() => MapToHlslType(typeof(T)).name;
+
+    }
+
+
 
 
 }

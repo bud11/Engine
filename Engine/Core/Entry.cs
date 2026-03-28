@@ -60,7 +60,7 @@ public static partial class Entry
 
     /// <summary>
     /// A development-time, debug-only method <b>(implementation must be wrapped in #if DEBUG)</b> where shaders can be initialized. <b>Registering shaders from an entry point outside of this method isn't supported. </b> <br/>
-    /// This is to facilitate the engine stripping this method (as well as the entirety of <see cref="Engine.Stripped.ShaderCompilation"/>) and instead directly precompiling shaders into release builds at build time, while also supporting shader hot reloading in debug builds prompted by <see cref="Engine.Stripped.ShaderCompilation.CompileShaders"/> or <see cref="Engine.Stripped.ShaderCompilation.CompileShader"/> (which in turn call this).
+    /// This is to facilitate the engine stripping this method (as well as the entirety of <see cref="Engine.Stripped.ShaderCompilation"/>) and instead directly precompiling shaders into release builds at build time, while also supporting shader hot reloading in debug builds prompted by <see cref="Engine.Stripped.ShaderCompilation.CompileShaders"/> (which in turn calls this).
     /// <br/> Also see <seealso cref="InitDebugShaders"/> to define shaders that shouldn't be precompiled into release.
     /// </summary>
     private readonly struct _InitShadersSummary;

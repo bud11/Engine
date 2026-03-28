@@ -416,7 +416,7 @@ public partial class Camera : GameObject
                     var o = whitelist[i];
 
                     //if (o.IsVisibleInTree() && IsAABBInFrustum(o.GetOrRecalculateCachedGlobalAABB(), frustumPlanes))
-                    objs[idx++] = (o, subpass.Ordering != CameraDrawSortMode.Unordered ? o.GlobalPosition.DistanceToSquared(GlobalPosition) : 0);
+                        objs[idx++] = (o, subpass.Ordering != CameraDrawSortMode.Unordered ? o.GlobalPosition.DistanceToSquared(GlobalPosition) : 0);
                 }
 
                 objs.Length = idx;

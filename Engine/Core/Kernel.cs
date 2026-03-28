@@ -110,7 +110,15 @@ public static class Kernel
 #if DEBUG
                 Loading.ScanResourceAssociations();
 
-                ShaderCompilation.CompileShaders();
+
+                
+                if (!ShaderCompilation.CompileShaders().Result)
+                {
+                    Thread.Sleep(1000);
+                    Environment.Exit(1);
+                }
+
+
 
                 ImGUIController.Init();
 #endif

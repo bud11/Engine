@@ -57,7 +57,7 @@ public class TextureResource : GameResource, GameResource.ILoads,
 
         var header = TextureConversion.InspectTextureHeader(bytes.ByteArray, ext);
         
-        var finaltexturedata = await TextureConversion.ConvertTextureToRuntimeFormat(bytes, ext, header, new() { ConvertTo = TextureFormats.RGB8_UNORM, ConvertSrgbToLinear = true, GenerateMips = true });
+        var finaltexturedata = await TextureConversion.ConvertTextureToRuntimeFormat(bytes, ext, header, new() { ConvertTo = TextureFormats.RGBA8_BC7_UNORM, ConvertSrgbToLinear = true, GenerateMips = true });
 
 
         var write = Parsing.ValueWriter.CreateWithBufferWriter();

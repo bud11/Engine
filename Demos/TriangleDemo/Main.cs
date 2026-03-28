@@ -78,30 +78,57 @@ public static partial class Entry
     public static partial void InitShaders()
     {
 
-        //This is a simple red NDC coordinate shader.
+
+        // This is a simple red NDC coordinate shader written in GLSL.
 
 
         ShaderCompilation.RegisterShader(
 
-            ShaderName: ShaderName,
+            shaderName: ShaderName,   //<-- naming the shader allows fetching later.
 
-            ResourceSets: null,
+            resourceSetNames: null,  //<-- we dont need this yet.
 
-            Attributes: new()
+
+            vertexSource:
+
+            """
+            
+
+            // ------------------------------------------------------------------------------------------------------------
+            // Explicit glsl attribute locations are derived from order of appearance, and should never be specified.
+            // Attributes are later referenced by name instead.
+
+
+            in vec2 Position;
+
+            void main()
             {
-                { "Position", new ShaderCompilation.ShaderAttributeDefinition(RenderingBackend.ShaderAttributeBufferFinalFormat.Vec2, ShaderCompilation.ShaderAttributeStageMask.VertexIn) },     //our float vector2 position input.
-                { "FinalColor", new ShaderCompilation.ShaderAttributeDefinition(RenderingBackend.ShaderAttributeBufferFinalFormat.Vec4, ShaderCompilation.ShaderAttributeStageMask.FragmentOut) }   //our final fragment output.
-            },
+                gl_Position = vec4(Position.x, -Position.y, 0.0, 1.0);
+            }
 
-            //here we can write direct glsl method bodies referencing the declared attributes and resources.
+            """,
 
-            VertexMainBody:
-                "gl_Position = vec4(Position.x, -Position.y, 0.0, 1.0);",     //notice the flipped Y coordinate to match screen space expectations.
 
-            FragmentMainBody:
-                "FragOutFinalColor = vec4(1.0, 0.0, 0.0, 1.0);"    //notice the added FragOutFinal prefix - see the documentation on ShaderAttributeStageMask for more info.
-        );
+            fragmentSource:
+
+            """
+            
+            out vec4 FinalColor;
+
+            void main()
+            {
+                FinalColor = vec4(1.0, 0.0, 0.0, 1.0);
+            }
+
+            """,
+
+
+            languageHandler: ShaderCompilation.GLSL    //<-- this is a class instance equipped to compile GLSL into SPIRV. Another is supplied for HLSL out of the box if that's your preference.
+
+            );
     }
+
+
 
 
 
@@ -183,10 +210,11 @@ public static partial class Entry
     public static unsafe partial void Loop()
     {
 
-        //In this case, we just want to draw the triangle to screen, so all we need to do is this.
+        // In this case, we just want to draw the triangle to screen, so all we need to do is this.
 
-        //The Rendering class is a slight abstraction over RenderingBackend, and by default handles things like command deferral, fetching certain resources from caches, etc.
-        
+        // The Rendering class is a slight abstraction over RenderingBackend, and by default handles things like command deferral, fetching certain resources from caches, etc.
+        // So these commands are being deferred.
+
 
         Rendering.StartDrawToScreen();
 

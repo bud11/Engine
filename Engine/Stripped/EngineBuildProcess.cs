@@ -7,6 +7,7 @@ using Engine.Core;
 using System.Buffers;
 using System.Buffers.Binary;
 using System.Collections;
+using System.Collections.Frozen;
 using System.Collections.Generic;
 using System.Collections.Immutable;
 using System.Numerics;
@@ -521,7 +522,7 @@ public static partial class Loading
 
             var str = $"new Dictionary<{keyType}, {valueType}>(){initializer}";
 
-            return RegisterObject(obj, T.GetGenericTypeDefinition() == typeof(ImmutableDictionary<,>) ? $"ImmutableDictionary.ToImmutableDictionary({str})" : str);
+            return RegisterObject(obj, T.GetGenericTypeDefinition() == typeof(FrozenDictionary<,>) ? $"FrozenDictionary.ToFrozenDictionary({str})" : str);
         }
 
 

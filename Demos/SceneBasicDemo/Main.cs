@@ -32,9 +32,8 @@ using Engine.Stripped;
 //
 //
 
-//DEMO 2
-//This is the cube demo. It shows more structured drawing with objects, cameras and materials, as well as some very basic game logic.
-//The end result is a spinning cube object drawn to a camera object's framebuffer via a basic pipeline, which is then drawn to the screen.
+//DEMO 3
+//This is the sponza demo. It showcases dealing with resources, scenes, and more advanced rendering.
 
 
 ////////////////////////////////////////////
@@ -69,12 +68,7 @@ public static partial class Entry
 
 
 
-
-
     // -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
-
-    // We need a shader to draw the cube, and a shader to draw the camera's primary framebuffer texture to the screen with.
-
 
 
 
@@ -86,145 +80,156 @@ public static partial class Entry
     public static partial void InitShaders()
     {
 
-        //  This time, we need to define resource sets in our shader.
-        //  Resource sets are logical groups of resources, such as textures and uniform buffers, which can be shared across shaders.
+        // As shader count and complexity grows in real projects, it may be worth implementing your own mild string concatenation, reuse or generation here. 
+
+
+
+        ShaderCompilation.DeclareResourceSetConsistent("GlobalResources");
+        ShaderCompilation.DeclareResourceSetConsistent("ModelResources");
+
 
 
         ShaderCompilation.RegisterShader(
 
-            ShaderName: "basicPBR",   //the shader name so we can get the shader later.
+            shaderName: "basicPBR",
 
 
-            // our two resource set definitions
+            resourceSetNames: 
+            [
+                "GlobalResources", 
+                "ModelResources", 
+                "MaterialResources"
+            ],
 
-            ResourceSets: new Dictionary<string, ShaderCompilation.ShaderResourceSetDefinition>
+
+            vertexSource:
+            """
+
+            layout(set = 0) uniform GlobalUBO   
             {
-                ["GlobalResources"] = new ShaderCompilation.ShaderResourceSetDefinition(
-                    new OrderedDictionary<string, ShaderCompilation.IResourceSetResourceSetResourceDefinition>()
-                    {
-                        ["GlobalUBO"] = new ShaderCompilation.ShaderUniformBufferDefinition(
-                            new OrderedDictionary<string, ShaderCompilation.IShaderBufferStructDeclaration>
-                            {
-                                ["ProjectionMatrix"] = new ShaderCompilation.ShaderBufferStructDeclaration<Matrix4x4>(),
-                                ["ViewMatrix"] = new ShaderCompilation.ShaderBufferStructDeclaration<Matrix4x4>(),
-                            }
-                        )
-                    }
-                ),
+                mat4 ProjectionMatrix;
+                mat4 ViewMatrix;
+            };
 
-                ["ModelResources"] = new ShaderCompilation.ShaderResourceSetDefinition(
-                    new OrderedDictionary<string, ShaderCompilation.IResourceSetResourceSetResourceDefinition>()
-                    {
-                        ["ModelUBO"] = new ShaderCompilation.ShaderUniformBufferDefinition(
-                            new OrderedDictionary<string, ShaderCompilation.IShaderBufferStructDeclaration>
-                            {
-                                ["ModelMatrix"] = new ShaderCompilation.ShaderBufferStructDeclaration<Matrix4x4>()
-                            }
-                        )
-                    }
-                ),
-
-                ["MaterialResources"] = new ShaderCompilation.ShaderResourceSetDefinition(
-                    new OrderedDictionary<string, ShaderCompilation.IResourceSetResourceSetResourceDefinition>()
-                    {
-                        ["AlbedoTexture"] = new ShaderCompilation.ShaderTextureDefinition(RenderingBackend.TextureSamplerTypes.Texture2D)
-                    }
-                )
-            },
-
-
-            //our attributes
-
-            Attributes: new Dictionary<string, ShaderCompilation.ShaderAttributeDefinition>()
+            layout(set = 1) uniform ModelUBO
             {
-                { "position", new(RenderingBackend.ShaderAttributeBufferFinalFormat.Vec3, ShaderCompilation.ShaderAttributeStageMask.VertexIn | ShaderCompilation.ShaderAttributeStageMask.VertexOutFragmentIn) },
-                { "normal", new(RenderingBackend.ShaderAttributeBufferFinalFormat.Vec2, ShaderCompilation.ShaderAttributeStageMask.VertexIn) },
-                { "UVMap", new(RenderingBackend.ShaderAttributeBufferFinalFormat.Vec2, ShaderCompilation.ShaderAttributeStageMask.VertexIn | ShaderCompilation.ShaderAttributeStageMask.VertexOutFragmentIn) },
-
-                { "Normal", new(RenderingBackend.ShaderAttributeBufferFinalFormat.Vec3, ShaderCompilation.ShaderAttributeStageMask.VertexOutFragmentIn ) },
-
-
-                { "FinalColor", new(RenderingBackend.ShaderAttributeBufferFinalFormat.Vec4, ShaderCompilation.ShaderAttributeStageMask.FragmentOut) }
-            },
+                mat4 ModelMatrix;
+            };
 
 
 
+            in vec3 Position;
+            in vec2 Normal;
+            in vec2 UVMap;
 
-            //a basic hardcoded lighting setup
-
-            VertexMainBody:
-                """
-
-                gl_Position = GlobalUBO.ProjectionMatrix * GlobalUBO.ViewMatrix * ModelUBO.ModelMatrix * vec4(position, 1.0);   
-                
-                Fragposition = (ModelUBO.ModelMatrix * vec4(position, 1.0)).xyz;
-                
-
-                
-                FragNormal = normalize(vec3(
-                    normal.x * 2.0 - 1.0,
-                    normal.y * 2.0 - 1.0,
-                    1.0 - abs(normal.x * 2.0 - 1.0) - abs(normal.y * 2.0 - 1.0)
-                ));
-                if (FragNormal.z < 0.0) FragNormal.xy = (1.0 - abs(FragNormal.yx)) * sign(FragNormal.xy);
+            out vec3 FragNormal;
+            out vec2 FragUV;
 
 
-                mat3 normalMatrix = transpose(inverse(mat3(ModelUBO.ModelMatrix)));
-                FragNormal = normalize(normalMatrix * FragNormal);
+            
+            //    --------------------------- The blender addon exports octahedrally-encoded byte-vec2 normals ---------------------------
+            
+            vec3 OctDecode(vec2 e)
+            {
+                // Convert from [0,1] range if your octahedral encode mapped to [0,1]
+                vec2 f = e * 2.0 - 1.0;
+            
+                vec3 v = vec3(f.x, f.y, 1.0 - abs(f.x) - abs(f.y));
+                float t = clamp(-v.z, 0.0, 1.0);
+                v.x += v.x >= 0.0 ? -t : t;
+                v.y += v.y >= 0.0 ? -t : t;
+            
+                return normalize(v);
+            }
+            
 
 
-                """,
+            void main()
+            {
+                gl_Position = ProjectionMatrix * ViewMatrix * ModelMatrix * vec4(Position, 1.0);   
+        
+                mat3 normalMatrix = transpose(inverse(mat3(ModelMatrix)));
+                FragNormal = normalize(normalMatrix * OctDecode(Normal));
 
-            FragmentMainBody:
-                """
-                
+                FragUV = UVMap;
+            }
 
-                vec3 albedo = texture(AlbedoTexture, FragUVMap).rgb;
-                vec3 viewDir = normalize(inverse(GlobalUBO.ViewMatrix)[3].xyz - Fragposition);
-                float fresnel = pow(1.0 - dot(FragNormal, viewDir), 3.0) * 0.3;
-
-
-                FragOutFinalColor = vec4(clamp(albedo + vec3(fresnel), 0.0, 1.0), 1.0);
-                //FragOutFinalColor = vec4(FragNormal, 1.0);
-                
-                """
+            """,
 
 
+            fragmentSource:
+            """
 
-            );
+            in vec3 FragNormal;
+            in vec2 FragUV;
+
+            out vec4 FinalColor;
+
+            layout(set = 2) uniform sampler2D AlbedoTexture;
+
+            
+
+            void main()
+            {
+                // Example lighting
+                float NdotL = clamp(dot(FragNormal, normalize(vec3(1.0, 1.0, -1.0))), 0.2, 1.0);
+                FinalColor = vec4(vec3(1.0) * NdotL * texture(AlbedoTexture, FragUV).rgb, 1.0);
+            }
+
+            """,
 
 
 
-        // And then the screen quad shader.
+            languageHandler: ShaderCompilation.GLSL
+        );
+
+
+        
+
+
 
         ShaderCompilation.RegisterShader(
 
-            ShaderName: "screenQuad",
+            shaderName: "screenQuad",
 
-            ResourceSets: new Dictionary<string, ShaderCompilation.ShaderResourceSetDefinition>
+            resourceSetNames: ["TextureResources"],
+
+            vertexSource:
+            """
+
+            in vec2 Position;
+
+            out vec2 FragPosition;
+
+            void main()
             {
-                ["TextureResources"] = new ShaderCompilation.ShaderResourceSetDefinition(
-                    new OrderedDictionary<string, ShaderCompilation.IResourceSetResourceSetResourceDefinition>()
-                    {
-                        ["Texture"] = new ShaderCompilation.ShaderTextureDefinition(RenderingBackend.TextureSamplerTypes.Texture2D)
-                    }
-                )
-            },
+                FragPosition = Position;
+                gl_Position = vec4(Position, 0.0, 1.0);
+            }
+
+            """,
+
+            fragmentSource:
+            """
+
+            layout(set = 0) uniform sampler2D Texture;
 
 
-            Attributes: new Dictionary<string, ShaderCompilation.ShaderAttributeDefinition>()
+            in vec2 FragPosition;
+            out vec4 FinalColor;
+
+
+            void main()
             {
-                { "Position", new(RenderingBackend.ShaderAttributeBufferFinalFormat.Vec2, ShaderCompilation.ShaderAttributeStageMask.VertexIn | ShaderCompilation.ShaderAttributeStageMask.VertexOutFragmentIn) },
-                { "FinalColor", new(RenderingBackend.ShaderAttributeBufferFinalFormat.Vec4, ShaderCompilation.ShaderAttributeStageMask.FragmentOut) }   //our final fragment output.
-            },
+                FinalColor = textureLod(Texture, -FragPosition * 0.5 + 0.5, 0);
+            }
 
-            VertexMainBody:
-                "gl_Position = vec4(Position, 0.0, 1.0);",
+            """,
 
-            FragmentMainBody:
-                "FragOutFinalColor = textureLod(Texture, -FragPosition*0.5+0.5, 0);"      //using the ndc position to double as a uv + flipping on Y
+            languageHandler: ShaderCompilation.GLSL
+        );
 
-            );
+
 
 
     }
@@ -280,7 +285,7 @@ public static partial class Entry
 
 
 
-        GlobalResources = RenderingBackend.BackendResourceSetReference.CreateFromMetadata(RenderingBackend.BackendShaderReference.Get("basicPBR"), "GlobalResources", createInitialBuffers: ["GlobalUBO"]);
+        GlobalResources = RenderingBackend.BackendResourceSetReference.CreateFromMetadata("GlobalResources", createInitialBuffers: ["GlobalUBO"]);
 
         GlobalUniformBuffer = GlobalResources.GetUniformBuffer("GlobalUBO");
 
@@ -291,10 +296,7 @@ public static partial class Entry
         // -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 
         // Now we can load and instantiate a scene.
-
-        // Certain objects and resources may not have enough information when loaded rather than manually created.
-
-        // Given that we might like to keep the window responsive and rendering, we can push this as a task.
+        // Given that we might like to keep the window responsive and rendering during startup, we can push this as a task.
 
 
         Task.Run(async () =>
@@ -303,6 +305,10 @@ public static partial class Entry
 
             var sceneInstance = sceneResource.Instantiate();
 
+
+            // Certain objects and resources may not have enough information when loaded rather than manually created.
+            // In this case, models and materials need to be configured to interface with defined shaders.
+
             foreach (var obj in sceneInstance.GetChildrenRecursive())
             {
 
@@ -310,7 +316,7 @@ public static partial class Entry
                 {
                     mod.ModelInstanceResourceSets.Add("GlobalResources", GlobalResources);
 
-                    mod.ModelInstanceResourceSets.Add("ModelResources", RenderingBackend.BackendResourceSetReference.CreateFromMetadata(RenderingBackend.BackendShaderReference.Get("basicPBR"), "ModelResources", createInitialBuffers: ["ModelUBO"]));
+                    mod.ModelInstanceResourceSets.Add("ModelResources", RenderingBackend.BackendResourceSetReference.CreateFromMetadata("ModelResources", createInitialBuffers: ["ModelUBO"]));
 
 
                     mod.OnPreDraw.Add(() =>
@@ -340,6 +346,7 @@ public static partial class Entry
                                     wr.PushWrite(t.Key, t.Value);
 
                             wr.EndWrite();
+
                         }
                     }
                 }

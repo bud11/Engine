@@ -136,22 +136,22 @@ public static partial class RenderingBackend
         /// <summary>
         /// For sampling standard 2D textures.
         /// </summary>
-        Texture2D,
+        Sampler2D,
 
         /// <summary>
         /// For sampling 2D depth textures using a third depth comparison argument.
         /// </summary>
-        Texture2DShadow,
+        Sampler2DShadow,
 
         /// <summary>
         /// For sampling standard cubemaps.
         /// </summary>
-        TextureCubeMap,
+        SamplerCubeMap,
 
         /// <summary>
         /// For sampling standard 3D textures.
         /// </summary>
-        Texture3D
+        Sampler3D
     }
 
 
