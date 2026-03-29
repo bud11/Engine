@@ -25,13 +25,15 @@ This project aims to offer a platform agnostic and mostly unopinionated foundati
 
 # Quick start:
 
-To start, clone the repo, then install the following development-time cli dependencies:
+To start, clone the repo, then install some or all of the following development-time cli dependencies:
 
-| Dependency                                                |   Detection                                                                                  |
-| ----------------------------------------------------------| -------------------------------------------------------------------------------------------- |
-| glslangvalidator                                          |   PATH variable                                                                              |
-| spirv-cross                                               |   PATH variable                                                                              |
-| Nvidia Texture Tools 3 (does not require an nvidia gpu)   |   PATH variable (to the directory containing nvtt_export.exe; may need to be added manually) |
+| Dependency                                                | Nessecity                             |  Detection                                                                                 |
+| ----------------------------------------------------------|---------------------------------------|------------------------------------------------------------------------------------------- |
+| spirv-cross                                               | Nessecary                                      | PATH variable                                                                     |
+| glslangvalidator                                          | Only for GLSL                                      | PATH variable                                                                 |
+| dxc                                                       | Only for HLSL                                      | PATH variable                                                                              |
+| AMD Compressonator (does not require an AMD gpu)          | Interchangeable with NVTT3, one required            | PATH variable (to the directory containing compressonatorcli.exe)                          |
+| Nvidia Texture Tools 3 (does not require an nvidia gpu)   | Interchangeable with compressonator, one required   | PATH variable (to the directory containing nvtt_export.exe)                                |
 
 Then open some of the demo projects to get a fundamental grasp of the engine, or create your own and simply import EntryProps via something like ``` <Import Project="..\EntryProps.props" /> ``` in your .csproj's Project body.
 
