@@ -308,10 +308,6 @@ public static class TextureConversion
 
 
 
-        Vector4<Half> ConstantColor = default;
-
-
-
 
         bool IsConstantColor = true;
 
