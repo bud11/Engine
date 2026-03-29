@@ -5,12 +5,8 @@ namespace Engine.GameResources;
 
 
 
-
-
-using Engine.Attributes;
 using static Engine.Core.EngineMath;
 using static Engine.Core.RenderingBackend;
-using static Engine.Core.Rendering;
 using Engine.Core;
 
 
@@ -51,31 +47,60 @@ public class TextureResource : GameResource, GameResource.ILoads,
 #if DEBUG
 
 
-    public static async Task<byte[]> ConvertToFinalAssetBytes(Loading.Bytes bytes, string filePath)
+    private static TextureConversion.TextureLoadOptions GetTextureConversionDetails(TextureConversion.TextureHeaderData header, string key)
+        => new TextureConversion.TextureLoadOptions() { ConvertTo = TextureFormats.RGBA8_BC7_UNORM, ConvertSrgbToLinear = true, GenerateMips = true };
+
+
+
+	static async Task<bool> IConverts.Validate(byte[] validationBlock, string key)
     {
-        var ext = Path.GetExtension(filePath);
+        var st = Parsing.ValueReader.FromMemory(validationBlock);
+
+        var header = st.ReadUnmanaged<TextureConversion.TextureHeaderData>();
+        var options = st.ReadUnmanaged<TextureConversion.TextureLoadOptions>();
+
+        return GetTextureConversionDetails(header, key) == options;
+	}
+
+
+
+
+
+    static async Task<IConverts.FinalAssetBytes> IConverts.ConvertToFinalAssetBytes(Loading.Bytes bytes, string key) 
+    {
+        var ext = Path.GetExtension(key);
 
         var header = TextureConversion.InspectTextureHeader(bytes.ByteArray, ext);
-        
-        var finaltexturedata = await TextureConversion.ConvertTextureToRuntimeFormat(bytes, ext, header, new() { ConvertTo = TextureFormats.RGBA8_BC7_UNORM, ConvertSrgbToLinear = true, GenerateMips = true });
+        var options = GetTextureConversionDetails(header, key);
 
 
-        var write = Parsing.ValueWriter.CreateWithBufferWriter();
+		var finaltexturedata = await TextureConversion.ConvertTextureToRuntimeFormat(bytes, ext, header, options);
 
-        write.WriteUnmanaged(finaltexturedata.Dimensions);
 
-        write.WriteUnmanaged((byte)finaltexturedata.InternalImageDataFormat);
-        write.WriteUnmanaged((byte)finaltexturedata.TextureType);
-        write.WriteUnmanaged((byte)finaltexturedata.Mips.Length);
+
+        var textureWrite = Parsing.ValueWriter.CreateWithBufferWriter();
+
+        textureWrite.WriteUnmanaged(finaltexturedata.Dimensions);
+
+        textureWrite.WriteUnmanaged((byte)finaltexturedata.InternalImageDataFormat);
+        textureWrite.WriteUnmanaged((byte)finaltexturedata.TextureType);
+        textureWrite.WriteUnmanaged((byte)finaltexturedata.Mips.Length);
 
 
         foreach (var v in finaltexturedata.Mips)
-            write.WriteLengthPrefixedUnmanagedSpan<byte>(v);
+            textureWrite.WriteLengthPrefixedUnmanagedSpan<byte>(v);
 
 
-        return write.GetSpan().ToArray();
+
+        var validationWrite = Parsing.ValueWriter.CreateWithBufferWriter();
+
+        validationWrite.WriteUnmanaged(header);
+        validationWrite.WriteUnmanaged(options);
+
+        return new IConverts.FinalAssetBytes(textureWrite.GetSpan().ToArray(), validationWrite.GetSpan().ToArray());
 
     }
+
 
 
 #endif

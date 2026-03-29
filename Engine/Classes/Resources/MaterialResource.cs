@@ -6,7 +6,6 @@ using Engine.Core;
 
 using static Engine.Core.Parsing;
 using Engine.Attributes;
-using System.Drawing;
 using System.Numerics;
 
 
@@ -186,13 +185,14 @@ public partial class MaterialResource :
 
 
 
+    public static async Task<bool> Validate(byte[] validationBlock, string key) => true;
 
-    public static async Task<byte[]> ConvertToFinalAssetBytes(Loading.Bytes bytes, string filePath)
+    public static async Task<IConverts.FinalAssetBytes> ConvertToFinalAssetBytes(Loading.Bytes bytes, string key)
     {
 
 
 
-        var dict = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(bytes.ByteArray, Parsing.JsonAssetLoadingOptions);
+        var dict = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(bytes.ByteArray, JsonAssetLoadingOptions);
 
         bytes.Dispose();
 
@@ -207,7 +207,7 @@ public partial class MaterialResource :
 
         if (dict.TryGetValue("Textures", out var texGet))
         {
-            var textures = texGet.Deserialize<Dictionary<string, MaterialTextureDefinition>>(Parsing.JsonAssetLoadingOptions);
+            var textures = texGet.Deserialize<Dictionary<string, MaterialTextureDefinition>>(JsonAssetLoadingOptions);
 
             wr.WriteUnmanaged((byte)textures.Count);
 
@@ -228,7 +228,7 @@ public partial class MaterialResource :
 
         wr.WriteUnmanagedSpan<byte>(GetArgumentBytes<MaterialPropertySerializerDeserializer>(argsGet));
 
-        return wr.GetSpan().ToArray();
+        return new IConverts.FinalAssetBytes(wr.GetSpan().ToArray(),null);
 
     }
 

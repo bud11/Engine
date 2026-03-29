@@ -56,8 +56,9 @@ public class AnimationResource : GameResource, GameResource.ILoads,
 
 #if DEBUG
 
+    public static async Task<bool> Validate(byte[] validationBlock, string key) => true;
 
-    public static async Task<byte[]> ConvertToFinalAssetBytes(Loading.Bytes bytes, string filePath)
+    public static async Task<IConverts.FinalAssetBytes> ConvertToFinalAssetBytes(Loading.Bytes bytes, string key)
     {
 
         var dict = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(bytes.ByteArray, Parsing.JsonAssetLoadingOptions);
@@ -90,13 +91,13 @@ public class AnimationResource : GameResource, GameResource.ILoads,
 
 
             // times
-            foreach (var key in keys.EnumerateArray())
-                write.WriteUnmanaged(key.GetProperty("time").GetSingle());
+            foreach (var animkey in keys.EnumerateArray())
+                write.WriteUnmanaged(animkey.GetProperty("time").GetSingle());
 
             // values
-            foreach (var key in keys.EnumerateArray())
+            foreach (var animkey in keys.EnumerateArray())
             {
-                var value = key.GetProperty("value");
+                var value = animkey.GetProperty("value");
 
                 switch (type)
                 {
@@ -123,7 +124,7 @@ public class AnimationResource : GameResource, GameResource.ILoads,
             }
         }
 
-        return write.GetSpan().ToArray();
+        return new IConverts.FinalAssetBytes(write.GetSpan().ToArray(),null);
 
     }
 

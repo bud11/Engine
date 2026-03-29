@@ -98,14 +98,14 @@
 	<!-- PACKAGES -->
 	
 	<ItemGroup>
-		<PackageReference Include="SDL3-CS" Version="3.3.6"  />
-		<PackageReference Include="SDL3-CS.Native" Version="3.3.6" />
-		
-		<PackageReference Include="Silk.NET.Vulkan" Version="2.22.0" />
-		<PackageReference Include="Silk.NET.Vulkan.Extensions.EXT" Version="2.22.0" />
-		<PackageReference Include="Silk.NET.Vulkan.Extensions.KHR" Version="2.22.0" />
-		
-		<PackageReference Include="ZstdSharp.Port" Version="0.8.6" />
+		<PackageReference Include="SDL3-CS" Version="3.4.2" />
+		<PackageReference Include="SDL3-CS.Native" Version="3.4.2" />
+
+		<PackageReference Include="Silk.NET.Vulkan" Version="2.23.0" />
+		<PackageReference Include="Silk.NET.Vulkan.Extensions.EXT" Version="2.23.0" />
+		<PackageReference Include="Silk.NET.Vulkan.Extensions.KHR" Version="2.23.0" />
+
+		<PackageReference Include="ZstdSharp.Port" Version="0.8.7" />
 
 		
 	</ItemGroup>
@@ -121,9 +121,8 @@
 		<PackageReference Include="DdsKtxSharp" Version="1.1.0.1" />
 		<PackageReference Include="StbImageSharp" Version="2.30.15"/>
 		<PackageReference Include="TinyEXR.NET" Version="0.3.11" />
-		<PackageReference Include="System.IO.Hashing" Version="10.0.2" />
+		<PackageReference Include="System.IO.Hashing" Version="10.0.5" />
 	</ItemGroup>
-
 
 
 

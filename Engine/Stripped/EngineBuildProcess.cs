@@ -170,7 +170,7 @@ public static class EngineBuildProcess
 
 
                                         Print($"File detected as {AssetFoundType.FullName}: {relativePath}");
-                                        rawBytes = await (await (Task<AssetByteStream>)typeof(Loading).GetMethod(nameof(GetFinalAssetBytes), [typeof(string)]).MakeGenericMethod(AssetFoundType).Invoke(null, [relativePath])).GetArray();
+                                        rawBytes = await (await GetFinalAssetBytes(AssetFoundType, relativePath)).GetArray();
                                         Print($"File processed successfully: {relativePath}");
                                     }
                                     else

@@ -18,7 +18,6 @@ using static Engine.Core.RenderingBackend;
 
 
 
-
 /// <summary>
 /// Manages loading and processing of texture data.
 /// <br/> All textures are converted to linear space if they aren't already linear.
@@ -34,22 +33,32 @@ public static class TextureConversion
 
 
     /// <summary>
-    /// Texture header data.
+    /// Allows optimal texture loading steps.
     /// </summary>
-    public readonly record struct TextureInspectData(Vector3<uint> Dimensions, TextureFormats Format, TextureTypes Type);
-
+    /// <param name="GenerateMips"></param>
+    [StructLayout(LayoutKind.Sequential, Pack = 1)]
+    public record struct TextureLoadOptions(bool GenerateMips, TextureFormats ConvertTo, bool ConvertSrgbToLinear);
 
 
     /// <summary>
-    /// Compressed/mipmap-generated texture data.
+    /// Texture header data.
     /// </summary>
-    public struct TextureGenData
+    [StructLayout(LayoutKind.Sequential, Pack = 1)]
+    public readonly record struct TextureHeaderData(Vector3<uint> Dimensions, TextureFormats Format, TextureTypes Type);
+
+
+    /// <summary>
+    /// Final texture data.
+    /// </summary>
+    public struct TextureData
     {
         public Vector3<uint> Dimensions;
         public byte[][] Mips;
         public TextureFormats InternalImageDataFormat;
         public TextureTypes TextureType;
     }
+
+
 
 
 
@@ -79,7 +88,7 @@ public static class TextureConversion
 
 
 
-    public static unsafe TextureInspectData InspectTextureHeader(byte[] src, string extension)
+    public static unsafe TextureHeaderData InspectTextureHeader(byte[] src, string extension)
     {
         var backend = GetTextureBackend(extension);
 
@@ -90,7 +99,7 @@ public static class TextureConversion
             if (!firstImageInfo.HasValue) throw new InvalidDataException();
             var imgInfo = firstImageInfo.Value;
 
-            return new TextureInspectData(new Vector3<uint>((uint)imgInfo.Width, (uint)imgInfo.Height, 1), (int)imgInfo.ColorComponents switch
+            return new TextureHeaderData(new Vector3<uint>((uint)imgInfo.Width, (uint)imgInfo.Height, 1), (int)imgInfo.ColorComponents switch
             {
                 1 => TextureFormats.R8_UNORM,
                 
@@ -125,7 +134,7 @@ public static class TextureConversion
 
 
 
-            var ret = new TextureInspectData(new Vector3<uint>((uint)header.data_window.max_x + 1, (uint)header.data_window.max_y + 1, 1), header.num_channels switch
+            var ret = new TextureHeaderData(new Vector3<uint>((uint)header.data_window.max_x + 1, (uint)header.data_window.max_y + 1, 1), header.num_channels switch
             {
                 1 => TextureFormats.R16_SFLOAT,
 
@@ -153,22 +162,6 @@ public static class TextureConversion
 
     }
 
-
-
-
-    /// <summary>
-    /// Allows optimal texture loading steps.
-    /// </summary>
-    /// <param name="GenerateMips"></param>
-    public record struct TextureLoadOptions(
-
-        bool GenerateMips, 
-
-        TextureFormats ConvertTo,
-
-        bool ConvertSrgbToLinear
-
-        );
 
 
 
@@ -268,7 +261,16 @@ public static class TextureConversion
 
 
 
-    public static async Task<TextureGenData> ConvertTextureToRuntimeFormat(Loading.Bytes src, string extension, TextureInspectData ImageHeader, TextureLoadOptions options)
+
+    public enum EncoderBackend
+    {
+        Compressonator,
+        NVTT3
+    }
+
+
+
+    public static async Task<TextureData> ConvertTextureToRuntimeFormat(Loading.Bytes src, string extension, TextureHeaderData ImageHeader, TextureLoadOptions options, EncoderBackend encoderBackend = EncoderBackend.Compressonator)
     {
 
         var stopwatch = new Stopwatch();
@@ -306,6 +308,14 @@ public static class TextureConversion
 
 
 
+        Vector4<Half> ConstantColor = default;
+
+
+
+
+        bool IsConstantColor = true;
+
+
         if (backend == TextureReaderBackend.StbImage)
         {
             unsafe
@@ -316,87 +326,109 @@ public static class TextureConversion
                 if (IsHDR)
                 {
                     var tex = ImageResultFloat.FromMemory(src.ByteArray);
-
                     src.Dispose();
-
 
 
                     int srcComp = (int)tex.Comp;
 
-                    var planar = ArrayPools.RentArrayFromPool<Half>(pixelCount * TargetChannelCount);
-                    finalBuffer = planar;
+                    finalBuffer = ArrayPools.RentArrayFromPool<Half>(pixelCount * TargetChannelCount);
 
                     fixed (float* srcPtr = tex.Data)
-                    fixed (Half* dstBase = planar.Ref)
+                    fixed (Half* dstBase = finalBuffer.Ref)
                     {
+                        float* firstPixel = stackalloc float[TargetChannelCount];
+                        for (int c = 0; c < TargetChannelCount; c++)
+                        {
+                            if (c < srcComp)
+                                firstPixel[c] = options.ConvertSrgbToLinear && c < 3
+                                    ? SrgbToLinear(srcPtr[c])
+                                    : srcPtr[c];
+                            else
+                                firstPixel[c] = (c == 3) ? 1f : 0f;
+                        }
+
+
                         for (int c = 0; c < TargetChannelCount; c++)
                         {
                             Half* dst = dstBase + (c * pixelCount);
 
-                            if (c < srcComp)
+                            for (int i = 0; i < pixelCount; i++)
                             {
-                                int srcChannelOffset = c;
+                                float value;
 
-                                for (int i = 0; i < pixelCount; i++)
+                                if (c < srcComp)
                                 {
-                                    float value = srcPtr[i * srcComp + srcChannelOffset];
-
+                                    value = srcPtr[i * srcComp + c];
                                     if (options.ConvertSrgbToLinear && c < 3)
                                         value = SrgbToLinear(value);
-
-                                    dst[i] = (Half)value;
                                 }
-                            }
-                            else
-                            {
-                                Half fill = (c == 3) ? (Half)1f : (Half)0f;
+                                else
+                                {
+                                    value = (c == 3) ? 1f : 0f;
+                                }
 
-                                for (int i = 0; i < pixelCount; i++)
-                                    dst[i] = fill;
+                                dst[i] = (Half)value;
+
+                                if (IsConstantColor && Math.Abs(value - firstPixel[c]) > 1e-6f)
+                                    IsConstantColor = false;
                             }
                         }
                     }
 
                     tex = null;
                 }
+
+
                 else
                 {
                     var tex = ImageResult.FromMemory(src.ByteArray);
+                    src.Dispose();
 
 
 
                     int srcComp = (int)tex.Comp;
 
-                    var planar = ArrayPools.RentArrayFromPool<Half>(pixelCount * TargetChannelCount);
-                    finalBuffer = planar;
+                    finalBuffer = ArrayPools.RentArrayFromPool<Half>(pixelCount * TargetChannelCount);
+
 
                     fixed (byte* srcPtr = tex.Data)
-                    fixed (Half* dstBase = planar.Ref)
+                    fixed (Half* dstBase = finalBuffer.Ref)
                     {
+                        float* firstPixel = stackalloc float[TargetChannelCount];
+                        for (int c = 0; c < TargetChannelCount; c++)
+                        {
+                            if (c < srcComp)
+                                firstPixel[c] = options.ConvertSrgbToLinear && c < 3
+                                    ? SrgbToLinear(srcPtr[c])
+                                    : srcPtr[c];
+                            else
+                                firstPixel[c] = (c == 3) ? 1f : 0f;
+                        }
+
+
                         for (int c = 0; c < TargetChannelCount; c++)
                         {
                             Half* dst = dstBase + (c * pixelCount);
 
-                            if (c < srcComp)
+                            for (int i = 0; i < pixelCount; i++)
                             {
-                                int srcChannelOffset = c;
+                                float value;
 
-                                for (int i = 0; i < pixelCount; i++)
+                                if (c < srcComp)
                                 {
-                                    float value = srcPtr[i * srcComp + srcChannelOffset] / 255f;
-
+                                    value = srcPtr[i * srcComp + c] / 255f;
                                     if (options.ConvertSrgbToLinear && c < 3)
                                         value = SrgbToLinear(value);
-
-                                    dst[i] = (Half)value;
                                 }
-                            }
-                            else
-                            {
-                                Half fill = (c == 3) ? (Half)1f : (Half)0f;
+                                else
+                                {
+                                    value = (c == 3) ? 1f : 0f;
+                                }
 
-                                for (int i = 0; i < pixelCount; i++)
-                                    dst[i] = fill;
+                                dst[i] = (Half)value;
+
+                                if (IsConstantColor && Math.Abs(value - firstPixel[c]) > 1e-6f)
+                                    IsConstantColor = false;
                             }
                         }
                     }
@@ -463,22 +495,46 @@ public static class TextureConversion
 
 
 
-
-                var halfBuffer = ArrayPools.RentArrayFromPool<Half>(pixelCount * TargetChannelCount);
-                finalBuffer = halfBuffer;
+                finalBuffer = ArrayPools.RentArrayFromPool<Half>(pixelCount * TargetChannelCount);
 
                 Half* rPtr = rIndex >= 0 ? (Half*)exrimage.images[rIndex] : null;
                 Half* gPtr = gIndex >= 0 ? (Half*)exrimage.images[gIndex] : null;
                 Half* bPtr = bIndex >= 0 ? (Half*)exrimage.images[bIndex] : null;
                 Half* aPtr = aIndex >= 0 ? (Half*)exrimage.images[aIndex] : null;
 
-                bool doSRGB = options.ConvertSrgbToLinear;
-                fixed (Half* dstBase = halfBuffer.Ref)
+
+                float* candidatePixel = stackalloc float[TargetChannelCount];
+                for (int c = 0; c < TargetChannelCount; c++)
+                {
+                    Half* srcPtr = c switch
+                    {
+                        0 => rPtr,
+                        1 => gPtr,
+                        2 => bPtr,
+                        3 => aPtr,
+                        _ => null
+                    };
+
+                    if (srcPtr != null)
+                    {
+                        float value = (float)srcPtr[0];
+                        if (options.ConvertSrgbToLinear && c < 3) value = SrgbToLinear(value);
+                        if (!TargetIsHDR) value = MathF.Min(MathF.Max(value, 0f), 1f);
+                        candidatePixel[c] = value;
+                    }
+                    else
+                    {
+                        candidatePixel[c] = (c == 3) ? 1f : 0f;
+                    }
+                }
+
+
+
+                fixed (Half* dstBase = finalBuffer.Ref)
                 {
                     for (int c = 0; c < TargetChannelCount; c++)
                     {
                         Half* dst = dstBase + (c * pixelCount);
-
                         Half* srcPtr = c switch
                         {
                             0 => rPtr,
@@ -493,21 +549,28 @@ public static class TextureConversion
                             for (int i = 0; i < pixelCount; i++)
                             {
                                 float value = (float)srcPtr[i];
-
-                                if (doSRGB && c < 3) value = SrgbToLinear(value);
-
+                                if (options.ConvertSrgbToLinear && c < 3) value = SrgbToLinear(value);
                                 if (!TargetIsHDR) value = MathF.Min(MathF.Max(value, 0f), 1f);
 
                                 dst[i] = (Half)value;
+
+                                if (IsConstantColor && Math.Abs(value - candidatePixel[c]) > 1e-6f)
+                                    IsConstantColor = false;
                             }
                         }
                         else
                         {
                             Half fill = (c == 3) ? (Half)1f : (Half)0f;
-                            for (int i = 0; i < pixelCount; i++) dst[i] = fill;
+                            for (int i = 0; i < pixelCount; i++)
+                            {
+                                dst[i] = fill;
+                                if (IsConstantColor && Math.Abs(((float)fill) - candidatePixel[c]) > 1e-6f)
+                                    IsConstantColor = false;
+                            }
                         }
                     }
                 }
+
 
 
                 Exr.FreeEXRHeader(ref header);
@@ -522,30 +585,20 @@ public static class TextureConversion
 
 
 
+        //we can just store 1x1 for completely constant colors
+        //ideally this is caught on the image authoring end but catching above is relatively cheap 
 
-
-
-        var nvttFormat = options.ConvertTo switch
+        if (IsConstantColor)
         {
-            TextureFormats.R8_UNORM => "a8",
-            TextureFormats.R16_SFLOAT => "r16f",
+            width = 1;
+            height = 1;
 
-            //TextureFormats.RG8_UNORM => "rgb8",       
-            TextureFormats.RG16_SFLOAT => "rg16f",
+            Span<Half> constColor = stackalloc Half[TargetChannelCount];
+            for (int c = 0; c < TargetChannelCount; c++)
+                constColor[c] = finalBuffer[c * pixelCount];
 
-            TextureFormats.RGB8_UNORM => "rgb8",
-            //TextureFormats.RGB16_SFLOAT => "rgba16f",  
-
-            TextureFormats.RGBA8_UNORM => "rgba8",
-            TextureFormats.RGBA16_SFLOAT => "rgba16f",
-
-            TextureFormats.R8_BC4_UNORM => "bc4",
-            TextureFormats.RG8_BC5_UNORM => "bc5",
-            TextureFormats.RGBA8_BC7_UNORM => "bc7",
-            TextureFormats.RGB16_BC6H_SFLOAT => "bc6s",
-
-            _ => throw new NotImplementedException($"Conversion to the exact given format '{options.ConvertTo.ToString()}' is not implemented and/or is not supported by one or more components of the texture toolchain"),
-        };
+            constColor.CopyTo(finalBuffer.Ref);
+        }
 
 
 
@@ -554,7 +607,7 @@ public static class TextureConversion
         string texpathtemp = Path.Combine(Path.GetTempPath(), $"{Guid.NewGuid()}.exr");
         string texpathtempOut = Path.Combine(Path.GetTempPath(), $"{Guid.NewGuid()}.ktx");
 
-        await File.WriteAllBytesAsync(texpathtemp, GetExr((int)ImageHeader.Dimensions.X, (int)ImageHeader.Dimensions.Y, TargetChannelCount, finalBuffer.Ref));
+        await File.WriteAllBytesAsync(texpathtemp, GetInMemoryExr(width, height, TargetChannelCount, finalBuffer.Ref));
 
         finalBuffer.Return();
         finalBuffer = default;
@@ -562,12 +615,102 @@ public static class TextureConversion
 
 
         Debug.Print($"Data -> final exr took {stopwatch.Elapsed.TotalSeconds} seconds");
-        
 
-        await EnqueueNvttGate($"""{texpathtemp} --format {nvttFormat} --output {texpathtempOut} --mip-filter box --export-transfer-function 2 --quality fastest""");
 
-        
+
+        await TextureCLILock.WaitAsync();
+
         stopwatch.Restart();
+
+
+
+
+        if (encoderBackend == EncoderBackend.Compressonator)
+        {
+            var cmpFormat = options.ConvertTo switch
+            {
+                TextureFormats.R8_UNORM => "R_8",
+                TextureFormats.R16_SFLOAT => "R_16F",
+
+                TextureFormats.RG16_SFLOAT => "RG_16F",
+
+                TextureFormats.RGB8_UNORM => "RGB_888",
+                TextureFormats.RGBA8_UNORM => "RGBA_8888",
+                TextureFormats.RGBA16_SFLOAT => "RGBA_16F",
+
+                TextureFormats.R8_BC4_UNORM => "BC4",
+                TextureFormats.RG8_BC5_UNORM => "BC5",
+                TextureFormats.RGBA8_BC7_UNORM => "BC7",
+                TextureFormats.RGB16_BC6H_SFLOAT => "BC6H",
+
+                _ => throw GetNotSupportedException()
+            };
+
+
+            int mipLevels = options.GenerateMips
+                ? (int)Math.Floor(Math.Log2(Math.Max(width, height))) + 1
+                : 1;
+
+            await RunProcess.Run(
+                "compressonatorcli",
+                $"-fd {cmpFormat} \"{texpathtemp}\" \"{texpathtempOut}\" " +
+                $"-EncodeWith GPU " +
+                $"-mipsize 1 " +         
+                $"-Quality 0.05 " +
+                $"-Performance 1"
+            );
+        }
+
+
+
+        if (encoderBackend == EncoderBackend.NVTT3)
+        {
+            var nvttFormat = options.ConvertTo switch
+            {
+                TextureFormats.R8_UNORM => "a8",
+                TextureFormats.R16_SFLOAT => "r16f",
+
+                //TextureFormats.RG8_UNORM => "rgb8",       
+                TextureFormats.RG16_SFLOAT => "rg16f",
+
+                TextureFormats.RGB8_UNORM => "rgb8",
+                //TextureFormats.RGB16_SFLOAT => "rgba16f",  
+
+                TextureFormats.RGBA8_UNORM => "rgba8",
+                TextureFormats.RGBA16_SFLOAT => "rgba16f",
+
+                TextureFormats.R8_BC4_UNORM => "bc4",
+                TextureFormats.RG8_BC5_UNORM => "bc5",
+                TextureFormats.RGBA8_BC7_UNORM => "bc7",
+                TextureFormats.RGB16_BC6H_SFLOAT => "bc6s",
+
+                _ => throw GetNotSupportedException()
+            };
+
+
+            await RunProcess.Run(
+                "nvtt_export", 
+                $"{texpathtemp} --format {nvttFormat} --output {texpathtempOut} --mip-filter box --export-transfer-function 2 --quality fastest"
+                );
+        }
+
+
+
+
+        Exception GetNotSupportedException()
+            => new NotImplementedException($"Conversion to the exact given format '{options.ConvertTo.ToString()}' is not implemented and/or is not supported by one or more components of the texture toolchain");
+
+
+
+
+
+
+        Debug.Print($"Texture encoding (via {encoderBackend}) took {stopwatch.Elapsed.TotalSeconds} seconds");
+        stopwatch.Restart();
+
+
+        TextureCLILock.Release();
+
 
 
 
@@ -626,88 +769,23 @@ public static class TextureConversion
 
 
 
-            return new TextureGenData()
+            return new TextureData()
             {
                 Mips = mipLevels,
 
                 InternalImageDataFormat = options.ConvertTo,
                 TextureType = ImageHeader.Type,
 
-                Dimensions = ImageHeader.Dimensions
+                Dimensions = new Vector3<uint>((uint)width,(uint)height,1)
             };
-
-
         }
-        
 
 
     }
 
 
-
-
-
-    // batches into nvtt to reduce repeated nvtt startup overhead
-
-    private static readonly object _nvttGateLock = new();
-    private static readonly List<(string cmd, TaskCompletionSource tcs)> _nvttPending = new();
-    private static bool _nvttBatchRunning = false;
-    private static Task _nvttDebounceTask = null;
-    private static readonly TimeSpan _nvttDebounce = TimeSpan.FromSeconds(0.5);
-
-
-
-
-    private static Task EnqueueNvttGate(string cmd)
-    {
-        var tcs = new TaskCompletionSource();
-        lock (_nvttGateLock)
-        {
-            _nvttPending.Add((cmd, tcs));
-
-            if (_nvttBatchRunning)
-                return tcs.Task; 
-
-            if (_nvttDebounceTask == null)
-                _nvttDebounceTask = DebounceBatchAsync();
-        }
-        return tcs.Task;
-    }
-
-
-
-    private static async Task DebounceBatchAsync()
-    {
-        await Task.Delay(_nvttDebounce);
-
-        List<(string cmd, TaskCompletionSource tcs)> batch;
-        lock (_nvttGateLock)
-        {
-            batch = _nvttPending.ToList();
-            _nvttPending.Clear();
-            _nvttBatchRunning = true;
-            _nvttDebounceTask = null;
-        }
-
-        string batchFile = Path.Combine(Path.GetTempPath(), $"{Guid.NewGuid()}.txt");
-        await File.WriteAllLinesAsync(batchFile, batch.Select(x => x.cmd));
-
-        await RunProcess.Run("nvtt_export", $@"--batch-file ""{batchFile}""");
-        
-        File.Delete(batchFile);
-
-
-        foreach (var (_, tcs) in batch)
-            tcs.SetResult();
-
-
-        lock (_nvttGateLock)
-        {
-            _nvttBatchRunning = false;
-            if (_nvttPending.Count > 0)
-                _nvttDebounceTask = DebounceBatchAsync();
-        }
-    }
+    private static readonly SemaphoreSlim TextureCLILock = new(1,1);
+    
 
 
 
@@ -715,7 +793,10 @@ public static class TextureConversion
 
 
 
-    private static unsafe byte[] GetExr(
+
+
+
+    private static unsafe byte[] GetInMemoryExr(
         int width,
         int height,
         int channelCount,

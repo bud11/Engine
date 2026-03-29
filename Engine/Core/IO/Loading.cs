@@ -602,6 +602,18 @@ public static partial class Loading
         return await GetFinalAssetBytes<T>(new Bytes(await AcquireAssetByteStream(relativePath).GetArray()), relativePath);
     }
 
+    public static Task<AssetByteStream> GetFinalAssetBytes(Type resourceType, string relativePath)
+    {
+       return (Task<AssetByteStream>)typeof(Loading).GetMethod(nameof(GetFinalAssetBytes), [typeof(string)]).MakeGenericMethod(resourceType).Invoke(null, [relativePath]);
+    }
+
+    public static Task<AssetByteStream> GetFinalAssetBytes(Type resourceType, Bytes unconvertedData, string relativePath = null)
+    {
+        return (Task<AssetByteStream>)typeof(Loading).GetMethod(nameof(GetFinalAssetBytes), [typeof(Bytes), typeof(string)]).MakeGenericMethod(resourceType).Invoke(null, [unconvertedData, relativePath]);
+    }
+
+
+
 
     /// <summary>
     /// A disposable wrapper over <see cref="byte[]"/> (simply sets own reference to <paramref name="byteArray"/> to null upon disposal to allow GC).
@@ -695,21 +707,59 @@ public static partial class Loading
                     uint storedCrc = read.ReadUnmanaged<uint>();
 
 
+                    //cache matches
                     if (storedCrc == crc)
                     {
-                        var len = read.ReadUnmanaged<uint>();
+                        var validationLength = read.ReadUnmanaged<uint>();
 
-                        statusPrint($"Cached file found for asset '{relativePath}'");
+                        //validation block found
+                        if (validationLength != 0)
+                        {
+                            var validationBlock = read.ReadUnmanagedSpan<byte>(validationLength);
 
-                        finalStream = new AssetByteStream(new DecompressionStream(filestream, (int)len, leaveOpen: false), len);
+
+                            var method = typeof(T)
+                                .GetMethods(BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic)
+                                .Single(m =>
+                                    m.Name.Contains("Validate") &&
+                                    m.GetParameters().Length == 2 &&
+                                    m.ReturnType == typeof(Task<bool>)
+                                );
+
+
+                            var validation = await (Task<bool>)method.Invoke(null, [validationBlock, relativePath]);
+
+                            
+                            Validate(validation);
+                        }
+
+                        else
+                            Validate(true);
 
                     }
-                    else
+                    else 
+                        Validate(false);
+
+
+
+
+                    void Validate(bool valid)
                     {
-                        crc = 0;
-                        filestream.Dispose();
-                    }
+                        if (valid)
+                        {
+                            var len = read.ReadUnmanaged<uint>();
 
+                            statusPrint($"Cached file found for asset '{relativePath}'");
+
+                            finalStream = new AssetByteStream(new DecompressionStream(filestream, (int)len, leaveOpen: false), len);
+                        }
+                        else
+                        {
+                            crc = 0;
+                            filestream.Dispose();
+                            filestream = null;
+                        }
+                    }
                 }
             }
 
@@ -728,6 +778,10 @@ public static partial class Loading
 
                 liststatusChange(assetloadingstatusForDebugMsg.Converting);
 
+
+
+
+                crc = Crc32.HashToUInt32(unconvertedData.ByteArray);
 
 
                 //  ---------------------- zstd detection / decompression ----------------------
@@ -765,14 +819,25 @@ public static partial class Loading
 
 
 
-                crc = Crc32.HashToUInt32(unconvertedData.ByteArray);
+                var method = typeof(T)
+                    .GetMethods(BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic)
+                    .Single(m =>
+                        m.Name.Contains("ConvertToFinalAssetBytes") &&
+                        m.GetParameters().Length == 2 &&
+                        m.ReturnType == typeof(Task<GameResource.IConverts.FinalAssetBytes>)
+                    );
 
 
-                var finalBytes = await (Task<byte[]>)typeof(T).GetMethod(nameof(GameResource.IConverts.ConvertToFinalAssetBytes), BindingFlags.Static | BindingFlags.Public, [typeof(Bytes), typeof(string)])
-                    .Invoke(null, [unconvertedData, relativePath]);
+                var finalBytes = await (Task<GameResource.IConverts.FinalAssetBytes>)method.Invoke(null, [unconvertedData, relativePath]);
 
 
-                finalStream = new AssetByteStream(new MemoryStream(finalBytes), finalBytes.Length);
+                //just incase not disposed..
+                unconvertedData.Dispose();
+                unconvertedData = null;
+
+
+
+                finalStream = new AssetByteStream(new MemoryStream(finalBytes.Bytes), finalBytes.Bytes.Length);
 
 
 
@@ -781,18 +846,45 @@ public static partial class Loading
                 if (relativePath != null)
                 {
 
-                    using var compressor = new Compressor(6);
+                    using var compressor = new Compressor(4);
 
-                    var compressedFinalBytes = compressor.Wrap(finalBytes);
+                    var compressedFinalBytes = compressor.Wrap(finalBytes.Bytes);
 
 
-                    using var filestream = new FileStream(cachedFileDir, FileMode.Create, FileAccess.Write, FileShare.None, compressedFinalBytes.Length + 4096);
+                    using var filestream = new FileStream(cachedFileDir, FileMode.Create, FileAccess.Write, FileShare.None,
+
+                        sizeof(uint)  //crc
+                        + sizeof(uint)   //len
+                        + compressedFinalBytes.Length //bytes
+
+                        + sizeof(uint)      //validation len
+                        + (finalBytes.ValidationBlock == null ? 0 : finalBytes.ValidationBlock.Length)  //validation bytes
+                        );
+
 
                     var writer = Parsing.ValueWriter.FromStream(filestream);
 
+
+                    // CRC
                     writer.WriteUnmanaged(crc);
-                    writer.WriteUnmanaged((uint)finalBytes.Length);
+
+                    // VALIDATION
+                    if (finalBytes.ValidationBlock != null)
+                    {
+                        writer.WriteUnmanaged((uint)finalBytes.ValidationBlock.Length);
+                        writer.WriteUnmanagedSpan<byte>(finalBytes.ValidationBlock);
+                    }
+                    else
+                    {
+                        writer.WriteUnmanaged(0u);
+                    }
+
+                    // BYTES
+                    writer.WriteUnmanaged((uint)finalBytes.Bytes.Length);
                     writer.WriteUnmanagedSpan<byte>(compressedFinalBytes);
+                    
+
+
 
                     compressedFinalBytes = default;
                 }

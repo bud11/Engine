@@ -69,8 +69,9 @@ public class CollisionMeshResource : GameResource, GameResource.ILoads,
 
 #if DEBUG
 
+    public static async Task<bool> Validate(byte[] validationBlock, string key) => true;
 
-    public static async Task<byte[]> ConvertToFinalAssetBytes(Loading.Bytes bytes, string filePath)
+    public static async Task<IConverts.FinalAssetBytes> ConvertToFinalAssetBytes(Loading.Bytes bytes, string key)
     {
         var dict = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(bytes.ByteArray, Parsing.JsonAssetLoadingOptions);
 
@@ -97,7 +98,7 @@ public class CollisionMeshResource : GameResource, GameResource.ILoads,
         }
 
 
-        return write.GetSpan().ToArray();
+        return new IConverts.FinalAssetBytes(write.GetSpan().ToArray(), null);
     }
 
 

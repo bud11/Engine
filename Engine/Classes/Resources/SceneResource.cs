@@ -73,9 +73,11 @@ public partial class SceneResource : GameResource, GameResource.ILoads
 #if DEBUG
 
 
-    
 
-    public static async Task<byte[]> ConvertToFinalAssetBytes(Bytes bytes, string filePath)
+    public static async Task<bool> Validate(byte[] validationBlock, string key) => true; 
+
+
+    public static async Task<IConverts.FinalAssetBytes> ConvertToFinalAssetBytes(Bytes bytes, string key)
     {
 
 
@@ -188,15 +190,7 @@ public partial class SceneResource : GameResource, GameResource.ILoads
 
                         if (GameResourceFileAssociations.TryGetValue(ex, out var AssetFoundType))
                         {
-                            var arg = new Bytes(data);
-                            data = null;
-
-                            var ret = await (await (Task<AssetByteStream>)typeof(Loading)
-                                        .GetMethod(nameof(GetFinalAssetBytes), [typeof(Bytes), typeof(string)])
-                                        .MakeGenericMethod(AssetFoundType)
-                                        .Invoke(null, [arg, null])).GetArray();
-
-                            data = ret;
+                            data = await (await GetFinalAssetBytes(AssetFoundType, new Bytes(data), null)).GetArray();
 
                             // $"{filePath}+resource{rIndex}{ex}"
 
@@ -425,7 +419,7 @@ public partial class SceneResource : GameResource, GameResource.ILoads
 
 
 
-        return final.GetSpan().ToArray();
+        return new IConverts.FinalAssetBytes(final.GetSpan().ToArray(), null);
     }
 
 
