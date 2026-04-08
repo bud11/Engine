@@ -1,6 +1,7 @@
 ﻿
 namespace Engine.Core;
 
+using Engine.Stripped;
 using SDL3;
 using System.Runtime.InteropServices;
 using System.Text;
@@ -18,12 +19,16 @@ public static class Window
 
     public static nint Init(EngineSettings.EngineInitSettings settings)
     {
-        //SDL
+
+        // SDL
+
         if (!SDL.Init(SDL.InitFlags.Video | SDL.InitFlags.Gamepad))
             throw new Exception($"Failed to create SDL3 - {SDL.GetError()}");
 
 
-        //SDL WINDOW
+
+        // SDL WINDOW
+
         SDL.WindowFlags flags = RenderingBackend.GetSDLWindowFlagsForBackend(settings.RenderingBackend);
         if (settings.InitialWindowResizeable) flags |= SDL.WindowFlags.Resizable;
 
@@ -43,7 +48,13 @@ public static class Window
         SDL.SetWindowFullscreen(SDLWindowHandle, GivenInitSettings.InitialWindowFullscreen);
         SDL.SetWindowAlwaysOnTop(SDLWindowHandle, GivenInitSettings.InitialWindowAlwaysOnTop);
 
+        SDL.SetWindowTitle(SDLWindowHandle, "Window");
+
         SDL.SyncWindow(SDLWindowHandle);
+
+
+        lock (windowValidLock)
+            windowValid = true;
 
 
         return SDLWindowHandle;
@@ -57,10 +68,6 @@ public static class Window
 
     public static void WindowPoll()
     {
-
-        lock (windowValidLock)
-            windowValid = true;
-
 
 
         MouseScrollWheelDelta = 0;
@@ -207,13 +214,16 @@ public static class Window
         byte VSync,
         bool UseHDR,
 
-        string WindowTitle
+        string WindowTitle = "Window"
 
         )
     {
 
         lock (windowValidLock)
         {
+
+            windowValid = false;
+
             SDL.SetWindowSize(SDLWindowHandle, (int)Size.X, (int)Size.Y);
 
             SDL.SetWindowSurfaceVSync(SDLWindowHandle, VSync);
@@ -221,11 +231,14 @@ public static class Window
             SDL.SetWindowFullscreen(SDLWindowHandle, Fullscreen);
             SDL.SetWindowAlwaysOnTop(SDLWindowHandle, AlwaysOnTop);
 
+            SDL.SetWindowTitle(SDLWindowHandle, WindowTitle);
+
             SDL.SyncWindow(SDLWindowHandle);
 
             RenderThread.PushRenderThreadAction(() => { RenderingBackend.ConfigureSwapchain(Size, UseHDR); return null; }).Wait();
 
-            windowValid = false;
+            windowValid = true;
+
         }
     }
 
@@ -235,15 +248,13 @@ public static class Window
 
 
     /// <summary>
-    /// Returns false if the frame's command buffer is no longer valid due to mid-frame window reconfiguration. Reset at the beginning of each frame.
+    /// Returns false if the frame's command buffer is invalid due to current window state or recent window state changes. Reset at the beginning of each frame.
     /// </summary>
     /// <returns></returns>
     public static bool GetRenderCommandsValid()
     {
         lock (windowValidLock)
-        {
-            return windowValid;
-        }
+            return windowValid && ((SDL.GetWindowFlags(SDLWindowHandle) & SDL.WindowFlags.Minimized) == 0);
     }
 
 

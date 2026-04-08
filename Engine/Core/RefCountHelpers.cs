@@ -13,12 +13,10 @@ public static class RefCountCollections
 {
 
 
-
     /// <summary>
     /// Wraps an array of <typeparamref name="T"/> and calls <see cref="RefCounted.AddUser"/> or <see cref="RefCounted.RemoveUser"/> respectively when values are changed.
     /// </summary>
     /// <typeparam name="T"></typeparam>
-    /// <param name="Length"></param>
     [CollectionBuilder(typeof(RefCountCollections), nameof(CreateRefCountedArray))]
     public class RefCountedArray<T> : RefCounted, IEnumerable<T>
         where T : RefCounted
@@ -40,6 +38,9 @@ public static class RefCountCollections
 
 
         private T[] _arr;
+
+        public ReadOnlySpan<T> AsSpan() => _arr.AsSpan();
+
 
         public T this[int idx]
         {
@@ -147,6 +148,7 @@ public static class RefCountCollections
         {
             foreach (var val in _dict.Values) 
                 val.RemoveUser();
+
         }
 
 

@@ -643,7 +643,7 @@ public partial class SceneResource : GameResource, GameResource.ILoads
     /// Instantiates the scene, sets <see cref="IndexableAttribute"/> users on each <see cref="GameObject"/>, calls <see cref="GameObject.Init"/> for each <see cref="GameObject"/> starting with the deepest children, and returns the root <see cref="GameObject"/>.
     /// </summary>
     /// <returns></returns>
-    public GameObject Instantiate() 
+    public unsafe GameObject Instantiate(delegate*<GameObject, void> handler) 
     {
         var objs = new Dictionary<GameObject, List<(SceneObjectGenData, SceneBinarySerializerDeserializer)>>();
 
@@ -653,19 +653,19 @@ public partial class SceneResource : GameResource, GameResource.ILoads
         var argsBuffer = new Dictionary<byte, object>(capacity : 16);
 
 
-        Init(rootObj, objs, argsBuffer);
+        Init(rootObj, objs, argsBuffer, handler);
 
 
         return rootObj;
 
 
 
-        static void Init(GameObject obj, Dictionary<GameObject, List<(SceneObjectGenData, SceneBinarySerializerDeserializer)>>? objs, Dictionary<byte, object> args)
+        static void Init(GameObject obj, Dictionary<GameObject, List<(SceneObjectGenData, SceneBinarySerializerDeserializer)>>? objs, Dictionary<byte, object> args, delegate*<GameObject, void> handler)
         {
             ImmutableArray<GameObject> array = obj.GetChildren();
 
             for (int i = 0; i < array.Length; i++)
-                Init(array[i], objs, args);
+                Init(array[i], objs, args, handler);
 
 
             args.Clear();
@@ -690,6 +690,8 @@ public partial class SceneResource : GameResource, GameResource.ILoads
             foreach (var kv in args)
                 obj.SetIndexable(kv.Key, kv.Value);
 
+
+            handler(obj);
 
             obj.Init();
 
@@ -761,5 +763,7 @@ public partial class SceneResource : GameResource, GameResource.ILoads
     {
         for (int i1 = 0; i1 < SceneResources.Length; i1++)
             SceneResources[i1].RemoveUser();
+
+        base.OnFree();
     }
 }

@@ -8,11 +8,7 @@
 
 namespace Engine.Core;
 
-#if DEBUG
 using Engine.Stripped;
-#endif
-
-
 using Silk.NET.Core.Native;
 using Silk.NET.Vulkan;
 using Silk.NET.Vulkan.Extensions.EXT;
@@ -22,6 +18,7 @@ using System.Numerics;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using static Engine.Core.EngineMath;
+using static Engine.Core.References;
 
 
 
@@ -36,8 +33,6 @@ public static partial class RenderingBackend
 
     private unsafe class VulkanBackend : IRenderingBackend
     {
-
-
 
 
 
@@ -478,7 +473,9 @@ public static partial class RenderingBackend
 
 
 
-            //SilkMarshal.Free((nint)createInfo.PpEnabledLayerNames);
+#if DEBUG && ENABLE_VULKAN_DEBUGGING
+            SilkMarshal.Free((nint)createInfo.PpEnabledLayerNames);
+#endif
 
             SilkMarshal.Free((nint)createInfo.PpEnabledExtensionNames);
 
@@ -527,6 +524,10 @@ public static partial class RenderingBackend
         }
 
 
+
+        [DebuggerHidden]
+        [StackTraceHidden]
+
         private uint DebugCallback(DebugUtilsMessageSeverityFlagsEXT messageSeverity, DebugUtilsMessageTypeFlagsEXT messageTypes, DebugUtilsMessengerCallbackDataEXT* pCallbackData, void* pUserData)
         {
 
@@ -540,22 +541,62 @@ public static partial class RenderingBackend
             {
                 case "VUID-VkSwapchainCreateInfoKHR-imageFormat-01778" or "VUID-VkImageViewCreateInfo-usage-02275":
                     return Vk.False;
+
             }
-
-
 
 
             string err = $"validation layer:" + Marshal.PtrToStringAnsi((nint)pCallbackData->PMessage);
 
-            //EngineDebug.Print(err);
+
+
+            if (err.Contains("The Vulkan spec states: All child objects created on device must have been destroyed prior to destroying device") 
+                || errName == "VUID-vkDestroyInstance-instance-00629")
+            {
+                lock(stackTraces)
+                    if (stackTraces.TryGetValue(pCallbackData->PObjects->ObjectHandle, out var stacktraceForObj))
+                        throw new Exception(err + "\n\n CREATION STACKTRACE: \n" + stacktraceForObj.ToClickableSrcLinesString());
+            }
+
+
+            //EngineEngineDebug.Print(err);
 
             if (messageSeverity.HasFlag(DebugUtilsMessageSeverityFlagsEXT.ErrorBitExt))
                 throw new Exception(err);
+
+
 
             return Vk.False;
         }
 
 
+
+
+
+        [Conditional("DEBUG")]
+        private void SetVKObjectName(ObjectType type, ulong handle, string name, bool keepStacktrace = true)
+        {
+            DebugUtilsObjectNameInfoEXT info = new()
+            {
+                SType = StructureType.DebugUtilsObjectNameInfoExt,
+                ObjectType = type,
+                ObjectHandle = handle,
+                PObjectName = (byte*)SilkMarshal.StringToPtr(name)
+            };
+
+            debugUtils.SetDebugUtilsObjectName(device, &info);
+
+
+            if (keepStacktrace)
+            {
+                lock (stackTraces)
+                    stackTraces[handle] = new();
+            }
+
+
+            SilkMarshal.Free((nint)info.PObjectName);
+        }
+
+        private static readonly Dictionary<ulong, StackTrace> stackTraces = new();
 
 #endif
 
@@ -585,9 +626,8 @@ public static partial class RenderingBackend
 
 
 
-        public SwapchainDetails ConfigureSwapchain(Vector2<uint> Size, bool UseHDR)
+        private void DestroySwapChainResources()
         {
-
 
             if (swapChainImageViews != null)
             {
@@ -599,6 +639,14 @@ public static partial class RenderingBackend
 
                 VK.DestroyRenderPass(device, SwapChainRenderPass, null);
             }
+
+        }
+
+
+        public SwapchainDetails ConfigureSwapchain(Vector2<uint> Size, bool UseHDR)
+        {
+
+            DestroySwapChainResources();
 
 
 
@@ -621,6 +669,10 @@ public static partial class RenderingBackend
 
 
 
+            var oldSwapchain = swapChain;
+
+
+
             SwapchainCreateInfoKHR creatInfo = new()
             {
                 SType = StructureType.SwapchainCreateInfoKhr,
@@ -639,8 +691,7 @@ public static partial class RenderingBackend
                 PresentMode = presentMode,
                 Clipped = true,   
 
-                OldSwapchain = swapChain,
-
+                OldSwapchain = oldSwapchain,
             };
 
 
@@ -673,6 +724,8 @@ public static partial class RenderingBackend
                 throw new Exception();
 
 
+            if (oldSwapchain.Handle != 0)
+                khrSwapChain.DestroySwapchain(device, oldSwapchain, null);
 
 
 
@@ -775,22 +828,8 @@ public static partial class RenderingBackend
                     throw new Exception();
 
 
-#if DEBUG
-
-                var name = $"Swapchain Image {i}";
-
-                DebugUtilsObjectNameInfoEXT info = new()
-                {
-                    SType = StructureType.DebugUtilsObjectNameInfoExt,
-                    ObjectType = ObjectType.Image,
-                    ObjectHandle = swapChainImages[i].Handle,
-                    PObjectName = (byte*)SilkMarshal.StringToPtr(name)
-                };
-
-                debugUtils.SetDebugUtilsObjectName(device, &info);
-
-                SilkMarshal.Free((nint)info.PObjectName);
-
+#if DEBUG && ENABLE_VULKAN_DEBUGGING
+                SetVKObjectName(ObjectType.Image, swapChainImages[i].Handle, $"Swapchain Image {i}");
 #endif
             }
 
@@ -799,6 +838,13 @@ public static partial class RenderingBackend
             return new SwapchainDetails(new Vector2<uint>(extent.Width, extent.Height), surfaceFormat.hdr);
 
         }
+
+
+
+
+
+
+
 
 
         private Extent2D ChooseSwapExtent(SurfaceCapabilitiesKHR capabilities, Vector2<uint> Size)
@@ -852,13 +898,14 @@ public static partial class RenderingBackend
 
 
 
-        private Fence FrameFence;
-
 
         private uint CurrentSwapChainImageIndex;
 
-        private Silk.NET.Vulkan.Semaphore imageAvailableSemaphore;
-        private Silk.NET.Vulkan.Semaphore renderFinishedSemaphore;
+
+        private Fence FrameFence;
+
+        private Semaphore imageAvailableSemaphore;
+        private Semaphore renderFinishedSemaphore;
 
 
 
@@ -868,13 +915,12 @@ public static partial class RenderingBackend
 
             VK.ResetFences(device, 1, [FrameFence]);
 
-            // Acquire swapchain image, signal imageAvailableSemaphore
             khrSwapChain.AcquireNextImage(
                 device,
                 swapChain,
                 ulong.MaxValue,
                 imageAvailableSemaphore,
-                default, // no fence here
+                default, 
                 ref CurrentSwapChainImageIndex
             );
 
@@ -901,7 +947,7 @@ public static partial class RenderingBackend
 
             var cmd = RenderThreadCommandBuffer;
 
-            // Submit work: wait on imageAvailable, signal renderFinished
+
             PipelineStageFlags waitStage = PipelineStageFlags.ColorAttachmentOutputBit;
 
 
@@ -937,7 +983,6 @@ public static partial class RenderingBackend
 
 
 
-            // Present waits for renderFinished
             PresentInfoKHR presentInfo = new()
             {
                 SType = StructureType.PresentInfoKhr,
@@ -1108,11 +1153,17 @@ public static partial class RenderingBackend
             {
                 SType = StructureType.BufferCreateInfo,
                 Size = size,
-                Usage = BufferUsageFlags.TransferSrcBit | BufferUsageFlags.TransferDstBit,
+                Usage = Silk.NET.Vulkan.BufferUsageFlags.TransferSrcBit | Silk.NET.Vulkan.BufferUsageFlags.TransferDstBit,
                 SharingMode = SharingMode.Exclusive
             };
 
             VK.CreateBuffer(device, &bufferInfo, null, out buffer);
+
+
+#if DEBUG && ENABLE_VULKAN_DEBUGGING
+            SetVKObjectName(ObjectType.Buffer, buffer.Handle, "temp staging buffer");
+#endif
+
 
             VK.GetBufferMemoryRequirements(device, buffer, out MemoryRequirements memReq);
             uint memTypeIndex = FindMemoryType(
@@ -1189,16 +1240,26 @@ public static partial class RenderingBackend
 
 
 
-        private VulkanBufferAndMemory VKCreateBuffer(uint size, BufferUsageFlags usage, bool writeable, void* initialContent = null)
-        {
+        private VulkanBufferAndMemory VKCreateBuffer(
+            uint size,
+            Silk.NET.Vulkan.BufferUsageFlags usage,
+            MemoryPropertyFlags memoryFlags, 
+            void* initialContent = null,
 
+#if DEBUG
+            [CallerFilePath] string fPath = "",
+            [CallerLineNumber] uint fNumber = 0
+#endif
+
+            )
+        {
 
 
             BufferCreateInfo bufferInfo = new BufferCreateInfo
             {
                 SType = StructureType.BufferCreateInfo,
                 Size = size,
-                Usage = usage | BufferUsageFlags.TransferDstBit | BufferUsageFlags.TransferSrcBit,
+                Usage = usage,
                 SharingMode = SharingMode.Exclusive
             };
 
@@ -1207,16 +1268,15 @@ public static partial class RenderingBackend
                 throw new Exception("Failed to create buffer.");
 
 
+#if DEBUG && ENABLE_VULKAN_DEBUGGING
+            SetVKObjectName(ObjectType.Buffer, buffer.Handle, $"VKCreateBuffer-created buffer, created from;\n {fPath} ({fNumber})");
+#endif
 
-            MemoryPropertyFlags memoryflags;
-
-            if (!writeable) memoryflags = MemoryPropertyFlags.DeviceLocalBit;
-            else memoryflags = MemoryPropertyFlags.HostVisibleBit | MemoryPropertyFlags.HostCoherentBit;
 
 
 
             VK.GetBufferMemoryRequirements(device, buffer, out MemoryRequirements memReq);
-            uint memoryTypeIndex = FindMemoryType(memReq.MemoryTypeBits, memoryflags);
+            uint memoryTypeIndex = FindMemoryType(memReq.MemoryTypeBits, memoryFlags);
 
 
 
@@ -1237,16 +1297,15 @@ public static partial class RenderingBackend
 
 
             void* mapped = default;
-            if (writeable) VK.MapMemory(device, memory, 0, size, 0, &mapped);
+            if (memoryFlags != MemoryPropertyFlags.DeviceLocalBit) VK.MapMemory(device, memory, 0, size, 0, &mapped);
 
 
             if (initialContent != null)
             {
-                if (writeable) Unsafe.CopyBlockUnaligned(mapped, initialContent, size);
+                if (memoryFlags != MemoryPropertyFlags.DeviceLocalBit) Unsafe.CopyBlockUnaligned(mapped, initialContent, size);
 
                 else
                 {
-
                     CreateStagingBuffer(size, out var stagingBuffer, out var stagingMemory);
 
                     VK.MapMemory(device, stagingMemory, 0, size, 0, &mapped);
@@ -1274,162 +1333,125 @@ public static partial class RenderingBackend
 
 
 
+
+
+
+        private class VulkanBufferAndMemory
+        {
+            public readonly Buffer Buffer;
+            public readonly uint Size;
+
+            public readonly DeviceMemory Memory;
+            public readonly Silk.NET.Vulkan.BufferUsageFlags UsageFlags;
+
+
+            public readonly void* MappedPtr; //null if not mutable
+
+            public VulkanBufferAndMemory(Buffer buffer, DeviceMemory memory, Silk.NET.Vulkan.BufferUsageFlags usageFlags, uint size, void* mappedPtr = default)
+            {
+                Buffer = buffer;
+                Memory = memory;
+                UsageFlags = usageFlags;
+                MappedPtr = mappedPtr;
+                Size = size;
+            }
+        }
+
+
+
+
+
+
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         private static uint AlignUp(uint size, uint alignment) => (size + alignment - 1) & ~(alignment - 1);
 
 
 
-        public unsafe object CreateVertexBuffer(uint length, bool writeable, void* initialContent)
-        {
-            return VKCreateBuffer(length, BufferUsageFlags.VertexBufferBit, writeable, initialContent);
-        }
-
-        public unsafe object CreateIndexBuffer(uint length, bool writeable, void* initialContent)
-        {
-            return VKCreateBuffer(length, BufferUsageFlags.IndexBufferBit, writeable, initialContent);
-        }
-
-        public unsafe object CreateUniformBuffer(uint length, bool writeable, void* initialContent)
-        {
-            return VKCreateBuffer(AlignUp(length, (uint)physicalDeviceProperties.Limits.MinUniformBufferOffsetAlignment), BufferUsageFlags.UniformBufferBit, writeable, initialContent);
-        }
-
-        public unsafe object CreateStorageBuffer(uint length, bool writeable, void* initialContent)
-        {
-            return VKCreateBuffer(AlignUp(length, (uint)physicalDeviceProperties.Limits.MinStorageBufferOffsetAlignment), BufferUsageFlags.StorageBufferBit, writeable, initialContent);
-        }
 
 
-
-
-
-
-
-
-
-
-
-
-        public unsafe void AdvanceActiveBufferWrite(BackendBufferAllocationReference buffer, uint idx) 
-            => ((VulkanBufferAndMemory)buffer.BackendRef).CurrentConsumingWriteIndex = idx;
-
-
-
-
-        public void WriteToBuffer(BackendBufferAllocationReference logicalbuffer, ReadOnlySpan<WriteRange> writes, uint idx)
+        public unsafe object CreateBuffer(uint length, void* initialContent, BufferUsageFlags usageFlags, ReadWriteFlags readWriteFlags)
         {
 
-            var ActualVKBuffer = (VulkanBufferAndMemory)logicalbuffer.BackendRef;
-
-            var RequiredSize = logicalbuffer.Size * (idx+1);
-
-            var Offset = logicalbuffer.Size * idx;
+            Silk.NET.Vulkan.BufferUsageFlags usage = 0;
 
 
 
-            //if the currently owned buffer is big enough, write
+            //  Standard usage equivalents
 
-            if (ActualVKBuffer.Size >= RequiredSize)
+            if (usageFlags.HasFlag(BufferUsageFlags.Vertex)) 
+                usage |= Silk.NET.Vulkan.BufferUsageFlags.VertexBufferBit;
+
+            if (usageFlags.HasFlag(BufferUsageFlags.Index))
+                usage |= Silk.NET.Vulkan.BufferUsageFlags.IndexBufferBit;
+
+            if (usageFlags.HasFlag(BufferUsageFlags.Uniform))
+                usage |= Silk.NET.Vulkan.BufferUsageFlags.UniformBufferBit;
+
+            if (usageFlags.HasFlag(BufferUsageFlags.Storage))
+                usage |= Silk.NET.Vulkan.BufferUsageFlags.StorageBufferBit;   
+
+
+
+            // GPU read / write
+
+            if (readWriteFlags.HasFlag(ReadWriteFlags.GPUWrite)
+                || (initialContent != null && !readWriteFlags.HasFlag(ReadWriteFlags.CPUWrite)))   //<-- staging buffer must copy initial content in if cpuwrite isnt present
+                usage |= Silk.NET.Vulkan.BufferUsageFlags.TransferDstBit;
+
+            if (readWriteFlags.HasFlag(ReadWriteFlags.GPURead))      
+                usage |= Silk.NET.Vulkan.BufferUsageFlags.TransferSrcBit;
+
+
+
+
+
+            // CPU access
+
+            MemoryPropertyFlags access = 0;
+
+            bool cpuRead = readWriteFlags.HasFlag(ReadWriteFlags.CPURead);
+            bool cpuWrite = readWriteFlags.HasFlag(ReadWriteFlags.CPUWrite);
+
+            if (cpuRead || cpuWrite)
             {
-                //write changes from cpu
-                pushwrites(ref writes, ActualVKBuffer.MappedPtr);  
-                return;
+                access |= MemoryPropertyFlags.HostVisibleBit;
+
+                if (cpuRead)
+                    access |= MemoryPropertyFlags.HostCachedBit;
+
+                if (cpuWrite && !cpuRead)
+                    access |= MemoryPropertyFlags.HostCoherentBit;
+            }
+            else
+            {
+                access |= MemoryPropertyFlags.DeviceLocalBit;
             }
 
 
 
-            //otherwise, replace backendref with a buffer big enough for another snapshot and append to that
-
-            var newBuffer = VKCreateBuffer(RequiredSize, ActualVKBuffer.UsageFlags, true, null);
 
 
-
-
-
-            //gpu -> gpu copy buffer to new
-            var singletime = BeginSingleTimeCommandBuffer();
-
-            VK.CmdCopyBuffer(singletime, ActualVKBuffer.Buffer, newBuffer.Buffer, [new BufferCopy(0, 0, logicalbuffer.Size), new BufferCopy(0, logicalbuffer.Size, logicalbuffer.Size)]);
-
-            EndSingleTimeCommandBuffer(singletime);
-
-
-
-
-            //write changes from cpu
-            pushwrites(ref writes, newBuffer.MappedPtr);
-
-
-
-
-            DestroyBuffer(logicalbuffer);
-            logicalbuffer.BackendRef = newBuffer;
-
-
-
-            void pushwrites(ref ReadOnlySpan<WriteRange> writes, void* to)
-            {
-                for (int i = 0; i < writes.Length; i++)
-                {
-                    var write = writes[i];
-                    Unsafe.CopyBlockUnaligned((byte*)to + Offset + write.Offset, (byte*)write.Content, write.Length);
-                }
-            }
+            return VKCreateBuffer(length, usage, access, initialContent);
         }
 
 
 
-        private abstract class DeferredWriteBase
+
+
+
+        public unsafe void WriteToBuffer(BackendBufferReference buffer, WriteRange write)
         {
-            public DeferredWriteBase()
-            {
-                Handle = GCHandle<DeferredWriteBase>.Alloc(this, GCHandleType.Weak);
-            }
-
-
-
-            public readonly GCHandle<DeferredWriteBase> Handle;
-
-            public uint CurrentConsumingWriteIndex;
-        }
-
-
-
-
-        private class VulkanBufferAndMemory : DeferredWriteBase
-        {
-
-            public readonly Buffer Buffer;
-            public readonly uint Size;
-
-            public readonly DeviceMemory Memory;
-            public readonly BufferUsageFlags UsageFlags;
-
-
-            public readonly void* MappedPtr; //null if not writeable
-
-
-
-            public VulkanBufferAndMemory(Buffer buffer, DeviceMemory memory, BufferUsageFlags usageFlags, uint size, void* mappedPtr = default) : base()
-            {
-                Buffer=buffer;
-                Memory=memory;
-                UsageFlags=usageFlags;
-                MappedPtr=mappedPtr;
-                Size=size;
-
-            }
-
+            var vkbuf = (VulkanBufferAndMemory)buffer.BackendRef;
+            Unsafe.CopyBlockUnaligned((byte*)vkbuf.MappedPtr + write.Offset, write.Content, write.Length);
         }
 
 
 
 
 
-        public void DestroyBuffer(BackendBufferAllocationReference buffer)
-        {
-            VKDestroyBuffer((VulkanBufferAndMemory)buffer.BackendRef);
-        }
+
+        public void DestroyBuffer(BackendBufferReference buffer) 
+            => VKDestroyBuffer((VulkanBufferAndMemory)buffer.BackendRef);
 
 
         private void VKDestroyBuffer(VulkanBufferAndMemory vkbuffer)
@@ -1442,19 +1464,10 @@ public static partial class RenderingBackend
 
 
 
-        private class VulkanDescriptorSetList(DescriptorSetLayout layout) : DeferredWriteBase()
+
+        private record class VulkanDescriptorSet(DescriptorSetLayout Layout, DescriptorSet Set, DescriptorPool Pool)
         {
-            public DescriptorSetLayout Layout = layout;
-
-            public List<VulkanDescriptorSet> Sets = new();
-
-        }
-
-
-
-        private record class VulkanDescriptorSet(DescriptorSetLayout Layout, DescriptorSet Set)
-        {
-            public IResourceSetResource[] contents;
+            public ResourceSetResourceBind[] Contents;
         }
 
 
@@ -1464,51 +1477,41 @@ public static partial class RenderingBackend
 
         public object CreateResourceSet(ReadOnlySpan<ResourceSetResourceDeclaration> contentDefinition)
         {
+
             var details = new DescriptorSetLayoutDetails();
+
 
             for (byte i = 0; i < contentDefinition.Length; i++)
             {
                 var get = contentDefinition[i];
 
-                switch (get.ResourceType)
+
+                details.ResourceType[details.ResourceCount] = get.ResourceType switch
                 {
-                    case ResourceSetResourceDeclaration.ResourceSetResourceType.Texture:
-                        details.ResourceType[details.ResourceCount] = (byte)DescriptorType.CombinedImageSampler;
-                        break;
 
-                    case ResourceSetResourceDeclaration.ResourceSetResourceType.UniformBuffer:
-                        details.ResourceType[details.ResourceCount] = (byte)DescriptorType.UniformBufferDynamic;
-                        break;
+                    ResourceSetResourceDeclaration.ResourceSetResourceType.Texture => (byte)DescriptorType.CombinedImageSampler,
+                    ResourceSetResourceDeclaration.ResourceSetResourceType.ConstantDataBuffer => (byte)DescriptorType.UniformBuffer,
+                    
 
-                    case ResourceSetResourceDeclaration.ResourceSetResourceType.StorageBuffer:
-                        details.ResourceType[details.ResourceCount] = (byte)DescriptorType.StorageBufferDynamic;
-                        break;
+                    ResourceSetResourceDeclaration.ResourceSetResourceType.ReadOnlyDataBuffer 
+                    or ResourceSetResourceDeclaration.ResourceSetResourceType.ReadWriteDataBuffer 
+                        => (byte)DescriptorType.StorageBuffer,
 
-                    default:
-                        throw new Exception();
-                }
+
+                    _ => throw new Exception(),
+                };
+
 
                 details.ResourceArrayLength[details.ResourceCount] = uint.Max(get.ArrayLength, 1);
 
                 details.ResourceCount++;
             }
 
-            var inst = new VulkanDescriptorSetList(CreateOrFetchDescriptorSetLayout(details));
-
-            AddDescriptorSet(inst);
-
-
-            inst.Sets[0].contents = new IResourceSetResource[contentDefinition.Length];
-
-
-            return inst;
-        }
 
 
 
-        private void AddDescriptorSet(VulkanDescriptorSetList src)
-        {
-            var layout = src.Layout;
+            var layout = CreateOrFetchDescriptorSetLayout(details);
+
 
             DescriptorSetAllocateInfo allocInfo = new()
             {
@@ -1522,50 +1525,23 @@ public static partial class RenderingBackend
             if (VK.AllocateDescriptorSets(device, &allocInfo, out DescriptorSet descriptorSet) != Result.Success)
                 throw new Exception("failed to allocate descriptor set");
 
-            src.Sets.Add(new(layout, descriptorSet));
 
-        }
-
-
-
-        public unsafe void AdvanceActiveResourceSetWrite(BackendResourceSetReference set, uint idx)
-            => ((VulkanDescriptorSetList)set.BackendRef).CurrentConsumingWriteIndex = idx;
-
-
-
-        public unsafe void WriteToResourceSet(BackendResourceSetReference set, ReadOnlySpan<ResourceSetResourceBind> contents, uint idx)
-        {
-            var backendref = (VulkanDescriptorSetList)set.BackendRef;
-
-
-            if (idx >= backendref.Sets.Count)
+            return new VulkanDescriptorSet(CreateOrFetchDescriptorSetLayout(details), descriptorSet, allocInfo.DescriptorPool)
             {
-                AddDescriptorSet(backendref);
-
-                var prevContents = backendref.Sets[(int)idx - 1];
-                var newSet = backendref.Sets[(int)idx];
-
-                newSet.contents = new IResourceSetResource[prevContents.contents.Length];
-
-                Span<ResourceSetResourceBind> newcontents = stackalloc ResourceSetResourceBind[newSet.contents.Length];
-                for (uint i = 0; i < newcontents.Length; i++)
-                    newcontents[(int)i] = new ResourceSetResourceBind(i, ((Freeable)prevContents.contents[i]).GCHandle);
-
-                VKWriteToDescriptorSet(newSet, newcontents);
-            }
-
-
-
-            var vkset = backendref.Sets[(int)idx];
-
-            VKWriteToDescriptorSet(vkset, contents);
-
+                Contents = new ResourceSetResourceBind[contentDefinition.Length]
+            };
         }
+
+
+
+
+        public void WriteToResourceSet(BackendResourceSetReference set, ResourceSetResourceBind write)
+            => VKWriteToDescriptorSet((VulkanDescriptorSet)set.BackendRef, [write]);
+
 
 
         private unsafe void VKWriteToDescriptorSet(VulkanDescriptorSet vkset, ReadOnlySpan<ResourceSetResourceBind> contents)
         {
-
 
             Span<WriteDescriptorSet> writes = stackalloc WriteDescriptorSet[contents.Length];
             Span<DescriptorBufferInfo> bufferInfos = stackalloc DescriptorBufferInfo[contents.Length];
@@ -1578,9 +1554,14 @@ public static partial class RenderingBackend
             {
                 var slot = contents[i];
 
-                var resource = (IResourceSetResource)slot.Resource.Target;
 
-                vkset.contents[slot.Binding] = resource;
+                var currentResource = vkset.Contents[slot.Binding];
+
+
+
+
+                var resource = slot.ResourceHandle.Dereference();
+
 
 
                 if (resource is BackendTextureAndSamplerReferencesPair tex)
@@ -1613,7 +1594,7 @@ public static partial class RenderingBackend
                 {
                     int arrayLength = texArray.Array.Length;
 
-                    // Allocate space for DescriptorImageInfo for each element
+
                     var imageInfosArray = new DescriptorImageInfo[arrayLength];
 
                     for (int i2 = 0; i2 < arrayLength; i2++)
@@ -1646,14 +1627,17 @@ public static partial class RenderingBackend
 
 
 
-                else if (resource is BackendBufferAllocationReference ubo)
+                else if (resource is BackendBufferReference.IDataBuffer)
                 {
-                    
+                    var dataBuffer = (BackendBufferReference)resource;
+
+
+
                     bufferInfos[writeIndex] = new DescriptorBufferInfo
                     {
-                        Buffer = ((VulkanBufferAndMemory)ubo.BackendRef).Buffer,
+                        Buffer = ((VulkanBufferAndMemory)dataBuffer.BackendRef).Buffer,
                         Offset = 0,
-                        Range = ubo.Size
+                        Range = slot.Range,
                     };
 
                     fixed (DescriptorBufferInfo* p = &bufferInfos[writeIndex])
@@ -1664,43 +1648,23 @@ public static partial class RenderingBackend
                             DstSet = vkset.Set,
                             DstBinding = slot.Binding,
                             DescriptorCount = 1,
-                            DescriptorType = DescriptorType.UniformBufferDynamic,
+                            DescriptorType = dataBuffer.UsageFlags.HasFlag(BufferUsageFlags.Uniform) ? DescriptorType.UniformBuffer : DescriptorType.StorageBuffer,
                             PBufferInfo = p
                         };
                     }
 
-                    writeIndex++;
-                }
-
-
-                else if (resource is BackendStorageBufferAllocationReference ssbo)
-                {
-                    bufferInfos[writeIndex] = new DescriptorBufferInfo
-                    {
-                        Buffer = ((VulkanBufferAndMemory)ssbo.BackendRef).Buffer,
-                        Offset = 0,
-                        Range = ssbo.Size
-                    };
-
-                    fixed (DescriptorBufferInfo* p = &bufferInfos[writeIndex])
-                    {
-                        writes[writeIndex] = new WriteDescriptorSet
-                        {
-                            SType = StructureType.WriteDescriptorSet,
-                            DstSet = vkset.Set,
-                            DstBinding = slot.Binding,
-                            DescriptorCount = 1,
-                            DescriptorType = DescriptorType.StorageBufferDynamic,
-                            PBufferInfo = p
-                        };
-                    }
 
                     writeIndex++;
                 }
 
 
                 else throw new NotImplementedException();
+
+
+                vkset.Contents[slot.Binding] = slot;
+
             }
+
 
 
 
@@ -1718,7 +1682,8 @@ public static partial class RenderingBackend
 
         public void DestroyResourceSet(BackendResourceSetReference set)
         {
-            throw new NotImplementedException();
+            var vkset = (VulkanDescriptorSet)set.BackendRef;
+            VK.FreeDescriptorSets(device, vkset.Pool, [vkset.Set]);
         }
 
 
@@ -2118,6 +2083,11 @@ public static partial class RenderingBackend
             if (VK.CreateImageView(device, in createInfo, null, out var res) != Result.Success)
                 throw new Exception("failed to create image view");
 
+
+#if DEBUG && ENABLE_VULKAN_DEBUGGING
+            SetVKObjectName(ObjectType.ImageView, res.Handle, "Image View");
+#endif
+
             return res;
         }
 
@@ -2300,6 +2270,11 @@ public static partial class RenderingBackend
 
             if (VK.CreateSampler(device, in samplerInfo, null, out Sampler sampler) != Result.Success)
                 throw new Exception("Failed to create sampler");
+
+
+#if DEBUG && ENABLE_VULKAN_DEBUGGING
+            SetVKObjectName(ObjectType.Sampler, sampler.Handle, "sampler");
+#endif
 
 
             return sampler;
@@ -2599,16 +2574,12 @@ public static partial class RenderingBackend
 
 
 
-            var FramebufferPipeline = details.FrameBufferPipelineHandle == IntPtr.Zero ? null : (BackendFrameBufferPipelineReference)GCHandle.FromIntPtr(details.FrameBufferPipelineHandle).Target;
-            var Shader = (BackendShaderReference)GCHandle.FromIntPtr(details.ShaderHandle).Target;
+            var FramebufferPipeline = details.FrameBufferPipeline.Dereference();
+            var Shader = details.Shader.Dereference();
 
 
 
-            var retArray = new VulkanPipelineAndLayout[
-                FramebufferPipeline == null ? 
-                1 
-                : 
-                ((VulkanFramebufferPipeline)FramebufferPipeline.BackendRef).RenderPasses.Length];
+            var retArray = new VulkanPipelineAndLayout [  FramebufferPipeline == null ? 1 : ((VulkanFramebufferPipeline)FramebufferPipeline.BackendRef).RenderPasses.Length  ];
 
 
 
@@ -2674,28 +2645,14 @@ public static partial class RenderingBackend
             {
                 var layoutDetails = new DescriptorSetLayoutDetails();
 
-                // Uniform buffers
-                foreach (var ubo in Set.Metadata.UniformBuffers.Values)
+                foreach (var buffer in Set.Metadata.Buffers.Values)
                 {
-                    layoutDetails.ResourceType[ubo.Binding] = (byte)DescriptorType.UniformBufferDynamic;
-                    layoutDetails.ResourceArrayLength[ubo.Binding] = 1;
+                    layoutDetails.ResourceType[buffer.Binding] = buffer.Metadata.UsageFlags.HasFlag(BufferUsageFlags.Uniform) ? (byte)DescriptorType.UniformBuffer : (byte)DescriptorType.StorageBuffer;
+                    layoutDetails.ResourceArrayLength[buffer.Binding] = 1;
 
                     layoutDetails.ResourceCount++;
                 }
 
-
-                // Storage buffers
-                foreach (var ssbo in Set.Metadata.StorageBuffers.Values)
-                {
-                    layoutDetails.ResourceType[ssbo.Binding] = (byte)DescriptorType.StorageBufferDynamic;
-                    layoutDetails.ResourceArrayLength[ssbo.Binding] = 1;
-
-                    layoutDetails.ResourceCount++;
-                }
-
-
-
-                // Textures
                 foreach (var tex in Set.Metadata.Textures.Values)
                 {
                     layoutDetails.ResourceType[tex.Binding] = (byte)DescriptorType.CombinedImageSampler;
@@ -3557,7 +3514,7 @@ public static partial class RenderingBackend
 
         public void StartDrawToScreen()
         {
-            StartRenderPass(RenderingBackend.CurrentSwapchainDetails.Size, swapChainFramebuffers[CurrentSwapChainImageIndex], new(SwapChainRenderPass, 1, 1, false));
+            StartRenderPass(CurrentSwapchainDetails.Size, swapChainFramebuffers[CurrentSwapChainImageIndex], new(SwapChainRenderPass, 1, 1, false));
         }
 
 
@@ -3579,10 +3536,10 @@ public static partial class RenderingBackend
 
         public void Draw(
 
-            ReadOnlySpan<VertexAttributeDefinitionPlusBufferStruct> AttributeBuffers,
-            ReadOnlySpan<GCHandle<BackendResourceSetReference>> ResourceSets,
+            ReadOnlySpan<VertexAttributeDefinitionBufferPair.Struct> AttributeBuffers,
+            ReadOnlySpan<WeakObjRef<BackendResourceSetReference>> ResourceSets,
             BackendDrawPipelineReference pipeline,
-            BackendIndexBufferAllocationReference indexBuffer,
+            BackendBufferReference.IIndexBuffer indexBuffer,
             uint indexBufferOffset,
             IndexingDetails indexing)
 
@@ -3598,12 +3555,10 @@ public static partial class RenderingBackend
 
 
 
-            // Bind graphics pipeline
             VK.CmdBindPipeline(RenderThreadCommandBuffer, PipelineBindPoint.Graphics, vkpipeline);
 
 
 
-            // Bind vertex buffers
             var bufferHandles = stackalloc Buffer[AttributeBuffers.Length];
             var bufferOffsets = stackalloc ulong[AttributeBuffers.Length];
 
@@ -3612,12 +3567,9 @@ public static partial class RenderingBackend
             {
                 var bind = AttributeBuffers[i];
 
-                var bufferResource = bind.Buffer.Target;
-                var backendref = ((VulkanBufferAndMemory)bufferResource.BackendRef);
+                var bufferResource = bind.BufferRef.Dereference();
 
-                bufferHandles[i] = backendref.Buffer;
-                bufferOffsets[i] = backendref.CurrentConsumingWriteIndex * bufferResource.Size;
-
+                bufferHandles[i] = ((VulkanBufferAndMemory)((BackendBufferReference)bufferResource).BackendRef).Buffer;
             }
 
 
@@ -3626,72 +3578,38 @@ public static partial class RenderingBackend
 
 
 
-            // Bind index buffer if present
             if (indexBuffer != null)
             {
-                var indexBufferBackendRef = (VulkanBufferAndMemory)indexBuffer.BackendRef;
-
-                VK.CmdBindIndexBuffer(RenderThreadCommandBuffer, indexBufferBackendRef.Buffer, indexBufferOffset + (indexBufferBackendRef.CurrentConsumingWriteIndex * indexBuffer.Size), IndexType.Uint32);
+                VK.CmdBindIndexBuffer(RenderThreadCommandBuffer, ((VulkanBufferAndMemory)((BackendBufferReference)indexBuffer).BackendRef).Buffer, indexBufferOffset, IndexType.Uint32);
             }
 
 
 
 
 
-
-            // Bind descriptor sets with dynamic offsets if necessary
             for (int i = 0; i < ResourceSets.Length; i++)
             {
-                var get = ResourceSets[i].Target;
+                var get = ResourceSets[i].Dereference();
 
-                var set = (VulkanDescriptorSetList)get.BackendRef;
+                var set = (VulkanDescriptorSet)get.BackendRef;
+                var s = set.Set;
 
-
-                var contentsspan = get.GetContents();
-
-                int dynamicOffsetCount = 0;
-                Span<uint> dynamicOffsets = stackalloc uint[contentsspan.Length];
-
-
-                for (int r = 0; r < contentsspan.Length; r++)
-                {
-                    var content = contentsspan[r];
-
-                    if (content is BackendUniformBufferAllocationReference ubo)
-                    {
-                        dynamicOffsets[dynamicOffsetCount++] = ((VulkanBufferAndMemory)ubo.BackendRef).CurrentConsumingWriteIndex * AlignUp(ubo.Size, (uint)physicalDeviceProperties.Limits.MinUniformBufferOffsetAlignment);
-                    }
-
-                    else if (content is BackendStorageBufferAllocationReference ssbo)
-                    {
-                        dynamicOffsets[dynamicOffsetCount++] = ((VulkanBufferAndMemory)ssbo.BackendRef).CurrentConsumingWriteIndex * AlignUp(ssbo.Size, (uint)physicalDeviceProperties.Limits.MinStorageBufferOffsetAlignment);
-                    }
-                }
-
-
-                var s = set.Sets[(int)set.CurrentConsumingWriteIndex].Set;
-
-                // bind descriptor set with dynamic offsets
-                fixed (uint* pOffsets = dynamicOffsets)
-                {
-                    VK.CmdBindDescriptorSets(
-                        RenderThreadCommandBuffer,
-                        PipelineBindPoint.Graphics,
-                        vkLayout,
-                        (uint)i,
-                        1,
-                        &s,
-                        (uint)dynamicOffsetCount,
-                        pOffsets
-                    );
-                }
+                VK.CmdBindDescriptorSets(
+                    RenderThreadCommandBuffer,
+                    PipelineBindPoint.Graphics,
+                    vkLayout,
+                    (uint)i,
+                    1,
+                    &s,
+                    0,
+                    null
+                );
             }
 
 
 
 
 
-            // Set viewport and scissor
             var dims = ActiveFrameBufferObject == null ? CurrentSwapchainDetails.Size : ActiveFrameBufferObject.Dimensions;
 
             Viewport viewport = new()
@@ -3719,7 +3637,6 @@ public static partial class RenderingBackend
 
 
 
-            // Issue the draw
             if (indexBuffer != null)
             {
                 VK.CmdDrawIndexed(
@@ -3771,17 +3688,43 @@ public static partial class RenderingBackend
 
         public void Destroy()
         {
-            foreach (var p in CommandPools) 
-                VK.DestroyCommandPool(device, p.Value, null);
+            lock (this)
+            {
+                VK.DeviceWaitIdle(device);
 
-            foreach (var p in DescriptorPools)
-                VK.DestroyDescriptorPool(device, p.Value, null);
 
-            VK.DestroyRenderPass(device, SwapChainRenderPass, null);
+                DestroySwapChainResources();
+                khrSwapChain.DestroySwapchain(device, swapChain, null);
+                khrSurface.DestroySurface(instance, surface, null);
 
-            VK.DestroyDevice(device, null);
 
-            VK.DestroyInstance(instance, null);
+                VK.DestroyFence(device, FrameFence, null);
+                VK.DestroySemaphore(device, imageAvailableSemaphore, null);
+                VK.DestroySemaphore(device, renderFinishedSemaphore, null);
+
+
+
+
+                foreach (var p in CommandPools)
+                    VK.DestroyCommandPool(device, p.Value, null);
+
+                foreach (var p in DescriptorPools)
+                    VK.DestroyDescriptorPool(device, p.Value, null);
+
+                foreach (var p in DescriptorSetLayoutCache)
+                    VK.DestroyDescriptorSetLayout(device, p.Value, null);
+
+                VK.DestroyDevice(device, null);
+
+
+#if DEBUG && ENABLE_VULKAN_DEBUGGING
+                debugUtils.DestroyDebugUtilsMessenger(instance, debugMessenger, null);
+#endif
+
+                VK.DestroyInstance(instance, null);
+            }
+
+            
 
         }
 
@@ -3831,13 +3774,13 @@ public static partial class RenderingBackend
 
         public void DestroyDrawPipeline(BackendDrawPipelineReference pipeline)
         {
-            //layouts are derived from a cache and arent owned by the pipeline
-
             var pipelines = (VulkanPipelineAndLayout[])pipeline.BackendRef;
             for (int i = 0; i<pipelines.Length; i++)
             {
+                ref var get = ref pipelines[i];
 
-                VK.DestroyPipeline(device, pipelines[i].Pipeline, null);
+                VK.DestroyPipeline(device, get.Pipeline, null);
+                VK.DestroyPipelineLayout(device, get.Layout, null);
             }
         }
 

@@ -7,12 +7,14 @@ using System;
 using System.Collections.Frozen;
 using System.Collections.Generic;
 using System.Collections.Immutable;
+using System.Diagnostics;
 using System.Linq;
 using System.Numerics;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using static Comparisons;
 using static EngineMath;
+using static Engine.Core.References;
 using static RenderingBackend.ResourceSetResourceDeclaration;
 using static RenderThread;
 
@@ -20,7 +22,7 @@ using static RenderThread;
 
 
 /// <summary>
-/// Provides near direct immediate access to the rendering backend. Also see <seealso cref="Rendering"/> and/or <seealso cref="IDeferredCommand"/>
+/// Provides near direct immediate access to the current rendering backend. Also see <seealso cref="Rendering"/> and/or <seealso cref="IDeferredCommand{TSelf}"/>
 /// </summary>
 public static partial class RenderingBackend
 {
@@ -28,15 +30,9 @@ public static partial class RenderingBackend
 
 
 
-
-
-
     public static SDL3.SDL.WindowFlags GetSDLWindowFlagsForBackend(RenderingBackendEnum Backend)
         => RenderingBackendData[Backend.ToString()].Flags;
 
-
-    public static ShaderFormat GetRequiredShaderFormatForBackend(RenderingBackendEnum Backend)
-        => RenderingBackendData[Backend.ToString()].RequiredShaderFormat;
 
 
 
@@ -76,21 +72,40 @@ public static partial class RenderingBackend
 
 
     /// <summary>
-    /// Embodies a reference to a logical rendering backend resource.
-    /// <br/> <see cref="BackendReference"/>s should always feel like direct or near direct references to gpu resources.
+    /// Represents a real gpu-backed resource.
     /// </summary>
-    /// <param name="backendRef"></param>
-    public abstract class BackendReference(object backendRef) : RefCounted
+    public abstract class BackendReference : RefCounted
     {
         /// <summary>
-        /// A rendering-backend-specific object. Usually contains something like a resource handle. Can be null.
+        /// A rendering-backend-specific object. Usually contains something like a handle and possibly some internal state. Can be null.
         /// <br /> <b>! ! ! Should NEVER be modified or referenced by anything besides the <see cref="IRenderingBackend"/> that created it and any attempt to do so will likely backfire. ! ! !</b>
         /// <br /> Using this to store creation/state information is usually redundant due to the encompassing class already doing that.
         /// </summary>
-        public object BackendRef = backendRef;
+        public object BackendRef;
 
-        protected override abstract void OnFree();
+
+        public BackendReference(object backendRef)
+        {
+            BackendRef = backendRef;
+
+            lock (AllBackendReferences)
+                AllBackendReferences.Add(this);
+        }
+
+        protected override void OnFree()
+        {
+            lock (AllBackendReferences)
+                AllBackendReferences.Remove(this);
+        }
+
     }
+
+    private static readonly HashSet<BackendReference> AllBackendReferences = new();
+
+
+
+
+
 
 
 
@@ -100,14 +115,14 @@ public static partial class RenderingBackend
 
 
 #if DEBUG
-    public static Dictionary<string, ShaderMetadata.ShaderResourceSetMetadata> GlobalResourceSetMetadata = new();
+    public static readonly Dictionary<string, ShaderMetadata.ShaderResourceSetMetadata> GlobalResourceSetMetadata = new();
 #endif
 
 
 
 
 
-    private static Dictionary<ShaderMetadata.ShaderResourceSetMetadata, BackendResourceSetReference> DummyResourceSets = new();
+    private static readonly Dictionary<ShaderMetadata.ShaderResourceSetMetadata, BackendResourceSetReference> DummyResourceSets = new();
 
 
     public static BackendTextureAndSamplerReferencesPair Dummy2DTextureSamplerPair { get; private set; }
@@ -115,56 +130,34 @@ public static partial class RenderingBackend
     public static BackendTextureAndSamplerReferencesPair DummyCubeTextureSamplerPair { get; private set; }
     public static BackendTextureAndSamplerReferencesPair Dummy3DTextureSamplerPair { get; private set; }
 
-    public static BackendVertexBufferAllocationReference DummyVertex { get; private set; }
+    public static BackendBufferReference.IVertexBuffer DummyVertex { get; private set; }
 
 
 
+    private static SortedDictionary<uint, BackendBufferReference> DummyBuffers = new();
 
-    private static SortedDictionary<uint, BackendUniformBufferAllocationReference> DummyUBOs = new();
-
-    public static BackendUniformBufferAllocationReference GetDummyUBO(uint sizeReq)
+    public static BackendBufferReference GetDummyBuffer(uint sizeReq, BufferUsageFlags type, ReadWriteFlags flags)
     {
-        lock (DummyUBOs)
+        lock (DummyBuffers)
         {
-            foreach (var kv in DummyUBOs)
-                if (kv.Value.Size >= sizeReq) 
-                    return kv.Value;
-
-
-            var ret = DummyUBOs[sizeReq] = BackendUniformBufferAllocationReference.Create(sizeReq, false);
-
-            return ret;
-        }
-    }
-
-
-    private static SortedDictionary<uint, BackendStorageBufferAllocationReference> DummySSBOs = new();
-
-    public static BackendStorageBufferAllocationReference GetDummySSBO(uint sizeReq)
-    {
-        lock (DummySSBOs)
-        {
-            foreach (var kv in DummySSBOs)
+            foreach (var kv in DummyBuffers)
                 if (kv.Value.Size >= sizeReq)
                     return kv.Value;
 
-
-            var ret = DummySSBOs[sizeReq] = BackendStorageBufferAllocationReference.Create(sizeReq, false);
+            var ret = DummyBuffers[sizeReq] = BackendBufferReference.Create(sizeReq, type, flags);
 
             return ret;
         }
     }
 
-
-    public static bool IsResourceDummy(IResourceSetResource res)
+    public static bool IsResourceDummy(IBackendResourceReference res)
     {
         if (res == Dummy2DTextureSamplerPair) return true;
         if (res == Dummy2DShadowTextureSamplerPair) return true;
         if (res == Dummy3DTextureSamplerPair) return true;
         if (res == DummyCubeTextureSamplerPair) return true;
 
-        if (DummyUBOs.Values.Contains(res)) return true;
-        if (DummySSBOs.Values.Contains(res)) return true;
+        if (res is BackendBufferReference databuf && DummyBuffers.ContainsValue(databuf)) return true;
 
         return false;
     }
@@ -177,13 +170,14 @@ public static partial class RenderingBackend
     public static unsafe void CreateBasicObjects()
     {
 
-        DummyVertex = BackendVertexBufferAllocationReference.Create(1, false);
+        DummyVertex = (BackendBufferReference.IVertexBuffer)BackendBufferReference.Create(1, BufferUsageFlags.Vertex, ReadWriteFlags.GPURead);
+
 
 
 
         //solid white 1x1
         Dummy2DTextureSamplerPair = new BackendTextureAndSamplerReferencesPair(
-            BackendTextureReference.Create(new Vector3<uint>(1), TextureTypes.Texture2D, TextureFormats.RGB8_UNORM, FramebufferAttachmentCompatible: false, Mips: [[255,255,255]]),
+            BackendTextureReference.Create(new Vector3<uint>(1), TextureTypes.Texture2D, TextureFormats.RGB8_UNORM, FramebufferAttachmentCompatible: false, Mips: [[255, 255, 255]]),
             BackendSamplerReference.Get(new(TextureWrapModes.Repeat, TextureFilters.Nearest, TextureFilters.Nearest, TextureFilters.Nearest, EnableDepthComparison: false)));
 
 
@@ -195,8 +189,8 @@ public static partial class RenderingBackend
 
         //solid white 1x1 for each face
         DummyCubeTextureSamplerPair = new BackendTextureAndSamplerReferencesPair(
-            BackendTextureReference.Create(new Vector3<uint>(1), TextureTypes.TextureCubeMap, TextureFormats.RGB8_UNORM, FramebufferAttachmentCompatible: false, 
-            Mips: 
+            BackendTextureReference.Create(new Vector3<uint>(1), TextureTypes.TextureCubeMap, TextureFormats.RGB8_UNORM, FramebufferAttachmentCompatible: false,
+            Mips:
             [
                 [
                     255, 255, 255,
@@ -224,24 +218,51 @@ public static partial class RenderingBackend
 
 
 
+    public class VertexAttributeDefinitionBufferPair
+    {
+
+        private BackendBufferReference.IVertexBuffer Buf;
+        private WeakObjRef<BackendBufferReference.IVertexBuffer> BufRef;
+
+        public BackendBufferReference.IVertexBuffer Buffer
+        {
+            get => Buf;
+            set
+            {
+                Buf = value;
+                BufRef = Buf.GetRef();
+            }
+        }
+
+
+        public VertexAttributeDefinition Definition;
+
+        public VertexAttributeDefinitionBufferPair(BackendBufferReference.IVertexBuffer buffer, VertexAttributeDefinition definition)
+        {
+            Buffer = buffer;
+            Definition = definition;
+        }
+
+
+        public Struct GetStruct() => new Struct(BufRef, Definition);
+
+        public readonly record struct Struct(WeakObjRef<BackendBufferReference.IVertexBuffer> BufferRef, VertexAttributeDefinition Definition);
+    }
 
 
 
+    public static UnmanagedKeyValueCollection<WeakObjRef<string>, VertexAttributeDefinitionBufferPair.Struct> VertexAttributeDictToUnmanaged(this IDictionary<string, VertexAttributeDefinitionBufferPair> dict)
+    {
+        var attrs = new UnmanagedKeyValueCollection<WeakObjRef<string>, VertexAttributeDefinitionBufferPair.Struct>();
 
-    /// <summary>
-    /// A <see cref="BackendVertexBufferAllocationReference"/> <see cref="GCHandle"/> and a <see cref="VertexAttributeDefinition"/> bundled together.
-    /// </summary>
-    /// <param name="Buffer"></param>
-    /// <param name="Definition"></param>
-    public readonly record struct VertexAttributeDefinitionPlusBufferStruct(GCHandle<BackendVertexBufferAllocationReference> Buffer, VertexAttributeDefinition Definition);
+        foreach (var kv in dict)
+            attrs.KeyValuePairs[attrs.Count++] = new(kv.Key.GetRef(), kv.Value.GetStruct());
+
+        return attrs;
+    }
 
 
-    /// <summary>
-    /// A <see cref="BackendVertexBufferAllocationReference"/> and a <see cref="VertexAttributeDefinition"/> bundled together.
-    /// </summary>
-    /// <param name="Buffer"></param>
-    /// <param name="Definition"></param>
-    public record class VertexAttributeDefinitionPlusBufferClass(BackendVertexBufferAllocationReference Buffer, VertexAttributeDefinition Definition);
+
 
 
 
@@ -271,314 +292,361 @@ public static partial class RenderingBackend
 
 
 
+
+
+
+
+
+
+
+
     /// <summary>
-    /// Represents a gpu-side buffer.
-    /// <br/> This may not literally represent a unique perfectly sized buffer, depending on how the chosen rendering backend implements buffer allocation.
-    /// <br/> For example, it could just be pointing to a slice of a larger internal buffer. But it can be reliably thought of as one coherent user-owned buffer that meets the specifications requested.
+    /// Directly represents a gpu-side buffer.
+    /// <br/> Given a buffer supports one or more usages, it can be explicitly cast to one or more corresponding interfaces.
+    /// <br/> For example, given a buffer was created with <see cref="BufferUsageFlags.Vertex"/>, it can be cast to <see cref="IVertexBuffer"/>.
     /// </summary>
-    public abstract unsafe class BackendBufferAllocationReference : BackendReference
+    public unsafe class BackendBufferReference : BackendReference
     {
+
+
+
+
+        /// <summary>
+        /// A <see cref="BackendBufferReference"/> created with <see cref="BufferUsageFlags.Vertex"/>. Should never be implemented elsewhere.
+        /// </summary>
+        public interface IVertexBuffer;
+
+
+        /// <summary>
+        /// A <see cref="BackendBufferReference"/> created with <see cref="BufferUsageFlags.Index"/>. Should never be implemented elsewhere.
+        /// </summary>
+        public interface IIndexBuffer;
+
+
+
+        /// <summary>
+        /// A <see cref="BackendBufferReference"/> created with <see cref="BufferUsageFlags.Uniform"/> or <see cref="BufferUsageFlags.Storage"/>. Should never be implemented elsewhere.
+        /// </summary>
+        public unsafe interface IDataBuffer : IBackendResourceReference
+        {
+            public ShaderMetadata.ShaderDataBufferMetadata Metadata { get; set; }
+
+
+            /// <summary>
+            /// Writes from the offset of a top level member defined in <see cref="IDataBuffer.Metadata"/>.
+            /// <br/> If <paramref name="skipPadding"/> is true, input data should be tightly packed, and will be scatter copied into the buffer, skipping over padding.
+            /// </summary>
+            /// <typeparam name="ValueT"></typeparam>
+            /// <param name="fieldName"></param>
+            /// <param name="val"></param>
+            /// <param name="extraOffset"></param>
+            /// <param name="skipPadding"></param>
+            public void WriteFromOffsetOf<ValueT>(string fieldName, ValueT val, uint extraOffset = 0, bool skipPadding = true) where ValueT : unmanaged;
+
+
+            /// <summary>
+            /// <inheritdoc cref="WriteFromOffsetOf{ValueT}(string, ValueT, uint, bool)"/>
+            /// </summary>
+            /// <param name="fieldName"></param>
+            /// <param name="dataSize"></param>
+            /// <param name="dataPtr"></param>
+            /// <param name="extraOffset"></param>
+            /// <param name="skipPadding"></param>
+            public void WriteFromOffsetOf(string fieldName, uint dataSize, void* dataPtr, uint extraOffset = 0, bool skipPadding = true);
+
+
+            /// <summary>
+            /// Writes into this buffer while skipping over padding defined in given metadata.
+            /// </summary>
+            /// <param name="write"></param>
+            public unsafe void WriteAndSkipPadding(WriteRange write);
+        }
+
+
+
+
 
 
 
         public readonly uint Size;
 
-        public readonly bool Writeable;
+        public readonly BufferUsageFlags UsageFlags;
+        public readonly ReadWriteFlags AccessFlags;
 
 
-        protected BackendBufferAllocationReference(uint size, bool writeable, object backendRef) : base(backendRef)
+
+        private BackendBufferReference(uint size, BufferUsageFlags usageFlags, ReadWriteFlags accessFlags, object backendRef) : base(backendRef)
         {
             Size = size;
-            Writeable = writeable;
-
-            Logic.AppendPermanentEndOfFrameAction(() => WritesThisFrame = 0);
+            UsageFlags = usageFlags;
+            AccessFlags = accessFlags;
         }
 
-
-
-
-
-        private static unsafe void WriteToBuffer(BackendBufferAllocationReference buffer, ReadOnlySpan<WriteRange> writes, uint idx)
-        {
-            CheckOutsideOfRendering();
-            Backend.WriteToBuffer(buffer, writes, idx);
-        }
-
-
-        private static unsafe void AdvanceActiveBufferWrite(BackendBufferAllocationReference buffer, uint idx)
-        {
-            if (idx != 0) CheckDuringRendering();
-            Backend.AdvanceActiveBufferWrite(buffer, idx);
-        }
-
-
-
-
-
-
-
-
-
-        private uint WritesThisFrame;
-
-
-        public unsafe void Write(WriteRange* writes, uint count, bool nessecary)
-        {
-
-#if DEBUG
-            for (int i = 0; i < count; i++)
-            {
-                ref var g = ref writes[i];
-                if (g.Offset + g.Length > Size) throw new Exception();
-            }
-#endif
-
-
-            if (nessecary)
-            {
-                PushRenderThreadAction(() =>
-                {
-                    WriteToBuffer(this, new ReadOnlySpan<WriteRange>(writes, (int)count), 0);
-                    AdvanceActiveBufferWrite(this, 0);
-                    return null;
-                }).Wait();
-            }
-            else
-            {
-                WriteRange* alloc = (WriteRange*)AllocateRenderTemporaryUnmanaged((int)(sizeof(WriteRange) * count));
-                Unsafe.CopyBlockUnaligned(alloc, writes, (uint)(count*sizeof(WriteRange)));
-
-                PushDeferredPreRenderThreadCommand(new WriteStruct(this, alloc, count, WritesThisFrame));
-                PushDeferredRenderThreadCommand(new InlineAdvance(this, WritesThisFrame));
-
-                WritesThisFrame++;
-            }
-        }
-
-
-
-        private unsafe readonly struct WriteImmediateStruct(BackendBufferAllocationReference set, WriteRange[] writes) : IDeferredCommand
-        {
-            private readonly GCHandle<BackendBufferAllocationReference> buf = set.GetGenericGCHandle();
-            private readonly GCHandle<WriteRange[]> writes = GCHandle<WriteRange[]>.Alloc(writes, GCHandleType.Normal);
-
-            public static void Execute(void* self)
-            {
-                var p = (WriteImmediateStruct*)self;
-                WriteToBuffer(p->buf.Target, p->writes.Target, 0);
-                AdvanceActiveBufferWrite(p->buf.Target, 0);
-
-                p->writes.Free();
-            }
-        }
-
-
-
-        private unsafe readonly struct WriteStruct(BackendBufferAllocationReference buf, WriteRange* writes, uint count, uint index) : IDeferredCommand
-        {
-            private readonly GCHandle<BackendBufferAllocationReference> buf = buf.GetGenericGCHandle();
-            private readonly WriteRange* writes = writes;
-            private readonly uint count = count;
-            private readonly uint index = index;
-
-            public static void Execute(void* self)
-            {
-                var p = (WriteStruct*)self;
-                WriteToBuffer(p->buf.Target, new ReadOnlySpan<WriteRange>(p->writes, (int)p->count), p->index);
-            }
-        }
-
-        private unsafe readonly struct InlineAdvance(BackendBufferAllocationReference buf, uint index) : IDeferredCommand
-        {
-            private readonly GCHandle<BackendBufferAllocationReference> buf = buf.GetGenericGCHandle();
-            private readonly uint index = index;
-
-            public static void Execute(void* self)
-            {
-                var p = (InlineAdvance*)self;
-                AdvanceActiveBufferWrite(p->buf.Target, p->index);
-            }
-        }
 
 
         protected override void OnFree()
         {
-            PushRenderThreadAction(() => { Backend.DestroyBuffer(this); return null; });
+            Backend.DestroyBuffer(this);
+
+            base.OnFree();
         }
 
-    }
 
 
 
-    /// <summary>
-    /// <inheritdoc cref="BackendBufferAllocationReference"/>
-    /// </summary>
-    /// <param name="size"></param>
-    /// <param name="backendRef"></param>
-    public unsafe class BackendVertexBufferAllocationReference(uint size, bool writeable, object backendRef) : BackendBufferAllocationReference(size, writeable, backendRef)
-    {
 
-        public static BackendVertexBufferAllocationReference Create<T>(ReadOnlySpan<T> initialcontent, bool writeable) where T : unmanaged
+
+
+        /// <summary>
+        /// Creates an empty zeroed buffer from raw information.
+        /// </summary>
+        /// <param name="size"></param>
+        /// <param name="usageFlags"></param>
+        /// <param name="accessFlags"></param>
+        /// <returns></returns>
+        [DebuggerHidden]
+        [StackTraceHidden]
+        public static BackendBufferReference Create(uint size, BufferUsageFlags usageFlags, ReadWriteFlags accessFlags)
+            => CreateBufferInternal<byte>(size, default, default, usageFlags, accessFlags, null);
+
+
+
+        /// <summary>
+        /// Creates a buffer from raw information with initial content set via internal staging buffer copy.
+        /// </summary>
+        /// <typeparam name="T"></typeparam>
+        /// <param name="size"></param>
+        /// <param name="initialContent"></param>
+        /// <param name="initialContentWriteOffset"></param>
+        /// <param name="usageFlags"></param>
+        /// <param name="accessFlags"></param>
+        /// <returns></returns>
+        [DebuggerHidden]
+        [StackTraceHidden]
+        public static BackendBufferReference Create<T>(uint size, ReadOnlySpan<T> initialContent, uint initialContentWriteOffset, BufferUsageFlags usageFlags, ReadWriteFlags accessFlags) where T : unmanaged
+            => CreateBufferInternal(size, initialContent, initialContentWriteOffset, usageFlags, accessFlags, null);
+
+
+
+        /// <summary>
+        /// Creates a buffer from raw information with initial content set via internal staging buffer copy.
+        /// </summary>
+        /// <typeparam name="T"></typeparam>
+        /// <param name="initialContent"></param>
+        /// <param name="usageFlags"></param>
+        /// <param name="accessFlags"></param>
+        /// <returns></returns>
+        [DebuggerHidden]
+        [StackTraceHidden]
+        public static BackendBufferReference Create<T>(ReadOnlySpan<T> initialContent, BufferUsageFlags usageFlags, ReadWriteFlags accessFlags) where T : unmanaged
+            => CreateBufferInternal((uint)(initialContent.Length*sizeof(T)), initialContent, 0, usageFlags, accessFlags, null);
+
+
+
+
+        /// <summary>
+        /// Creates an empty zeroed buffer based on data within an instance of <see cref="ShaderMetadata.ShaderDataBufferMetadata"/>.
+        /// </summary>
+        /// <param name="metadata"></param>
+        /// <param name="sizeOverride"></param>
+        /// <param name="extraUsageFlags"></param>
+        /// <param name="extraAccessFlags"></param>
+        /// <returns></returns>
+        [DebuggerHidden]
+        [StackTraceHidden]
+        public static IDataBuffer CreateDataBufferFromMetadata(ShaderMetadata.ShaderDataBufferMetadata metadata, uint sizeOverride = default, BufferUsageFlags extraUsageFlags = default, ReadWriteFlags extraAccessFlags = default)
+            => (IDataBuffer)CreateBufferInternal<byte>(uint.Max(sizeOverride, metadata.SizeRequirement), default, default, metadata.UsageFlags | extraUsageFlags, metadata.ReadWriteFlags | extraAccessFlags, metadata);
+
+
+        /// <summary>
+        /// Creates a buffer based on data within an instance of <see cref="ShaderMetadata.ShaderDataBufferMetadata"/>, with initial content set via internal staging buffer copy.
+        /// </summary>
+        /// <typeparam name="T"></typeparam>
+        /// <param name="metadata"></param>
+        /// <param name="initialContent"></param>
+        /// <param name="initialContentWriteOffset"></param>
+        /// <param name="sizeOverride"></param>
+        /// <param name="extraUsageFlags"></param>
+        /// <param name="extraAccessFlags"></param>
+        /// <returns></returns>
+        [DebuggerHidden]
+        [StackTraceHidden]
+        public static IDataBuffer CreateDataBufferFromMetadata<T>(ShaderMetadata.ShaderDataBufferMetadata metadata, ReadOnlySpan<T> initialContent, uint initialContentWriteOffset, uint sizeOverride = default, BufferUsageFlags extraUsageFlags = default, ReadWriteFlags extraAccessFlags = default) where T : unmanaged
+            => (IDataBuffer)CreateBufferInternal(uint.Max(sizeOverride, metadata.SizeRequirement), initialContent, initialContentWriteOffset, metadata.UsageFlags | extraUsageFlags, metadata.ReadWriteFlags | extraAccessFlags, metadata);
+
+
+
+
+
+
+        [DebuggerHidden]
+        [StackTraceHidden]
+
+        private static unsafe BackendBufferReference CreateBufferInternal<T>(uint size,
+                                                                             ReadOnlySpan<T> initialContent,
+                                                                             uint initialContentWriteOffset,
+                                                                             BufferUsageFlags usageFlags,
+                                                                             ReadWriteFlags accessFlags,
+                                                                             ShaderMetadata.ShaderDataBufferMetadata metadata) where T : unmanaged
         {
-            fixed (void* c = initialcontent)
+
+
+#if DEBUG
+            if (size == 0) 
+                throw new Exception("Size cannot be zero");
+#endif
+
+
+
+
+            object backendRef = null;
+
+            if (!initialContent.IsEmpty)
+                fixed (void* p = initialContent)
+                    backendRef = Backend.CreateBuffer(size, p, usageFlags, accessFlags);
+
+            else
+                backendRef = Backend.CreateBuffer(size, null, usageFlags, accessFlags);
+
+
+
+            if (usageFlags.HasFlags([BufferUsageFlags.Vertex, BufferUsageFlags.Storage]))
+                return new BackendBufferReference_VertexANDStorage(size, usageFlags, accessFlags, metadata, backendRef);
+
+            if (usageFlags.HasFlags([BufferUsageFlags.Vertex]))
+                return new BackendBufferReference_Vertex(size, usageFlags, accessFlags, backendRef);
+
+            if (usageFlags.HasFlags([BufferUsageFlags.Index, BufferUsageFlags.Storage]))
+                return new BackendBufferReference_IndexANDStorage(size, usageFlags, accessFlags, metadata, backendRef);
+
+            if (usageFlags.HasFlags([BufferUsageFlags.Index]))
+                return new BackendBufferReference_Index(size, usageFlags, accessFlags, backendRef);
+
+            if (usageFlags.HasFlag(BufferUsageFlags.Storage) || usageFlags.HasFlag(BufferUsageFlags.Uniform))
+                return new BackendBufferReference_Data(size, usageFlags, accessFlags, metadata, backendRef);
+
+
+            throw new NotImplementedException("Invalid buffer usage combination");
+        }
+
+
+
+
+        private class BackendBufferReference_Vertex
+            (uint size, BufferUsageFlags usageFlags, ReadWriteFlags accessFlags, object backendRef) :
+            BackendBufferReference(size, usageFlags, accessFlags, backendRef),
+            IVertexBuffer;
+
+        private class BackendBufferReference_VertexANDStorage
+            (uint size, BufferUsageFlags usageFlags, ReadWriteFlags accessFlags, ShaderMetadata.ShaderDataBufferMetadata? metadata, object backendRef) :
+            BackendBufferReference_Data(size, usageFlags, accessFlags, metadata, backendRef),
+            IVertexBuffer, IDataBuffer;
+
+        private class BackendBufferReference_Index
+            (uint size, BufferUsageFlags usageFlags, ReadWriteFlags accessFlags, object backendRef) :
+            BackendBufferReference(size, usageFlags, accessFlags, backendRef),
+            IIndexBuffer;
+
+        private class BackendBufferReference_IndexANDStorage
+            (uint size, BufferUsageFlags usageFlags, ReadWriteFlags accessFlags, ShaderMetadata.ShaderDataBufferMetadata? metadata, object backendRef) :
+            BackendBufferReference_Data(size, usageFlags, accessFlags, metadata, backendRef),
+            IIndexBuffer, IDataBuffer;
+
+
+        private class BackendBufferReference_Data
+            (uint size, BufferUsageFlags usageFlags, ReadWriteFlags accessFlags, ShaderMetadata.ShaderDataBufferMetadata? metadata, object backendRef) :
+            BackendBufferReference(size, usageFlags, accessFlags, backendRef),
+            IDataBuffer
+        
+        {
+
+
+            [DebuggerHidden]
+            [StackTraceHidden]
+
+            [Conditional("DEBUG")]
+            private void AssetHasMetadata()
             {
-                var size = (uint)(initialcontent.Length * sizeof(T));
-                var obj = Backend.CreateVertexBuffer(size, writeable, c);
+                if (IsResourceDummy(this))
+                    throw new InvalidOperationException($"This buffer is a dummy buffer and shouldn't be written to.");
 
-                return new(size, writeable, obj);
+
+                if (Metadata == null)
+                    throw new InvalidOperationException($"This data buffer has no assigned metadata and cannot be written into with '{nameof(IDataBuffer)}' methods.");
             }
-        }
-
-        public static BackendVertexBufferAllocationReference Create(uint length, bool writeable)
-        {
-            var obj = Backend.CreateVertexBuffer(length, writeable, (void*)0);
-            return new(length, writeable, obj);
-        }
-
-    }
 
 
-    /// <summary>
-    /// <inheritdoc cref="BackendBufferAllocationReference"/>
-    /// </summary>
-    /// <param name="size"></param>
-    /// <param name="backendRef"></param>
-    public unsafe class BackendIndexBufferAllocationReference(uint size, bool writeable, object backendRef) : BackendBufferAllocationReference(size, writeable, backendRef)
-    {
-        public static BackendIndexBufferAllocationReference Create(ReadOnlySpan<uint> initialcontent, bool writeable)
-        {
-            fixed (void* c = initialcontent)
+
+            public ShaderMetadata.ShaderDataBufferMetadata Metadata { get; set; } = metadata;
+
+
+            [DebuggerHidden]
+            [StackTraceHidden]
+            public void WriteFromOffsetOf<ValueT>(string fieldName, ValueT val, uint extraOffset = 0, bool skipPadding = true) where ValueT : unmanaged
             {
-                var size = (uint)(initialcontent.Length * sizeof(uint));
-                var obj = Backend.CreateIndexBuffer(size, writeable, c);
+                AssetHasMetadata();
 
-                return new(size, writeable, obj);
+                if (skipPadding) WriteAndSkipPadding(new WriteRange(Metadata.FieldOffsets[fieldName] + extraOffset, (uint)sizeof(ValueT), &val));
+                else PushDeferredWrite(new WriteRange(Metadata.FieldOffsets[fieldName] + extraOffset, (uint)sizeof(ValueT), &val));
             }
 
-        }
-        public static BackendIndexBufferAllocationReference Create(uint length, bool writeable)
-        {
-            var obj = Backend.CreateIndexBuffer(length, writeable, (void*)0);
-            return new(length, writeable, obj);
-        }
-    }
-
-
-
-
-
-
-    public unsafe abstract class BackendDataBufferAllocationReference(uint size, bool writeable, ShaderMetadata.ShaderBufferMetadata metadata, object backendRef) : BackendBufferAllocationReference(size, writeable, backendRef), IResourceSetResource
-    {
-        public readonly ShaderMetadata.ShaderBufferMetadata Metadata = metadata;
-
-
-        protected unsafe static object Create(uint bufferSize, bool writeable, void* initialContent, ReadOnlySpan<ContiguousRegion> contiguousRegions, delegate*<uint, bool, void*, object> constructor)
-        {
-            if (initialContent == null) return constructor(bufferSize, writeable, null);
-
-
-            var temp = Marshal.AllocHGlobal((int)bufferSize);
-            BufferToPaddedBufferCopy((byte*)initialContent, bufferSize, 0, (byte*)temp, contiguousRegions);
-            var obj = constructor(bufferSize, writeable, (void*)temp);
-
-            Marshal.FreeHGlobal(temp);
-
-            return obj;
-        }
-    }
-
-
-
-
-    /// <summary>
-    /// <inheritdoc cref="BackendBufferAllocationReference"/>
-    /// </summary>
-    /// <typeparam name="T"></typeparam>
-    /// <param name="size"></param>
-    /// <param name="backendRef"></param>
-    public unsafe class BackendUniformBufferAllocationReference(uint size, bool writeable, ShaderMetadata.ShaderBufferMetadata metadata, object backendRef) : BackendDataBufferAllocationReference(size, writeable, metadata, backendRef), IResourceSetResource
-    {
-
-        public static BackendUniformBufferAllocationReference Create(uint size, bool writeable) 
-        {
-            return new BackendUniformBufferAllocationReference(size, writeable, default, Create(size, writeable, null, null, &create));
-        }
-
-
-        public static BackendUniformBufferAllocationReference Create<T>(uint size, bool writeable, ReadOnlySpan<T> initialContent, ReadOnlySpan<ContiguousRegion> contiguousRegions) where T : unmanaged
-        {
-            fixed (T* p = initialContent)
-                return new BackendUniformBufferAllocationReference(size, writeable, default, Create(size, writeable, p, contiguousRegions, &create));
-        }
-
-        public static BackendUniformBufferAllocationReference CreateFromMetadata(ShaderMetadata.ShaderBufferMetadata metadata, bool writeable)
-        {
-            var bufferSize = metadata.SizeRequirement;
-            return new BackendUniformBufferAllocationReference(bufferSize, writeable, metadata, Create(bufferSize, writeable, null, null, &create));
-        }
-
-
-
-        public static BackendUniformBufferAllocationReference CreateFromMetadata<T>(ShaderMetadata.ShaderBufferMetadata metadata, bool writeable, ReadOnlySpan<T> initialContent) where T : unmanaged
-        {
-            fixed (T* p = initialContent)
+            [DebuggerHidden]
+            [StackTraceHidden]
+            public void WriteFromOffsetOf(string fieldName, uint dataSize, void* dataPtr, uint extraOffset = 0, bool skipPadding = true)
             {
-                var bufferSize = metadata.SizeRequirement;
-                return new BackendUniformBufferAllocationReference(bufferSize, writeable, metadata, Create(bufferSize, writeable, p, metadata.ContiguousRegions.AsSpan(), &create));
+                AssetHasMetadata();
+
+                if (skipPadding) WriteAndSkipPadding(new WriteRange(Metadata.FieldOffsets[fieldName] + extraOffset, dataSize, dataPtr));
+                else PushDeferredWrite(new WriteRange(Metadata.FieldOffsets[fieldName] + extraOffset, dataSize, dataPtr));
             }
-        }
 
-
-        private static object create(uint length, bool writeable, void* initialcontent)
-            => Backend.CreateUniformBuffer(length, writeable, initialcontent);
-
-    }
-
-
-
-
-
-
-    /// <summary>
-    /// <inheritdoc cref="BackendBufferAllocationReference"/>
-    /// </summary>
-    /// <typeparam name="T"></typeparam>
-    /// <param name="size"></param>
-    /// <param name="backendRef"></param>
-    public unsafe class BackendStorageBufferAllocationReference(uint size, bool writeable, ShaderMetadata.ShaderBufferMetadata metadata, object backendRef) : BackendDataBufferAllocationReference(size, writeable, metadata, backendRef), IResourceSetResource
-    {
-
-        public static BackendStorageBufferAllocationReference Create(uint size, bool writeable)
-        {
-            return new BackendStorageBufferAllocationReference(size, writeable, default, Create(size, writeable, null, null, &create));
-        }
-
-
-        public static BackendStorageBufferAllocationReference Create<T>(uint size, bool writeable, ReadOnlySpan<T> initialContent) where T : unmanaged
-        {
-            fixed (T* p = initialContent)
-                return new BackendStorageBufferAllocationReference(size, writeable, default, Create(size, writeable, p, null, &create));
-        }
-
-
-        public static BackendStorageBufferAllocationReference CreateFromMetadata(ShaderMetadata.ShaderBufferMetadata metadata, bool writeable)
-        {
-            var bufferSize = metadata.SizeRequirement;
-            return new BackendStorageBufferAllocationReference(bufferSize, writeable, metadata, Create(bufferSize, writeable, null, null, &create));
-        }
-
-        public static BackendStorageBufferAllocationReference CreateFromMetadata<T>(ShaderMetadata.ShaderBufferMetadata metadata, bool writeable, ReadOnlySpan<T> initialContent = default) where T : unmanaged
-        {
-            fixed (T* p = initialContent)
+            [DebuggerHidden]
+            [StackTraceHidden]
+            public unsafe void WriteAndSkipPadding(WriteRange write)
             {
-                var bufferSize = metadata.SizeRequirement;
-                return new BackendStorageBufferAllocationReference(bufferSize, writeable, metadata, Create(bufferSize, writeable, p, metadata.ContiguousRegions.AsSpan(), &create));
+                AssetHasMetadata();
+
+                var alloc = AllocateRenderTemporaryUnmanaged((int)write.Length);
+                BufferToPaddedBufferCopy((byte*)write.Content, write.Length, 0, alloc, Metadata.ContiguousRegions.AsSpan());
+
+                PushDeferredWrite(new WriteRange(write.Offset, write.Length, alloc));
             }
+
         }
 
-        private static object create(uint length, bool writeable, void* initialcontent)
-            => Backend.CreateStorageBuffer(length, writeable, initialcontent);
+
+
+
+        [DebuggerHidden]
+        [StackTraceHidden]
+        public unsafe void PushDeferredWrite(WriteRange write)
+        {
+
+#if DEBUG
+            if (!AccessFlags.HasFlag(ReadWriteFlags.CPUWrite)) 
+                throw new InvalidOperationException($"This buffer wasn't created with {nameof(ReadWriteFlags.CPUWrite)}");
+
+            if (write.Length == 0 || write.Content == null)
+                throw new InvalidOperationException($"Null/empty write given");
+
+            if (write.Length + write.Offset > Size)
+                throw new InvalidOperationException($"Out-of-bounds write given:\nWrite Length: {write.Length}\nWrite Offset: {write.Offset}\nBuffer Size: {Size}");
+#endif
+
+
+
+            var alloc = AllocateRenderTemporaryUnmanaged((int)write.Length);
+
+            Unsafe.CopyBlockUnaligned(alloc, (byte*)write.Content, write.Length);
+
+
+
+            PushDeferredPreRenderThreadCommand( (new WriteRange(write.Offset, write.Length, alloc), this.GetRef()),  &Execute);
+
+            static void Execute( (WriteRange wr, WeakObjRef<BackendBufferReference> bufhandle)* arg )
+                => Backend.WriteToBuffer(arg->bufhandle.Dereference(), arg->wr);
+
+        }
 
     }
 
@@ -589,14 +657,24 @@ public static partial class RenderingBackend
 
 
 
-    /// <summary>
-    /// Represents something that can be a resource in a resource set.
-    /// <br/> This is limited to <see cref="BackendTextureAndSamplerReferencesPair"/> and <see cref="BackendDataBufferAllocationReference"/> at the time of writing.
-    /// </summary>
-    public interface IResourceSetResource;
+
+
+
+
+
+
+
+
 
     /// <summary>
-    /// Represents a collection of <see cref="IResourceSetResource"/>s that shaders can access.
+    /// Represents a resource in a <see cref="BackendResourceSetReference"/>.
+    /// </summary>
+    public interface IBackendResourceReference;
+
+
+
+    /// <summary>
+    /// Represents a collection of <see cref="IBackendResourceReference"/>s that shaders can access.
     /// </summary>
     public class BackendResourceSetReference : BackendReference
     {
@@ -604,14 +682,12 @@ public static partial class RenderingBackend
         public readonly ShaderMetadata.ShaderResourceSetMetadata Metadata;
 
 
-        private uint WritesThisFrame;
+        private readonly RefCountCollections.RefCountedArray<RefCounted> Contents;
 
+        public ReadOnlySpan<RefCounted> GetContents() => Contents.AsSpan();
 
-        private readonly IResourceSetResource[] Contents;
+        public uint ResourceCount => (uint)Metadata.Declaration.Length;
 
-        public ReadOnlySpan<IResourceSetResource> GetContents() => Contents.AsSpan();
-
-        public uint ResourceCount => (uint)Contents.Length;
 
 
 
@@ -619,287 +695,147 @@ public static partial class RenderingBackend
         private BackendResourceSetReference(ShaderMetadata.ShaderResourceSetMetadata metadata, object backendResource) : base(backendResource)
         {
             Metadata = metadata;
-            Contents = new IResourceSetResource[metadata.UniformBuffers.Count + metadata.StorageBuffers.Count + metadata.Textures.Count];
-
-
-            Logic.AppendPermanentEndOfFrameAction(() => WritesThisFrame = 0);
+            Contents = new ((int)ResourceCount);
         }
-
-
-
-
-        private static void WriteToResourceSet(BackendResourceSetReference set, ReadOnlySpan<ResourceSetResourceBind> contents, uint idx)
-        {
-            CheckOutsideOfRendering();
-            Backend.WriteToResourceSet(set, contents, idx);
-        }
-
-
-        private static void AdvanceActiveResourceSetWrite(BackendResourceSetReference set, uint idx)
-        {
-            if (idx != 0) CheckDuringRendering();
-            Backend.AdvanceActiveResourceSetWrite(set, idx);
-        }
-
-
-
-
-
-
-
-        public unsafe void Write(ResourceSetResourceBind* updates, uint count, bool nessecary)
-        {
-            lock (this)
-            {
-                for (int i = 0; i < count; i++)
-                {
-                    ref var g = ref updates[i];
-
-#if DEBUG
-                    if (g.Binding >= ResourceCount) throw new Exception();
-#endif
-                    Contents[g.Binding] = (IResourceSetResource)g.Resource.Target;
-
-                }
-            }
-
-            if (nessecary)
-            {
-                PushRenderThreadAction(() =>
-                {
-                    WriteToResourceSet(this, new ReadOnlySpan<ResourceSetResourceBind>(updates, (int)count), 0);
-                    AdvanceActiveResourceSetWrite(this, 0);
-                    return null;
-                }).Wait();
-
-            }
-            else
-            {
-                ResourceSetResourceBind* alloc = (ResourceSetResourceBind*)AllocateRenderTemporaryUnmanaged((int)(sizeof(ResourceSetResourceBind) * count));
-                Unsafe.CopyBlockUnaligned(alloc, updates, (uint)(count*sizeof(ResourceSetResourceBind)));
-
-                PushDeferredPreRenderThreadCommand(new WriteStruct(this, alloc, count, WritesThisFrame));
-                PushDeferredRenderThreadCommand(new InlineAdvance(this, WritesThisFrame)); 
-                
-                WritesThisFrame++;
-            }
-
-            
-        }
-
-
-
-        private unsafe readonly struct WriteImmediateStruct(BackendResourceSetReference set, ResourceSetResourceBind[] writes) : IDeferredCommand
-        {
-            private readonly GCHandle<BackendResourceSetReference> set = set.GetGenericGCHandle();
-            private readonly GCHandle<ResourceSetResourceBind[]> writes = GCHandle<ResourceSetResourceBind[]>.Alloc(writes, GCHandleType.Normal);
-
-            public static void Execute(void* self)
-            {
-                var p = (WriteImmediateStruct*)self;
-                WriteToResourceSet(p->set.Target, p->writes.Target, 0);
-                AdvanceActiveResourceSetWrite(p->set.Target, 0);
-
-                p->writes.Free();
-            }
-        }
-
-
-        private unsafe readonly struct WriteStruct(BackendResourceSetReference set, ResourceSetResourceBind* writes, uint count, uint index) : IDeferredCommand
-        {
-            private readonly GCHandle<BackendResourceSetReference> set = set.GetGenericGCHandle();
-            private readonly ResourceSetResourceBind* writes = writes;
-            private readonly uint count = count;
-            private readonly uint index = index;
-
-            public static void Execute(void* self)
-            {
-                var p = (WriteStruct*)self;
-                WriteToResourceSet(p->set.Target, new ReadOnlySpan<ResourceSetResourceBind>(p->writes, (int)p->count), p->index);
-            }
-        }
-
-
-        private unsafe readonly struct InlineAdvance(BackendResourceSetReference set, uint index) : IDeferredCommand
-        {
-            private readonly GCHandle<BackendResourceSetReference> set = set.GetGenericGCHandle();
-            private readonly uint index = index;
-
-            public static void Execute(void* self)
-            {
-                var p = (InlineAdvance*)self;
-                AdvanceActiveResourceSetWrite(p->set.Target, p->index);
-            }
-        }
-
-
-
-
-
-
-
-        /// <summary>
-        /// <inheritdoc cref="CreateFromMetadata(ShaderMetadata.ShaderResourceSetMetadata, string[], Dictionary{string, IResourceSetResource})"/>
-        /// </summary>
-        public static BackendResourceSetReference CreateFromMetadata(string SetName, string[] createInitialBuffers = null, Dictionary<string, IResourceSetResource> setInitial = null)
-            => CreateFromMetadata(GlobalResourceSetMetadata[SetName], createInitialBuffers, setInitial);
-
-
-
-
-        /// <summary>
-        /// <inheritdoc cref="CreateFromMetadata(ShaderMetadata.ShaderResourceSetMetadata, string[], Dictionary{string, IResourceSetResource})"/>
-        /// </summary>
-        public static BackendResourceSetReference CreateFromMetadata(BackendShaderReference Shader, string SetName, string[] createInitialBuffers = null, Dictionary<string, IResourceSetResource> setInitial = null)
-            => CreateFromMetadata(Shader.Metadata.ResourceSets[SetName].Metadata, createInitialBuffers, setInitial);
-
-
-
-        /// <summary>
-        /// Creates a <see cref="BackendResourceSetReference"/> according to <paramref name="Metadata"/>'s spec.
-        /// <br/> Buffers found in <paramref name="createInitialBuffers"/> will be created and set. For example, if <paramref name="Metadata"/> defines a buffer "UBO", and <paramref name="createInitialBuffers"/> contains "UBO", that buffer will be created automatically. 
-        /// <br/> After that, matching resources found in <paramref name="setInitial"/> will be set automatically.
-        /// </summary>
-        /// <param name="Metadata"></param>
-        /// <returns></returns>
-        /// <exception cref="Exception"></exception>
-        public static BackendResourceSetReference CreateFromMetadata(ShaderMetadata.ShaderResourceSetMetadata Metadata, string[] createInitialBuffers = null, Dictionary<string, IResourceSetResource> setInitial = null)
-        {
-            var inst = new BackendResourceSetReference(Metadata, Backend.CreateResourceSet(Metadata.Declaration.AsSpan()));
-
-
-            var setWriteHandle = inst.StartWrite(true);
-
-
-            foreach (var v in Metadata.Textures)
-            {
-                switch (v.Value.Metadata.SamplerType)
-                {
-                    case TextureSamplerTypes.Sampler2D:
-                        setWriteHandle.PushWrite(v.Value.Binding, Dummy2DTextureSamplerPair);
-                        break;
-                    case TextureSamplerTypes.Sampler2DShadow:
-                        setWriteHandle.PushWrite(v.Value.Binding, Dummy2DShadowTextureSamplerPair);
-                        break;
-                    case TextureSamplerTypes.SamplerCubeMap:
-                        setWriteHandle.PushWrite(v.Value.Binding, DummyCubeTextureSamplerPair);
-                        break;
-                    case TextureSamplerTypes.Sampler3D:
-                        setWriteHandle.PushWrite(v.Value.Binding, Dummy3DTextureSamplerPair);
-                        break;
-                    default:
-                        throw new Exception();
-                }
-            }
-
-
-
-            foreach (var v in Metadata.UniformBuffers)
-                setWriteHandle.PushWrite(v.Value.Binding, createInitialBuffers != null && createInitialBuffers.Contains(v.Key) ? BackendUniformBufferAllocationReference.CreateFromMetadata(v.Value.Metadata, true) : GetDummyUBO(v.Value.Metadata.SizeRequirement));
-
-
-            foreach (var v in Metadata.StorageBuffers)
-                setWriteHandle.PushWrite(v.Value.Binding, createInitialBuffers != null && createInitialBuffers.Contains(v.Key) ? BackendStorageBufferAllocationReference.CreateFromMetadata(v.Value.Metadata, true) : GetDummySSBO(v.Value.Metadata.SizeRequirement));
-
-
-            if (setInitial != null)
-                foreach (var kv in setInitial)
-                    setWriteHandle.PushWrite(kv.Key, kv.Value);
-
-
-
-
-            setWriteHandle.EndWrite();
-
-
-            return inst;
-        }
-
-
-
-
-
 
 
         protected override void OnFree()
         {
             PushRenderThreadAction(() => { Backend.DestroyResourceSet(this); return null; });
+
+            base.OnFree();
         }
 
 
 
 
-
-        public BackendUniformBufferAllocationReference GetUniformBuffer(string name)
+        public unsafe T SetResource<T>(string name, T resource) where T : IBackendResourceReference
         {
-            lock (this)
-                return (BackendUniformBufferAllocationReference)Contents[Metadata.UniformBuffers[name].Binding];
-        }
-
-        public BackendStorageBufferAllocationReference GetStorageBuffer(string name)
-        {
-            lock (this)
-                return (BackendStorageBufferAllocationReference)Contents[Metadata.StorageBuffers[name].Binding];
-        }
-
-        public BackendTextureAndSamplerReferencesPair GetTexture(string name)
-        {
-            lock (this)
-                return (BackendTextureAndSamplerReferencesPair)Contents[Metadata.Textures[name].Binding];
-        }
-
-
-        public BackendUniformBufferAllocationReference GetUniformBuffer(uint binding)
-        {
-            lock (this)
-                return (BackendUniformBufferAllocationReference)Contents[binding];
-        }
-
-        public BackendStorageBufferAllocationReference GetStorageBuffer(uint binding)
-        {
-            lock (this)
-                return (BackendStorageBufferAllocationReference)Contents[binding];
-        }
-
-        public BackendTextureAndSamplerReferencesPair GetTexture(uint binding)
-        {
-            lock (this)
-                return (BackendTextureAndSamplerReferencesPair)Contents[binding];
-        }
-
-
-
-
-        /// <summary>
-        /// Gets a resource from the internal array. Does not interact with the backend.
-        /// </summary>
-        /// <param name="idx"></param>
-        /// <returns></returns>
-        public IResourceSetResource GetResource(uint idx)
-        {
-            lock (this)
-                return Contents[idx];
-        }
-
-
-        /// <summary>
-        /// <inheritdoc cref="GetResource(uint)"/>
-        /// </summary>
-        /// <typeparam name="T"></typeparam>
-        /// <param name="name"></param>
-        /// <returns></returns>
-        /// <exception cref="Exception"></exception>
-        public T GetResource<T>(string name) where T : IResourceSetResource
-        {
-            if (typeof(T) == typeof(BackendTextureAndSamplerReferencesPair)) return (T)GetResource(Metadata.Textures[name].Binding);
-            else if (typeof(T) == typeof(BackendUniformBufferAllocationReference)) return (T)GetResource(Metadata.UniformBuffers[name].Binding);
-            else if (typeof(T) == typeof(BackendStorageBufferAllocationReference)) return (T)GetResource(Metadata.StorageBuffers[name].Binding);
+            if (resource is BackendTextureAndSamplerReferencesPair) return (T)SetResource(Metadata.Textures[name].Binding, resource);
+            else if (resource is BackendBufferReference.IDataBuffer) return (T)SetResource(Metadata.Buffers[name].Binding, resource);
             else throw new Exception();
         }
 
 
 
+
+        private unsafe IBackendResourceReference SetResource(byte binding, IBackendResourceReference resource)
+        {
+
+            uint range = 0;
+
+            bool dummy = resource == null;
+
+
+            switch (Metadata.Declaration[binding].ResourceType)
+            {
+                case ResourceSetResourceType.Texture:
+
+                    var samplerType = Metadata.TexturesIndexed[binding].Metadata.SamplerType;
+
+                    resource ??= samplerType switch
+                    {
+                        TextureSamplerTypes.Sampler2D => Dummy2DTextureSamplerPair,
+                        TextureSamplerTypes.Sampler2DShadow => Dummy2DShadowTextureSamplerPair,
+                        TextureSamplerTypes.SamplerCubeMap => DummyCubeTextureSamplerPair,
+                        TextureSamplerTypes.Sampler3D => Dummy3DTextureSamplerPair,
+                        _ => throw new NotImplementedException(),
+                    };
+                    break;
+
+
+                case ResourceSetResourceType.ConstantDataBuffer:
+                case ResourceSetResourceType.ReadOnlyDataBuffer:
+                case ResourceSetResourceType.ReadWriteDataBuffer:
+
+                    var bufferMeta = Metadata.BuffersIndexed[binding].Metadata;
+
+                    resource ??= (IBackendResourceReference) GetDummyBuffer(bufferMeta.SizeRequirement, bufferMeta.UsageFlags, bufferMeta.ReadWriteFlags);
+
+
+
+                    range = bufferMeta.SizeRequirement;
+
+                    break;
+
+
+                default:
+                    throw new NotImplementedException();
+            }
+
+
+
+            lock (this)
+                Contents[binding] = (RefCounted)(dummy ? null : resource);  //<-- avoid exposing dummy resources
+
+
+
+
+            var write = new ResourceSetResourceBind(binding, resource, range);
+
+            PushDeferredPreRenderThreadCommand((this.GetRef(), write), &Execute);
+
+
+            return resource;
+
+
+            static void Execute( (WeakObjRef<BackendResourceSetReference> Target, ResourceSetResourceBind Bind)* ptr)
+            {
+                CheckOutsideOfRendering();
+                Backend.WriteToResourceSet(ptr->Target.Dereference(), ptr->Bind);
+            }
+        }
+
+
+
+        public static BackendResourceSetReference CreateFromMetadata(string SetName)
+            => CreateFromMetadata(GlobalResourceSetMetadata[SetName]);
+
+
+        public static BackendResourceSetReference CreateFromMetadata(BackendShaderReference Shader, string SetName)
+            => CreateFromMetadata(Shader.Metadata.ResourceSets[SetName].Metadata);
+
+
+
+        /// <summary>
+        /// Creates a <see cref="BackendResourceSetReference"/> according to <paramref name="Metadata"/>'s spec.
+        /// </summary>
+        /// <param name="Metadata"></param>
+        /// <returns></returns>
+        /// <exception cref="Exception"></exception>
+        public static BackendResourceSetReference CreateFromMetadata(ShaderMetadata.ShaderResourceSetMetadata Metadata)
+        {
+            var inst = new BackendResourceSetReference(Metadata, Backend.CreateResourceSet(Metadata.Declaration.AsSpan()));
+
+            for (byte i = 0; i < Metadata.Declaration.Length; i++)
+                inst.SetResource(i, null);
+
+            return inst;
+        }
+
+
+        public T GetResource<T>(string name) where T : IBackendResourceReference
+        {
+            lock (this)
+            {
+                if (typeof(T) == typeof(BackendTextureAndSamplerReferencesPair)) return (T)(object)Contents[Metadata.Textures[name].Binding];
+                else if (typeof(T).IsAssignableTo(typeof(BackendBufferReference.IDataBuffer))) return (T)(object)Contents[Metadata.Buffers[name].Binding];
+                else throw new NotImplementedException();
+            }
+        }
+
+        public T GetResource<T>(uint idx) where T : IBackendResourceReference
+        {
+            lock (this)
+                return (T)(object)Contents[(int)idx];
+        }
+
+
     }
+
+
+
+
 
 
 
@@ -1039,6 +975,8 @@ public static partial class RenderingBackend
         protected override void OnFree()
         {
             PushRenderThreadAction(() => { Backend.DestroyTexture(this); return null; });
+
+            base.OnFree();
         }
 
     }
@@ -1059,6 +997,7 @@ public static partial class RenderingBackend
         protected override void OnFree()
         {
             PushRenderThreadAction(() => { Backend.DestroyTextureSampler(this); return null; });
+            base.OnFree();
         }
 
 
@@ -1099,7 +1038,7 @@ public static partial class RenderingBackend
 
 
 
-    public class BackendTextureAndSamplerReferencesPair : RefCounted, IResourceSetResource
+    public class BackendTextureAndSamplerReferencesPair : RefCounted, IBackendResourceReference
     {
         public readonly BackendTextureReference Texture;
         public readonly BackendSamplerReference Sampler;
@@ -1117,12 +1056,13 @@ public static partial class RenderingBackend
         {
             Texture.RemoveUser();
             Sampler.RemoveUser();
+
         }
     }
 
 
 
-    public class BackendTextureAndSamplerReferencesPairsArray(BackendTextureAndSamplerReferencesPair[] array) : RefCounted, IResourceSetResource
+    public class BackendTextureAndSamplerReferencesPairsArray(BackendTextureAndSamplerReferencesPair[] array) : RefCounted, IBackendResourceReference
     {
         public readonly ImmutableArray<BackendTextureAndSamplerReferencesPair> Array = array.ToImmutableArray();
 
@@ -1130,6 +1070,7 @@ public static partial class RenderingBackend
         {
             for (int i = 0; i < Array.Length; i++) 
                 Array[i].RemoveUser();
+
         }
     }
 
@@ -1162,6 +1103,8 @@ public static partial class RenderingBackend
         protected override void OnFree()
         {
             PushRenderThreadAction(() => { Backend.DestroyShader(this); return null; });
+
+            base.OnFree();
         }
 
 
@@ -1219,6 +1162,8 @@ public static partial class RenderingBackend
         protected override void OnFree()
         {
             PushRenderThreadAction(() => { Backend.DestroyComputeShader(this); return null; });
+
+            base.OnFree();
         }
 
 
@@ -1306,17 +1251,29 @@ public static partial class RenderingBackend
             TextureSamplerTypes SamplerType,
             uint ArrayLength);
 
-        public record class ShaderBufferMetadata(
-           FrozenDictionary<string, uint> FieldOffsets,
-           ImmutableArray<ContiguousRegion> ContiguousRegions,
-           uint SizeRequirement);
+
+
+        public record class ShaderDataBufferMetadata(
+            BufferUsageFlags UsageFlags,
+            ReadWriteFlags ReadWriteFlags,
+
+            uint SizeRequirement,  // 0 = unsized
+
+            FrozenDictionary<string, uint> FieldOffsets,
+            ImmutableArray<ContiguousRegion> ContiguousRegions
+        );
+
+
 
         public record class ShaderResourceSetMetadata(
 
             ImmutableArray<ResourceSetResourceDeclaration> Declaration,
+
             FrozenDictionary<string, (byte Binding, ShaderTextureMetadata Metadata)> Textures,
-            FrozenDictionary<string, (byte Binding, ShaderBufferMetadata Metadata)> UniformBuffers,
-            FrozenDictionary<string, (byte Binding, ShaderBufferMetadata Metadata)> StorageBuffers
+            FrozenDictionary<string, (byte Binding, ShaderDataBufferMetadata Metadata)> Buffers,
+
+            FrozenDictionary<byte, (string Name, ShaderTextureMetadata Metadata)> TexturesIndexed,
+            FrozenDictionary<byte, (string Name, ShaderDataBufferMetadata Metadata)> BuffersIndexed
 
             );
 
@@ -1392,18 +1349,15 @@ public static partial class RenderingBackend
         byte* dstPtr,
         ReadOnlySpan<ContiguousRegion> regions)
     {
-        uint srcIndex = 0; // index into the source buffer
+        uint srcIndex = 0; 
 
         for (int i = 0; i < regions.Length && srcIndex < size; i++)
         {
             var region = regions[i];
 
-            // region.start and region.end are absolute offsets in the destination buffer
-            // we want to start at "offset + region.start" in the dstPtr
             ulong dstStart = region.start + offset;
             ulong regionLength = region.end - region.start;
 
-            // number of bytes we can copy into this region
             uint toCopy = (uint)Math.Min(regionLength, size - srcIndex);
 
             Unsafe.CopyBlockUnaligned(dstPtr + dstStart, srcPtr + srcIndex, toCopy);
@@ -1438,6 +1392,8 @@ public static partial class RenderingBackend
         protected override void OnFree()
         {
             PushRenderThreadAction(() => { Backend.DestroyDrawPipeline(this); return null; });
+
+            base.OnFree();
         }
 
 
@@ -1459,7 +1415,7 @@ public static partial class RenderingBackend
                 {
                     get = new BackendDrawPipelineReference(Backend.CreateDrawPipeline(spec), spec);
 
-                    GCHandle<BackendShaderReference>.FromIntPtr(spec.ShaderHandle).Target.OnFreeEvent.Add(get.Free);
+                    spec.Shader.Dereference().OnFreeEvent.Add(get.Free);
 
                     get.OnFreeEvent.Add(() =>
                     {
@@ -1486,8 +1442,10 @@ public static partial class RenderingBackend
     [StructLayout(LayoutKind.Sequential, Pack = 1)]
     public unsafe struct DrawPipelineDetails
     {
-        public nint ShaderHandle;
-        public nint FrameBufferPipelineHandle;
+
+        public WeakObjRef<BackendShaderReference> Shader;
+        public WeakObjRef<BackendFrameBufferPipelineReference> FrameBufferPipeline;
+
 
         public PipelineAttributeDetails Attributes;
 
@@ -1718,6 +1676,8 @@ public static partial class RenderingBackend
         protected override void OnFree()
         {   
             PushRenderThreadAction(() => { Backend.DestroyFrameBufferPipeline(this); return null; });
+
+            base.OnFree();
         }
 
 
@@ -1802,21 +1762,45 @@ public static partial class RenderingBackend
     {
         public enum ResourceSetResourceType
         {
-            UniformBuffer,
-            StorageBuffer,
+            ConstantDataBuffer,
+            ReadOnlyDataBuffer,
+            ReadWriteDataBuffer,
+
             Texture
         }
     }
 
 
-    public record struct ResourceSetResourceBind(uint Binding, GCHandle Resource);
+
+    public struct ResourceSetResourceBind
+    {
+        public uint Binding;
+        public uint Range;
+        public WeakObjRef<IBackendResourceReference> ResourceHandle;
+
+        public ResourceSetResourceBind(uint binding, WeakObjRef<IBackendResourceReference> resource, uint range = 0)
+        {
+            Binding = binding;
+            ResourceHandle = resource;
+            Range = range;
+        }
+
+        public ResourceSetResourceBind(uint binding, IBackendResourceReference resource, uint range = 0)
+        {
+            Binding = binding;
+            ResourceHandle = resource.GetRef();
+            Range = range;
+        }
+    }
+
+
 
 
 
 
     public static BackendFrameBufferObjectReference ActiveFrameBufferObject { get; private set; }
     public static BackendFrameBufferPipelineReference ActiveFramebufferPipeline { get; private set; }
-    public static uint ActiveFrameBufferPipelineStage { get; private set; }
+    public static byte ActiveFrameBufferPipelineStage { get; private set; }
 
 
 
@@ -1926,7 +1910,15 @@ public static partial class RenderingBackend
     /// </summary>
     public static void Destroy()
     {
+        
         CheckOutsideOfRendering();
+
+        lock (AllBackendReferences)
+        {
+            foreach (var res in AllBackendReferences)
+                res.Free();
+        }
+
         Backend.Destroy();
     }
 
@@ -1938,10 +1930,7 @@ public static partial class RenderingBackend
     public static void ConfigureSwapchain(Vector2<uint> Size, bool UseHDR)
     {
         CheckOutsideOfRendering();
-
-        var ret = Backend.ConfigureSwapchain(Size, UseHDR);
-
-        CurrentSwapchainDetails = ret;
+        CurrentSwapchainDetails = Backend.ConfigureSwapchain(Size, UseHDR);
     }
 
 
@@ -2019,11 +2008,10 @@ public static partial class RenderingBackend
     /// <param name="fbo"></param>
     /// <param name="pipeline"></param>
     /// <param name="stageIndex"></param>
-    public static void AdvanceFrameBufferPipeline(BackendFrameBufferObjectReference fbo, BackendFrameBufferPipelineReference pipeline, byte stageIndex)
+    public static void AdvanceFrameBufferPipeline(BackendFrameBufferObjectReference fbo, BackendFrameBufferPipelineReference pipeline)
     {
         CheckDuringRendering();
-        ActiveFrameBufferPipelineStage++;
-        Backend.AdvanceFrameBufferPipeline(fbo, pipeline, stageIndex);
+        Backend.AdvanceFrameBufferPipeline(fbo, pipeline, ActiveFrameBufferPipelineStage++);
     }
 
 
@@ -2062,7 +2050,7 @@ public static partial class RenderingBackend
     /// <param name="indexbuffer"></param>
     /// <param name="indexBufferOffset"></param>
     /// <param name="indexing"></param>
-    public static void Draw(ReadOnlySpan<VertexAttributeDefinitionPlusBufferStruct> buffers, ReadOnlySpan<GCHandle<BackendResourceSetReference>> ResourceSets, BackendDrawPipelineReference pipeline, BackendIndexBufferAllocationReference indexbuffer, uint indexBufferOffset, IndexingDetails indexing)
+    public static void Draw(ReadOnlySpan<VertexAttributeDefinitionBufferPair.Struct> buffers, ReadOnlySpan<WeakObjRef<BackendResourceSetReference>> ResourceSets, BackendDrawPipelineReference pipeline, BackendBufferReference.IIndexBuffer indexbuffer, uint indexBufferOffset, IndexingDetails indexing)
     {
         CheckDuringRendering();
         Backend.Draw(buffers, ResourceSets, pipeline, indexbuffer, indexBufferOffset, indexing);
@@ -2147,14 +2135,12 @@ public static partial class RenderingBackend
 
 
         // ---------------- Buffers ----------------
-        public unsafe object CreateVertexBuffer(uint length, bool writeable, void* initialContent);
-        public unsafe object CreateIndexBuffer(uint length, bool writeable, void* initialContent);
-        public unsafe object CreateUniformBuffer(uint length, bool writeable, void* initialContent);
-        public unsafe object CreateStorageBuffer(uint length, bool writeable, void* initialContent);
+        public unsafe object CreateBuffer(uint length, void* initialContent, BufferUsageFlags usageFlags, ReadWriteFlags readWriteFlags);
 
-        public unsafe void WriteToBuffer(BackendBufferAllocationReference buffer, ReadOnlySpan<WriteRange> writes, uint idx);
-        public unsafe void AdvanceActiveBufferWrite(BackendBufferAllocationReference buffer, uint idx);
-        public void DestroyBuffer(BackendBufferAllocationReference buffer);
+        public unsafe void WriteToBuffer(BackendBufferReference buffer, WriteRange write);
+
+        public void DestroyBuffer(BackendBufferReference buffer);
+
 
 
 
@@ -2162,20 +2148,24 @@ public static partial class RenderingBackend
 
         // ---------------- Textures ----------------
         public object CreateTexture(Vector3<uint> Dimensions, TextureTypes type, TextureFormats format, bool FramebufferAttachmentCompatible, byte[][] texturemips = default);
+
         public void GenerateMipmaps(BackendTextureReference texture);
         public ReadOnlySpan<byte> ReadTexturePixels(BackendTextureReference tex, uint level, Vector3<uint> offset, Vector3<uint> size);
         public void WriteTexturePixels(BackendTextureReference tex, uint level, Vector3<uint> offset, Vector3<uint> size, ReadOnlySpan<byte> content);
         public void DestroyTexture(BackendTextureReference texture);
         public object CreateTextureSampler(SamplerDetails details);
+
         public void DestroyTextureSampler(BackendSamplerReference texture);
+
 
 
 
         // ---------------- Resource Sets ----------------
         public object CreateResourceSet(ReadOnlySpan<ResourceSetResourceDeclaration> definition);
-        public void WriteToResourceSet(BackendResourceSetReference set, ReadOnlySpan<ResourceSetResourceBind> contents, uint idx);
-        public unsafe void AdvanceActiveResourceSetWrite(BackendResourceSetReference set, uint idx);
+        public void WriteToResourceSet(BackendResourceSetReference set, ResourceSetResourceBind write);
         public void DestroyResourceSet(BackendResourceSetReference set);
+
+
 
 
 
@@ -2186,6 +2176,7 @@ public static partial class RenderingBackend
         public void DispatchComputeShader(BackendComputeShaderReference shader, uint groupCountX, uint groupCountY, uint groupCountZ);
         public void WaitForAllComputeShaders();
         public void DestroyComputeShader(BackendComputeShaderReference shader);
+
 
 
 
@@ -2228,7 +2219,7 @@ public static partial class RenderingBackend
 
 
         // ---------------- Drawing ----------------
-        public void Draw(ReadOnlySpan<VertexAttributeDefinitionPlusBufferStruct> buffers, ReadOnlySpan<GCHandle<BackendResourceSetReference>> ResourceSets, BackendDrawPipelineReference pipeline, BackendIndexBufferAllocationReference indexbuffer, uint indexBufferOffset, IndexingDetails indexing);
+        public void Draw(ReadOnlySpan<VertexAttributeDefinitionBufferPair.Struct> buffers, ReadOnlySpan<WeakObjRef<BackendResourceSetReference>> ResourceSets, BackendDrawPipelineReference pipeline, BackendBufferReference.IIndexBuffer indexbuffer, uint indexBufferOffset, IndexingDetails indexing);
 
 
 

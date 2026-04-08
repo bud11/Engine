@@ -31,6 +31,7 @@ public static class Kernel
     {
         Init,
         Running,
+        CloseRequested,
         Closing
     }
 
@@ -38,18 +39,19 @@ public static class Kernel
     public static void WindowNotifyEngineClosing()
     {
         lock (KernelLock)
-            KernelState = KernelStates.Closing;
+            KernelState = KernelStates.CloseRequested;
     }
-
 
     public static bool IsClosing()
     {
         lock (KernelLock)
-        {
             return KernelState == KernelStates.Closing;
-        }
     }
-
+    public static bool IsCloseRequested()
+    {
+        lock (KernelLock)
+            return KernelState == KernelStates.CloseRequested;
+    }
 
 
 
@@ -134,21 +136,41 @@ public static class Kernel
 
                     Window.WindowPoll();
 
-                    if (IsClosing())
+                    Logic.LogicThreadLoop();
+
+
+
+                    if (IsCloseRequested())
                     {
+
+
+                        HashSet<GameResource> s;
+
+                        lock (GameResource.AllResources)
+                        {
+                            s = [.. GameResource.AllResources];
+                            GameResource.AllResources.Clear();
+                        }
+
+                        foreach (var r in s)
+                            r.Free();
+
+
 #if DEBUG
                         ImGUIController.Shutdown();
 #endif
                         Window.CloseWindow();
 
-                        Loading.UnloadAllResources();
+
+
+                        lock (KernelLock)
+                            KernelState = KernelStates.Closing;
+
 
                         return;
                     }
 
 
-
-                    Logic.LogicThreadLoop();
 
                 }
             });
@@ -178,14 +200,13 @@ public static class Kernel
 
                 while (true)
                 {
+                    RenderThreadLoop();
+
                     if (IsClosing())
                     {
                         RenderingBackend.Destroy();
                         return;
                     }
-
-
-                    RenderThreadLoop();
                 }
             }
             );

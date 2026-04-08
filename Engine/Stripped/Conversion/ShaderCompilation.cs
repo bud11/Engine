@@ -163,48 +163,27 @@ public static partial class ShaderCompilation
 
 
 
-                    // -------- UNIFORM BUFFERS --------
+                    // -------- BUFFERS --------
 
-                    foreach (var ubo in contract.UniformBuffers)
+                    foreach (var ubo in contract.Buffers)
                     {
-                        if (!actual.UniformBuffers.TryGetValue(ubo.Key, out var uboget))
-                            err.Add(new ShaderError(-1, $"Missing uniform buffer '{ubo.Key}' in set '{set.Key}'"));
+                        if (!actual.Buffers.TryGetValue(ubo.Key, out var uboget))
+                            err.Add(new ShaderError(-1, $"Missing data buffer '{ubo.Key}' in set '{set.Key}'"));
 
                         if (uboget.Binding != ubo.Value.Binding
                             || uboget.Metadata.SizeRequirement != ubo.Value.Metadata.SizeRequirement
                             || !uboget.Metadata.FieldOffsets.SequenceEqual(ubo.Value.Metadata.FieldOffsets)
                             || !uboget.Metadata.ContiguousRegions.SequenceEqual(ubo.Value.Metadata.ContiguousRegions))
-                            err.Add(new ShaderError(-1, $"Mismatch for uniform buffer '{ubo.Key}' in set '{set.Key}'"));
+                            err.Add(new ShaderError(-1, $"Mismatch for data buffer '{ubo.Key}' in set '{set.Key}'"));
                     }
 
-                    foreach (var ubo in actual.UniformBuffers)
+                    foreach (var ubo in actual.Buffers)
                     {
-                        if (!contract.UniformBuffers.ContainsKey(ubo.Key))
-                            err.Add(new ShaderError(-1, $"Extra uniform buffer '{ubo.Key}' in set '{set.Key}'"));
+                        if (!contract.Buffers.ContainsKey(ubo.Key))
+                            err.Add(new ShaderError(-1, $"Extra data buffer '{ubo.Key}' in set '{set.Key}'"));
                     }
 
 
-
-
-                    // -------- STORAGE BUFFERS --------
-
-                    foreach (var ssbo in contract.StorageBuffers)
-                    {
-                        if (!actual.StorageBuffers.TryGetValue(ssbo.Key, out var ssboget))
-                            err.Add(new ShaderError(-1, $"Missing storage buffer '{ssbo.Key}' in set '{set.Key}'"));
-
-                        if (ssboget.Binding != ssbo.Value.Binding
-                            || ssboget.Metadata.SizeRequirement != ssbo.Value.Metadata.SizeRequirement
-                            || !ssboget.Metadata.FieldOffsets.SequenceEqual(ssbo.Value.Metadata.FieldOffsets)
-                            || !ssboget.Metadata.ContiguousRegions.SequenceEqual(ssbo.Value.Metadata.ContiguousRegions))
-                            err.Add(new ShaderError(-1, $"Mismatch for storage buffer '{ssbo.Key}' in set '{set.Key}'"));
-                    }
-
-                    foreach (var ssbo in actual.StorageBuffers)
-                    {
-                        if (!contract.StorageBuffers.ContainsKey(ssbo.Key))
-                            err.Add(new ShaderError(-1, $"Extra storage buffer '{ssbo.Key}' in set '{set.Key}'"));
-                    }
                 }
             }
         }
@@ -276,7 +255,7 @@ public static partial class ShaderCompilation
 
             else if (result.GeneralErrors != null && result.GeneralErrors.Count != 0)
             {
-                ShowShaderDebugHtml(shaderName + " [Link Error]", string.Empty, result.GeneralErrors, languageHandler);
+                ShowShaderDebugHtml(shaderName + " [Link or Usage Error]", string.Empty, result.GeneralErrors, languageHandler);
                 error = true;
             }
 
@@ -543,9 +522,7 @@ public static partial class ShaderCompilation
 
         Dictionary<byte, Dictionary<string, (byte, ShaderMetadata.ShaderTextureMetadata)>> Textures = new();
 
-        Dictionary<byte, Dictionary<string, (byte, ShaderMetadata.ShaderBufferMetadata)>> UBOS = new();
-        Dictionary<byte, Dictionary<string, (byte, ShaderMetadata.ShaderBufferMetadata)>> SSBOS = new();
-
+        Dictionary<byte, Dictionary<string, (byte, ShaderMetadata.ShaderDataBufferMetadata)>> DataBuffers = new();
 
 
 
@@ -721,12 +698,12 @@ public static partial class ShaderCompilation
 
                 // ------------ UNIFORM / STORAGE BUFFERS ------------
 
-                ProcessBuffers("ubos", doc, typesElement, UBOS);
-                ProcessBuffers("ssbos", doc, typesElement, SSBOS);
+                ProcessBuffers("ubos", doc, typesElement, DataBuffers);
+                ProcessBuffers("ssbos", doc, typesElement, DataBuffers);
 
 
 
-                static void ProcessBuffers(string group, JsonDocument doc, JsonElement types, Dictionary<byte, Dictionary<string, (byte, ShaderMetadata.ShaderBufferMetadata)>> addTo)
+                static void ProcessBuffers(string group, JsonDocument doc, JsonElement types, Dictionary<byte, Dictionary<string, (byte, ShaderMetadata.ShaderDataBufferMetadata)>> addTo)
                 {
 
                     if (types.ValueKind != JsonValueKind.Undefined && doc.RootElement.TryGetProperty(group, out var buffers))
@@ -831,9 +808,12 @@ public static partial class ShaderCompilation
                             if (!addTo.TryGetValue(set, out var setGet)) addTo[set] = setGet = new();
 
 
+
                             setGet[bufName] = new(
-                                buf.GetProperty("binding").GetByte(), new ShaderMetadata.ShaderBufferMetadata
+                                buf.GetProperty("binding").GetByte(), new ShaderMetadata.ShaderDataBufferMetadata
                                 (
+                                    UsageFlags : group == "ubos" ? BufferUsageFlags.Uniform : BufferUsageFlags.Storage,
+                                    ReadWriteFlags : (buf.TryGetProperty("readonly", out var readonlyGet) && readonlyGet.GetBoolean()) ? ReadWriteFlags.GPURead : ReadWriteFlags.GPURead | ReadWriteFlags.GPUWrite,
                                     FieldOffsets: FrozenDictionary.ToFrozenDictionary(offsets),
                                     ContiguousRegions: regionsList.ToImmutableArray(),
                                     SizeRequirement: buf.GetProperty("block_size").GetUInt32()
@@ -862,8 +842,7 @@ public static partial class ShaderCompilation
 
         var allSetIndices = new HashSet<byte>();
         allSetIndices.UnionWith(Textures.Keys);
-        allSetIndices.UnionWith(UBOS.Keys);
-        allSetIndices.UnionWith(SSBOS.Keys);
+        allSetIndices.UnionWith(DataBuffers.Keys);
 
 
         // Ensure contiguous
@@ -895,13 +874,11 @@ public static partial class ShaderCompilation
 
 
 
-            // Gather the resources for this set
             var textures = Textures.TryGetValue(setIndex, out var t) ? t : new Dictionary<string, (byte, ShaderMetadata.ShaderTextureMetadata)>();
-            var ubos = UBOS.TryGetValue(setIndex, out var u) ? u : new Dictionary<string, (byte, ShaderMetadata.ShaderBufferMetadata)>();
-            var ssbos = SSBOS.TryGetValue(setIndex, out var s) ? s : new Dictionary<string, (byte, ShaderMetadata.ShaderBufferMetadata)>();
+            var buffers = DataBuffers.TryGetValue(setIndex, out var u) ? u : new Dictionary<string, (byte, ShaderMetadata.ShaderDataBufferMetadata)>();
 
 
-            int resCount = textures.Count + ubos.Count + ssbos.Count;
+            int resCount = textures.Count + buffers.Count;
             if (resCount == 0)
             {
                 err.Add(new ShaderError(-1, $"Resource set '{setName}' is empty"));
@@ -910,23 +887,23 @@ public static partial class ShaderCompilation
 
 
 
-            // Build the ResourceSetResourceDeclaration array
             var dec = new ResourceSetResourceDeclaration[resCount];
+
+
 
             foreach (var v in textures)
                 dec[v.Value.Item1] = new ResourceSetResourceDeclaration(ResourceSetResourceType.Texture, v.Value.Item2.ArrayLength);
 
-            foreach (var v in ubos)
-                dec[v.Value.Item1] = new ResourceSetResourceDeclaration(ResourceSetResourceType.UniformBuffer, 1);
+            foreach (var v in buffers)
+                dec[v.Value.Item1] = new ResourceSetResourceDeclaration(ResourceSetResourceType.ConstantDataBuffer, 1);
 
-            foreach (var v in ssbos)
-                dec[v.Value.Item1] = new ResourceSetResourceDeclaration(ResourceSetResourceType.StorageBuffer, 1);
 
             sets[setName] = (setIndex, new ShaderMetadata.ShaderResourceSetMetadata(
                 ImmutableArray.Create(dec),
                 FrozenDictionary.ToFrozenDictionary(textures),
-                FrozenDictionary.ToFrozenDictionary(ubos),
-                FrozenDictionary.ToFrozenDictionary(ssbos)
+                FrozenDictionary.ToFrozenDictionary(buffers),
+                textures.Select(x => KeyValuePair.Create(x.Value.Item1, (x.Key, x.Value.Item2))).ToFrozenDictionary(),
+                buffers.Select(x => KeyValuePair.Create(x.Value.Item1, (x.Key, x.Value.Item2))).ToFrozenDictionary()
             ));
         }
 
@@ -1604,9 +1581,13 @@ public static partial class ShaderCompilation
 
             var outputs = new string[stages.Length];
 
-            // Global binding map: (set, name) → binding
+            // Global binding map  (set, name) -> binding
+            
             var globalBindings = new Dictionary<(int set, string name), int>();
             var nextBindingPerSet = new Dictionary<int, int>();
+
+
+
 
             for (int s = 0; s < stages.Length; s++)
             {
@@ -1622,16 +1603,23 @@ public static partial class ShaderCompilation
                 errors[s] = new();
 
 
+
                 while (i < len)
                 {
-                    // ---------- COPY WHITESPACE ----------
+
+
+                    // ------------------------------ COPY WHITESPACE ------------------------------
+
                     if (char.IsWhiteSpace(src[i]))
                     {
                         sb.Append(src[i++]);
                         continue;
                     }
 
-                    // ---------- LAYOUT ----------
+
+
+                    // ------------------------------ LAYOUT ------------------------------
+
                     if (IsWordAt(src, i, "layout"))
                     {
                         int layoutStart = i;
@@ -1646,7 +1634,8 @@ public static partial class ShaderCompilation
 
                         string keyword = ReadWord(src, ref i);
 
-                        // ❌ layout + in/out
+
+                        // layout + in/out
                         if (keyword == "in" || keyword == "out")
                         {
                             errors[s].Add(new ShaderError(GetLine(src, layoutStart),
@@ -1665,7 +1654,11 @@ public static partial class ShaderCompilation
                             continue;
                         }
 
-                        // ---------- RESOURCE ----------
+
+
+
+                        // ------------------------------ RESOURCE ------------------------------
+
                         if (keyword == "uniform" || keyword == "buffer")
                         {
                             if (!layout.Contains("set"))
@@ -1724,7 +1717,10 @@ public static partial class ShaderCompilation
                         continue;
                     }
 
-                    // ---------- IN / OUT ----------
+
+
+                    // ------------------------------ IN / OUT ------------------------------
+
                     if (IsWordAt(src, i, "in") || IsWordAt(src, i, "out"))
                     {
                         string keyword = ReadWord(src, ref i);
@@ -1743,9 +1739,13 @@ public static partial class ShaderCompilation
                         continue;
                     }
 
-                    // ---------- DEFAULT ----------
+
+                    // ------------------------------ DEFAULT ------------------------------
+
                     sb.Append(src[i++]);
                 }
+
+
 
                 outputs[s] = sb.ToString();
             }
@@ -1753,7 +1753,10 @@ public static partial class ShaderCompilation
             return outputs;
 
 
-            // ================= HELPERS =================
+
+
+
+
 
             int GetBinding(int set, string name)
             {
@@ -1771,10 +1774,14 @@ public static partial class ShaderCompilation
                 return next;
             }
 
+
+
             static void SkipWhitespace(string s, ref int i)
             {
                 while (i < s.Length && char.IsWhiteSpace(s[i])) i++;
             }
+
+
 
             static string ReadWord(string s, ref int i)
             {
@@ -1783,12 +1790,16 @@ public static partial class ShaderCompilation
                 return s.Substring(start, i - start);
             }
 
+
+
             static string ReadUntil(string s, ref int i, char end)
             {
                 int start = i;
                 while (i < s.Length && s[i] != end) i++;
                 return s.Substring(start, i - start);
             }
+
+
 
             static int FindMatching(string s, int start, char open, char close)
             {
@@ -1805,11 +1816,15 @@ public static partial class ShaderCompilation
                 return -1;
             }
 
+
+
             static int ExtractSet(string layout)
             {
                 var m = Regex.Match(layout, @"set\s*=\s*(\d+)");
                 return int.Parse(m.Groups[1].Value);
             }
+
+
 
             static int GetLine(string text, int index)
             {
@@ -1818,6 +1833,8 @@ public static partial class ShaderCompilation
                     if (text[i] == '\n') line++;
                 return line-1;
             }
+
+
 
             static bool IsWordAt(string s, int index, string word)
             {
@@ -1943,7 +1960,7 @@ public static partial class ShaderCompilation
 
     /// <summary>
     /// Supports modern HLSL. Requires DXC.
-    /// <br/> This class treats explicit register bindings as resource sets.
+    /// <br/> This class treats explicit spaces as resource sets. For example, register(t1, space0) becomes equal to set 0, binding 1
     /// </summary>
     private partial class HLSLHandler : ShaderLanguageHandler
     {
@@ -2050,7 +2067,8 @@ public static partial class ShaderCompilation
                     $"-T {stage} " +
                     $"-E main " +
                     "-spirv " +
-                    "-fspv-target-env=vulkan1.2 " +
+                    "-fspv-target-env=vulkan1.3 " +
+                    "-fvk-use-dx-layout " +
                     $"\"{path}\"",
                 RedirectStandardError = true,
                 RedirectStandardOutput = true,
@@ -2104,7 +2122,7 @@ public static partial class ShaderCompilation
                     $"-T {stage} " +
                     $"-E main " +
                     "-spirv " +
-                    "-fspv-target-env=vulkan1.2 " +
+                    "-fspv-target-env=vulkan1.3 " +
                     "-fvk-use-dx-layout " +   
                     $"-Fo \"{spvPath}\" " +
                     $"\"{path}\"",

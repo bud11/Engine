@@ -610,7 +610,7 @@ public static class TextureConversion
 
 
 
-        Debug.Print($"Data -> final exr took {stopwatch.Elapsed.TotalSeconds} seconds");
+        EngineDebug.Print($"Data -> final exr took {stopwatch.Elapsed.TotalSeconds} seconds");
 
 
 
@@ -701,7 +701,7 @@ public static class TextureConversion
 
 
 
-        Debug.Print($"Texture encoding (via {encoderBackend}) took {stopwatch.Elapsed.TotalSeconds} seconds");
+        EngineDebug.Print($"Texture encoding (via {encoderBackend}) took {stopwatch.Elapsed.TotalSeconds} seconds");
         stopwatch.Restart();
 
 
@@ -760,7 +760,7 @@ public static class TextureConversion
 
 
 
-            Debug.Print($"Ktx extraction and finalization took {stopwatch.Elapsed.TotalSeconds} seconds");
+            EngineDebug.Print($"Ktx extraction and finalization took {stopwatch.Elapsed.TotalSeconds} seconds");
             stopwatch.Restart();
 
 

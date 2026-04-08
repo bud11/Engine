@@ -8,8 +8,8 @@ namespace Engine.GameObjects;
 using Engine.Core;
 using Engine.GameResources;
 using System.Numerics;
-using System.Runtime.InteropServices;
 using static Engine.Core.EngineMath;
+using static Engine.Core.References;
 using static Engine.Core.Rendering;
 using static Engine.Core.RenderingBackend;
 
@@ -286,43 +286,29 @@ public partial class Camera : GameObject
     /// <summary>
     /// Defines a subpass to be used by <see cref="Render(Span{DrawObject}, CameraDrawSortMode)"/>.
     /// </summary>
-    public unsafe readonly struct CameraSubpassDefinition
+    public unsafe readonly struct CameraSubpassDefinition(
+
+        FrameBufferPipelineStage frameBufferPipelineStageReq,
+        
+        CameraDrawSortMode ordering,
+
+        IList<DrawObject> objectWhiteList,
+
+        delegate*<MaterialResource, MaterialResource.MaterialResolution> materialResolver = null,
+
+        delegate*<ReadOnlySpan<(DrawObject obj, float distance)>, delegate*<MaterialResource, MaterialResource.MaterialResolution>, void> drawCallIssuer = null
+
+    )
     {
-        public readonly FrameBufferPipelineStage FrameBufferPipelineStageReq;
+        public readonly FrameBufferPipelineStage FrameBufferPipelineStageReq = frameBufferPipelineStageReq;
 
-        public readonly CameraDrawSortMode Ordering;
+        public readonly CameraDrawSortMode Ordering = ordering;
 
-        public readonly GCHandle<IList<DrawObject>> ObjectWhiteList;
+        public readonly WeakObjRef<IList<DrawObject>> ObjectWhiteList = objectWhiteList.GetRef();
 
-        public readonly delegate*<MaterialResource, MaterialResource.MaterialResolution> MaterialResolver;
+        public readonly delegate*<MaterialResource, MaterialResource.MaterialResolution> MaterialResolver = materialResolver;
 
-        public readonly delegate*<ReadOnlySpan<(DrawObject obj, float distance)>, delegate*<MaterialResource, MaterialResource.MaterialResolution>, void> DrawCallIssuer;
-
-
-
-        public CameraSubpassDefinition(
-
-            FrameBufferPipelineStage frameBufferPipelineStageReq,
-            CameraDrawSortMode ordering,
-
-            IList<DrawObject> objectWhiteList,
-
-            delegate*<MaterialResource, MaterialResource.MaterialResolution> materialResolver = null,
-
-            delegate*<ReadOnlySpan<(DrawObject obj, float distance)>, delegate*<MaterialResource, MaterialResource.MaterialResolution>, void> drawCallIssuer = null
-
-            )
-        {
-            FrameBufferPipelineStageReq = frameBufferPipelineStageReq;
-
-            Ordering = ordering;
-
-            ObjectWhiteList = GCHandle<IList<DrawObject>>.Alloc(objectWhiteList, GCHandleType.Normal);
-
-            MaterialResolver = materialResolver;
-
-            DrawCallIssuer = drawCallIssuer;
-        }
+        public readonly delegate*<ReadOnlySpan<(DrawObject obj, float distance)>, delegate*<MaterialResource, MaterialResource.MaterialResolution>, void> DrawCallIssuer = drawCallIssuer;
     }
 
 
@@ -382,7 +368,7 @@ public partial class Camera : GameObject
                 stages[i] = subpasses[i].FrameBufferPipelineStageReq;
 
 
-            var pipelineOperator = StartFrameBufferPipeline(FrameBuffer, stages);
+            var pipelineOperator = FrameBufferPipelineStateOperator.StartFrameBufferPipeline(FrameBuffer, stages);
 
 
 
@@ -400,7 +386,7 @@ public partial class Camera : GameObject
             for (int sp = 0; sp < subpasses.Length; sp++)
             {
                 var subpass = subpasses[sp];
-                var whitelist = subpass.ObjectWhiteList.Target;
+                var whitelist = subpass.ObjectWhiteList.Dereference(); 
 
 
 
@@ -459,9 +445,7 @@ public partial class Camera : GameObject
 
 
                 ///////////////////////////////////////////////////////////////////////////////////////
-                //free whitelist handle + return object sorting array
-
-                subpass.ObjectWhiteList.Free();
+                //return object sorting array
 
                 objs.Return();
 
@@ -594,6 +578,8 @@ public partial class Camera : GameObject
             foreach (var k in PostProcessBuffers)
                 k.Value.DisposeBuffer();
         }
+
+        base.OnFree();
     }
 
 

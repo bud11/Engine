@@ -6,6 +6,7 @@ using Engine.Attributes;
 using Engine.Core;
 using Engine.GameResources;
 using static Engine.Core.EngineMath;
+using static Engine.Core.References;
 using static Engine.Core.RenderingBackend;
 
 
@@ -35,19 +36,19 @@ public partial class ModelInstance : DrawObject
     /// <summary>
     /// Resource sets to be used globally for every model instance.
     /// </summary>
-    public static readonly UnmanagedKeyValueHandleCollectionOwner<string, BackendResourceSetReference> GlobalModelInstanceResourceSets = new();
+    public static readonly Dictionary<string, BackendResourceSetReference> GlobalModelInstanceResourceSets = new();
 
 
     /// <summary>
     /// Resource sets to be used at the individual model instance level.
     /// </summary>
-    public readonly UnmanagedKeyValueHandleCollectionOwner<string, BackendResourceSetReference> ModelInstanceResourceSets = new();
+    public readonly Dictionary<string, BackendResourceSetReference> ModelInstanceResourceSets = new();
 
 
     /// <summary>
     /// Vertex attributes to be used at the individual model instance level.
     /// </summary>
-    public readonly UnmanagedKeyValueHandleCollectionOwner<string, VertexAttributeDefinitionPlusBufferClass> ModelInstanceVertexAttributeBuffers = new();
+    public readonly Dictionary<string, VertexAttributeDefinitionBufferPair> ModelInstanceVertexAttributeBuffers = new();
 
 
 
@@ -113,11 +114,11 @@ public partial class ModelInstance : DrawObject
     public virtual unsafe void Draw(MaterialResource material, delegate*<MaterialResource, MaterialResource.MaterialResolution> resolver, uint Start, uint End)
     {
         var resolve = resolver(material);
-        if (resolve.Shader == null) return;
+        if (resolve.ShaderRef == null) return;
 
-        Rendering.Draw(Model.Buffers.GetUnderlyingCollection().Combine(in ModelInstanceVertexAttributeBuffers.GetUnderlyingCollection()),
-                        GlobalModelInstanceResourceSets.GetUnderlyingCollection().Combine(in ModelInstanceResourceSets.GetUnderlyingCollection()).Combine(in resolve.MaterialResourceSets),
-                        resolve.Shader,
+        Rendering.Draw(Model.Buffers.VertexAttributeDictToUnmanaged().Combine(ModelInstanceVertexAttributeBuffers.VertexAttributeDictToUnmanaged()),
+                        GlobalModelInstanceResourceSets.DictToUnmanagedKV().Combine(ModelInstanceResourceSets.DictToUnmanagedKV()).Combine(in resolve.MaterialResourceSets),
+                        resolve.ShaderRef.Shader,
                         resolve.RasterizationDetails,
                         resolve.BlendState,
                         resolve.DepthStencilState,

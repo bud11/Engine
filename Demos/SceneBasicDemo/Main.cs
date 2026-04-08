@@ -4,6 +4,10 @@ using Engine.GameResources;
 using System.Numerics;
 using ImGuiNET;
 using static Engine.Core.EngineMath;
+using static Engine.Core.References;
+using System.Diagnostics;
+
+
 
 
 
@@ -257,15 +261,15 @@ public static partial class Entry
     //global resources + metadata
 
     private static RenderingBackend.BackendResourceSetReference GlobalResources;
-    private static RenderingBackend.BackendUniformBufferAllocationReference GlobalUniformBuffer;
+    private static RenderingBackend.BackendBufferReference.IDataBuffer GlobalUniformBuffer;
 
 
     //screen quad for drawing to screen
 
-    private static RenderingBackend.BackendVertexBufferAllocationReference ScreenQuadVertPos;
-    private static UnmanagedKeyValueHandleCollectionOwner<string, RenderingBackend.VertexAttributeDefinitionPlusBufferClass> ScreenQuadAttributes;
-    private static UnmanagedKeyValueHandleCollectionOwner<string, RenderingBackend.BackendResourceSetReference> ScreenQuadResourceSetCollection;
-    private static RenderingBackend.BackendShaderReference ScreenQuadShader;
+    private static RenderingBackend.BackendBufferReference.IVertexBuffer ScreenQuadVertPos;
+    private static Dictionary<string, RenderingBackend.VertexAttributeDefinitionBufferPair> ScreenQuadAttributes;
+    private static Dictionary<string, RenderingBackend.BackendResourceSetReference> ScreenQuadResourceSetCollection;
+    private static Rendering.NamedShaderReference ScreenQuadShaderRef;
 
 
     //objects
@@ -285,9 +289,9 @@ public static partial class Entry
 
 
 
-        GlobalResources = RenderingBackend.BackendResourceSetReference.CreateFromMetadata("GlobalResources", createInitialBuffers: ["GlobalUBO"]);
+        GlobalResources = RenderingBackend.BackendResourceSetReference.CreateFromMetadata("GlobalResources");
 
-        GlobalUniformBuffer = GlobalResources.GetUniformBuffer("GlobalUBO");
+        GlobalUniformBuffer = GlobalResources.SetResource("GlobalUBO", RenderingBackend.BackendBufferReference.CreateDataBufferFromMetadata(GlobalResources.Metadata.Buffers["GlobalUBO"].Metadata, extraAccessFlags: RenderingBackend.ReadWriteFlags.CPUWrite));
 
 
 
@@ -303,54 +307,57 @@ public static partial class Entry
         {
             var sceneResource = await Loading.LoadResource<SceneResource>("Assets/Scene");
 
-            var sceneInstance = sceneResource.Instantiate();
-
-
-            // Certain objects and resources may not have enough information when loaded rather than manually created.
-            // In this case, models and materials need to be configured to interface with defined shaders.
-
-            foreach (var obj in sceneInstance.GetChildrenRecursive())
+            unsafe
             {
 
-                if (obj is ModelInstance mod)
+
+                // Certain objects and resources may not have enough information when loaded rather than manually created.
+                // In this case, models and materials need to be configured to interface with defined shaders.
+
+                // The best pattern in this case is to pass in a static method pointer that handles each object. That way, nothing is added into the scene tree or readied before it's prepared.
+
+
+                var sceneInstance = sceneResource.Instantiate(&Handler);
+
+
+                static void Handler(GameObject obj)
                 {
-                    mod.ModelInstanceResourceSets.Add("GlobalResources", GlobalResources);
 
-                    mod.ModelInstanceResourceSets.Add("ModelResources", RenderingBackend.BackendResourceSetReference.CreateFromMetadata("ModelResources", createInitialBuffers: ["ModelUBO"]));
-
-
-                    mod.OnPreDraw.Add(() =>
+                    if (obj is ModelInstance mod)
                     {
-                        var buffer = mod.ModelInstanceResourceSets["ModelResources"].GetUniformBuffer("ModelUBO");
+                        var modelresources = RenderingBackend.BackendResourceSetReference.CreateFromMetadata("ModelResources");
 
-                        var writehandle = buffer.StartWrite(false);
-                        writehandle.PushWriteFromOffsetOf("ModelMatrix", mod.GlobalTransform);
-                        writehandle.EndWrite();
-
-                    });
+                        mod.ModelInstanceResourceSets.Add("GlobalResources", GlobalResources);
+                        mod.ModelInstanceResourceSets.Add("ModelResources", modelresources);
 
 
-                    foreach (var mat in mod.Materials)
-                    {
-                        if (mat != null)
+                        var modelBuffer = modelresources.SetResource("ModelUBO", RenderingBackend.BackendBufferReference.CreateDataBufferFromMetadata(modelresources.Metadata.Buffers["ModelUBO"].Metadata, extraAccessFlags: RenderingBackend.ReadWriteFlags.CPUWrite));
+
+                        mod.OnPreDraw.Add(
+                            () => modelBuffer.WriteFromOffsetOf("ModelMatrix", mod.GlobalTransform)
+                            );
+
+
+                        foreach (var mat in mod.Materials)
                         {
-                            var matresources = RenderingBackend.BackendResourceSetReference.CreateFromMetadata(mat.Shader, "MaterialResources");
+                            if (mat != null && !mat.MaterialResourceSets.ContainsKey("MaterialResources"))
+                            {
+                                var matresources = RenderingBackend.BackendResourceSetReference.CreateFromMetadata(mat.ShaderRef.Shader, "MaterialResources");
 
-                            mat.MaterialResourceSets.Add("MaterialResources", matresources);
+                                mat.MaterialResourceSets.Add("MaterialResources", matresources);
 
 
-                            var wr = matresources.StartWrite(true);
+                                foreach (var t in mat.Textures)
+                                    if (matresources.Metadata.Textures.ContainsKey(t.Key))
+                                        matresources.SetResource(t.Key, t.Value);
 
-                            foreach (var t in mat.Textures)
-                                if (matresources.Metadata.Textures.ContainsKey(t.Key))
-                                    wr.PushWrite(t.Key, t.Value);
-
-                            wr.EndWrite();
-
+                            }
                         }
                     }
                 }
+
             }
+
         });
 
 
@@ -384,13 +391,13 @@ public static partial class Entry
         //The final screen quad isn't an object in the scene and doesn't need to be treated like one.
 
 
-        ScreenQuadVertPos = RenderingBackend.BackendVertexBufferAllocationReference.Create<float>(initialcontent: [-1, -1, 1, -1, 1, 1, -1, -1, -1, 1, 1, 1], writeable: false);
+        ScreenQuadVertPos = (RenderingBackend.BackendBufferReference.IVertexBuffer) RenderingBackend.BackendBufferReference.Create<float>([-1, -1, 1, -1, 1, 1, -1, -1, -1, 1, 1, 1], RenderingBackend.BufferUsageFlags.Vertex, default);
 
 
         ScreenQuadAttributes =
             new()
             {
-                { "Position", new RenderingBackend.VertexAttributeDefinitionPlusBufferClass(
+                { "Position", new RenderingBackend.VertexAttributeDefinitionBufferPair(
                 ScreenQuadVertPos,
                 new(
                     RenderingBackend.VertexAttributeBufferComponentFormat.Float,
@@ -405,13 +412,12 @@ public static partial class Entry
 
 
 
+        ScreenQuadShaderRef = new Rendering.NamedShaderReference("screenQuad");
 
 
-        ScreenQuadShader = RenderingBackend.BackendShaderReference.Get("screenQuad");
+        var screenQuadResourceSet = RenderingBackend.BackendResourceSetReference.CreateFromMetadata(ScreenQuadShaderRef.Shader, "TextureResources");
 
-        var screenQuadResourceSet = RenderingBackend.BackendResourceSetReference.CreateFromMetadata(ScreenQuadShader, "TextureResources");
-
-        ScreenQuadResourceSetCollection = new UnmanagedKeyValueHandleCollectionOwner<string, RenderingBackend.BackendResourceSetReference>() { ["TextureResources"] = screenQuadResourceSet };
+        ScreenQuadResourceSetCollection = new () { ["TextureResources"] = screenQuadResourceSet };
 
 
 
@@ -441,9 +447,7 @@ public static partial class Entry
 
 
 
-            var wr3 = screenQuadResourceSet.StartWrite(true);
-            wr3.PushWrite("Texture", cameraTexture);
-            wr3.EndWrite();
+            screenQuadResourceSet.SetResource("Texture", cameraTexture);
         });
 
 
@@ -461,31 +465,39 @@ public static partial class Entry
 
 
         var mouse = Input.MouseInputInstance.Get();
-        mouse.SetMouseRelative(true);
-        //mouse.SetMouseVisible(true);
+
+        if (mouse.MouseButtonPressed(SDL3.SDL.MouseButtonFlags.Right))
+        {
+
+            mouse.SetMouseRelative(true);
 
 
-        var mouseMove = mouse.GetMousePositionDelta();
-
-
-
-
-        var euler = Camera.GlobalTransform.GetEuler() + (new Vector3(mouseMove.Y, mouseMove.X, 0) * 0.05f * Logic.Delta);
-
-        var rotation =
-            Matrix4x4.CreateRotationX(euler.X) *
-            Matrix4x4.CreateRotationY(euler.Y);
-
-        Camera.GlobalTransform = rotation with { Translation = Camera.GlobalTransform.Translation };
+            var mouseMove = mouse.GetMousePositionDelta();
 
 
 
-        //wasd
-        var move = new Vector3(WASD.X, 0, WASD.Y) * Logic.Delta * 10f;
-        Camera.GlobalPosition += Vector3.TransformNormal(move, Camera.GlobalTransform);
 
-        //up down
-        Camera.GlobalPosition += new Vector3(0, (Input.KeyboardInputInstance.Get().GetAxisFromTwo(SDL3.SDL.Scancode.LShift, SDL3.SDL.Scancode.Space) / (float)short.MaxValue) * Logic.Delta * 10f, 0);
+            var euler = Camera.GlobalTransform.GetEuler() + (new Vector3(mouseMove.Y, mouseMove.X, 0) * 0.05f * Logic.Delta);
+
+            var rotation =
+                Matrix4x4.CreateRotationX(euler.X) *
+                Matrix4x4.CreateRotationY(euler.Y);
+
+            Camera.GlobalTransform = rotation with { Translation = Camera.GlobalTransform.Translation };
+
+
+
+            //wasd
+            var move = new Vector3(WASD.X, 0, WASD.Y) * Logic.Delta * 10f;
+            Camera.GlobalPosition += Vector3.TransformNormal(move, Camera.GlobalTransform);
+
+            //up down
+            Camera.GlobalPosition += new Vector3(0, (Input.KeyboardInputInstance.Get().GetAxisFromTwo(SDL3.SDL.Scancode.LShift, SDL3.SDL.Scancode.Space) / (float)short.MaxValue) * Logic.Delta * 10f, 0);
+        }
+
+        else 
+            mouse.SetMouseRelative(false);
+
 
 
     }
@@ -524,13 +536,8 @@ public static partial class Entry
 
 
 
-        var writehandle = GlobalUniformBuffer.StartWrite(true);
-
-        writehandle.PushWriteFromOffsetOf("ProjectionMatrix", Camera.GetProjectionMatrix());
-        writehandle.PushWriteFromOffsetOf("ViewMatrix", Camera.GetViewMatrix());
-
-        writehandle.EndWrite();
-
+        GlobalUniformBuffer.WriteFromOffsetOf("ProjectionMatrix", Camera.GetProjectionMatrix());
+        GlobalUniformBuffer.WriteFromOffsetOf("ViewMatrix", Camera.GetViewMatrix());
 
 
 
@@ -555,6 +562,7 @@ public static partial class Entry
 
         // ===== ( In a rendering scenario with many variables, it can sometimes be worth enabling some or all of the flags offered by EngineDebug ) =====
 
+        EngineDebug.FreeableConstructorStackTraceStorage = 
         EngineDebug.ThrowIfVertexBufferMissing =
         EngineDebug.ThrowIfResourceSetMissing =
         EngineDebug.ThrowIfResourceMissing =
@@ -589,11 +597,11 @@ public static partial class Entry
         // This is a very simple and literal resolve, but you could for example differ behavior based on the material's high level parameters or the pass this is being used for.
 
         static MaterialResource.MaterialResolution ResolveMaterial(MaterialResource mat)
-            => new MaterialResource.MaterialResolution(mat.Shader,
+            => new MaterialResource.MaterialResolution(mat.ShaderRef,
                                                        new RenderingBackend.DrawPipelineDetails.RasterizationDetails(),
                                                        new RenderingBackend.DrawPipelineDetails.BlendState(),
                                                        new RenderingBackend.DrawPipelineDetails.DepthStencilState(),
-                                                       mat.MaterialResourceSets.GetUnderlyingCollection());
+                                                       mat.MaterialResourceSets.DictToUnmanagedKV());
 
 
 
@@ -604,7 +612,7 @@ public static partial class Entry
 
 #if DEBUG
 
-        var fb = Rendering.StartFrameBufferPipeline(Camera.FrameBuffer, [new RenderingBackend.FrameBufferPipelineStage().SpecifyColorAttachment(0, RenderingBackend.FrameBufferPipelineAttachmentAccessFlags.Write, false)]);
+        var fb = Rendering.FrameBufferPipelineStateOperator.StartFrameBufferPipeline(Camera.FrameBuffer, [new RenderingBackend.FrameBufferPipelineStage().SpecifyColorAttachment(0, RenderingBackend.FrameBufferPipelineAttachmentAccessFlags.Write, false)]);
 
         ImGUIController.BeginFrame();
 
@@ -632,9 +640,9 @@ public static partial class Entry
 
 
         Rendering.Draw(
-            Attributes: ScreenQuadAttributes.GetUnderlyingCollection(),
-            ResourceSets: ScreenQuadResourceSetCollection.GetUnderlyingCollection(),           
-            Shader: ScreenQuadShader,
+            Attributes: ScreenQuadAttributes.VertexAttributeDictToUnmanaged(),
+            ResourceSets: ScreenQuadResourceSetCollection.DictToUnmanagedKV(),           
+            Shader: ScreenQuadShaderRef.Shader,
 
             //the rasterization, blending and depth stencil structs already have sane defaults that we can use here.
             Rasterization: new(),
@@ -655,6 +663,7 @@ public static partial class Entry
 
         // ===== ( We can also disable these debug flags after we're done. These only affect the current thread, so they can be safely used to create logical debugging ranges. ) =====
 
+        EngineDebug.FreeableConstructorStackTraceStorage =
         EngineDebug.ThrowIfVertexBufferMissing = 
         EngineDebug.ThrowIfResourceSetMissing =
         EngineDebug.ThrowIfResourceMissing = 

@@ -281,6 +281,5 @@ public class AnimationResource : GameResource, GameResource.ILoads,
     }
 
 
-    protected override void OnFree() { }
 
 }

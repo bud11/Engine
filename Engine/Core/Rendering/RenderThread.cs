@@ -250,6 +250,8 @@ public static class RenderThread
     /// </summary>
     /// <exception cref="Exception"></exception>
     [Conditional("DEBUG")]
+    [DebuggerHidden]
+    [StackTraceHidden]
     public static void CheckThisIsRenderThread()
     {
         if (Thread.CurrentThread != Kernel.RenderThread)
@@ -262,6 +264,8 @@ public static class RenderThread
     /// </summary>
     /// <exception cref="Exception"></exception>
     [Conditional("DEBUG")]
+    [DebuggerHidden]
+    [StackTraceHidden]
     public static void CheckOutsideOfRendering()
     {
         var st = State;
@@ -276,6 +280,8 @@ public static class RenderThread
     /// </summary>
     /// <exception cref="Exception"></exception>
     [Conditional("DEBUG")]
+    [DebuggerHidden]
+    [StackTraceHidden]
     public static void CheckDuringRendering()
     {
         CheckThisIsRenderThread();
@@ -314,42 +320,57 @@ public static class RenderThread
 
 
     /// <summary>
-    /// Pushes an <see cref="IDeferredCommand"/> to be executed during the upcoming frame's rendering on the render thread. Will be discarded if that frame is dropped. Thread safe.
+    /// Pushes an <see cref="IDeferredCommand{T}"/> to be executed during the upcoming frame's rendering on the render thread. Will be discarded if that frame is dropped. Thread safe.
     /// </summary>
     /// <typeparam name="T"></typeparam>
     /// <param name="cmd"></param>
-    public static void PushDeferredRenderThreadCommand<T>(in T cmd) where T : unmanaged, IDeferredCommand 
+    public static void PushDeferredRenderThreadCommand<T>(in T cmd) where T : unmanaged, IDeferredCommand<T>
         => RenderingCommandBufferB.PushCommand(cmd);
-
-
 
     /// <summary>
     /// Pushes an static method pointer to be executed during the upcoming frame's rendering on the render thread. Will be discarded if that frame is dropped. Thread safe.
     /// </summary>
-    /// <typeparam name="T"></typeparam>
-    /// <param name="cmd"></param>
+    /// <param name="ptr"></param>
     public static unsafe void PushDeferredRenderThreadCommand(delegate*<void> ptr) 
         => RenderingCommandBufferB.PushCommand(ptr);
+
+    /// <summary>
+    /// Pushes an static method pointer to be executed during the upcoming frame's rendering on the render thread. Will be discarded if that frame is dropped. Thread safe.
+    /// </summary>
+    /// <typeparam name="TData"></typeparam>
+    /// <param name="data"></param>
+    /// <param name="ptr"></param>
+    public static unsafe void PushDeferredRenderThreadCommand<TData>(TData data, delegate*<TData*, void> ptr) where TData : unmanaged
+        => RenderingCommandBufferB.PushCommand(data, ptr);
+
 
 
 
     /// <summary>
-    /// Pushes an <see cref="IDeferredCommand"/> to be executed just before the upcoming frame's rendering on the render thread. Will be discarded if that frame is dropped. Thread safe.
+    /// Pushes an <see cref="IDeferredCommand{T}"/> to be executed just before the upcoming frame's rendering on the render thread. Will be discarded if that frame is dropped. Thread safe.
     /// </summary>
     /// <typeparam name="T"></typeparam>
     /// <param name="cmd"></param>
-    public static void PushDeferredPreRenderThreadCommand<T>(in T cmd) where T : unmanaged, IDeferredCommand
+    public static void PushDeferredPreRenderThreadCommand<T>(in T cmd) where T : unmanaged, IDeferredCommand<T>
         => PreRenderingCommandBufferB.PushCommand(cmd);
-
-
 
     /// <summary>
     /// Pushes an static method pointer to be executed just before the upcoming frame's rendering on the render thread. Will be discarded if that frame is dropped. Thread safe.
     /// </summary>
-    /// <typeparam name="T"></typeparam>
-    /// <param name="cmd"></param>
+    /// <param name="ptr"></param>
     public static unsafe void PushDeferredPreRenderThreadCommand(delegate*<void> ptr)
         => PreRenderingCommandBufferB.PushCommand(ptr);
+
+    /// <summary>
+    /// Pushes an static method pointer to be executed just before the upcoming frame's rendering on the render thread. Will be discarded if that frame is dropped. Thread safe.
+    /// </summary>
+    /// <typeparam name="TData"></typeparam>
+    /// <param name="data"></param>
+    /// <param name="ptr"></param>
+    public static unsafe void PushDeferredPreRenderThreadCommand<TData>(TData data, delegate*<TData*, void> ptr) where TData : unmanaged
+        => PreRenderingCommandBufferB.PushCommand(data, ptr);
+
+
 
 
 

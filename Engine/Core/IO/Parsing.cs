@@ -21,6 +21,7 @@ using System.Buffers;
 using System.Text.Json;
 using System.Reflection;
 using System.Diagnostics;
+using Engine.Stripped;
 #endif
 
 
@@ -632,7 +633,7 @@ public static partial class Parsing
 
 
         if (DebugJsonArgumentParsing)
-            Debug.Print(log.ToString());
+            EngineDebug.Print(log.ToString());
 
 
         return writer.GetSpan().ToArray();

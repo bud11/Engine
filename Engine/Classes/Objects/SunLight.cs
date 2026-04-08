@@ -21,4 +21,29 @@ public partial class SunLight : AABBObject
     [Indexable]
     public bool Shadow;
 
+
+
+
+
+    private Camera ShadowCam;
+    public override void Init()
+    {
+        ShadowCam = new()
+        {
+            Resolution = new(4096),
+            GlobalTransform = GlobalTransform,
+            ColorBuffersCount = 0,
+            UseDepthStencilBuffer = true,
+            Perspective = false
+        };
+
+        AddChild(ShadowCam);
+
+        ShadowCam.Init();
+
+
+        base.Init();
+    }
+
+
 }

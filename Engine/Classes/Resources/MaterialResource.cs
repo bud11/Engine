@@ -9,6 +9,10 @@ using Engine.Attributes;
 using System.Numerics;
 
 
+using static Engine.Core.References;
+
+
+
 #if DEBUG
 using System.Text.Json;
 #endif
@@ -28,11 +32,10 @@ public partial class MaterialResource :
 
 
 
-    public readonly UnmanagedKeyValueHandleCollectionOwner<string, BackendResourceSetReference> MaterialResourceSets = new();
+    public readonly Dictionary<string, BackendResourceSetReference> MaterialResourceSets = new();
 
 
-    public readonly string ShaderName;
-    public BackendShaderReference Shader { get; private set; }
+    public readonly Rendering.NamedShaderReference ShaderRef;
 
 
     public readonly RefCountCollections.RefCountedDictionary<string, BackendTextureAndSamplerReferencesPair> Textures;
@@ -40,7 +43,7 @@ public partial class MaterialResource :
 
 
 
-    public MaterialResource(string shaderName,
+    public MaterialResource(Rendering.NamedShaderReference shaderRef,
 
                             Dictionary<string, object> parameters,
                             RefCountCollections.RefCountedDictionary<string, BackendTextureAndSamplerReferencesPair> textures,
@@ -48,36 +51,19 @@ public partial class MaterialResource :
                             string key = null) : base(key)
     
     {
-        ShaderName = shaderName;
-        ObtainShader();
-
-        Shader.OnFreeEvent.Add(ObtainShader);  // <-- hot reload support
-
+        ShaderRef = shaderRef;
 
         Textures = textures;
         Parameters = parameters;
 
-        Shader?.AddUser();
         Textures?.AddUser();
     }
 
     protected override void OnFree()
     {
-        Shader?.RemoveUser();
         Textures?.RemoveUser();
 
         base.OnFree();
-    }
-
-
-    /// <summary>
-    /// (Re)obtains the shader currently registered under <see cref="ShaderName"/>.
-    /// </summary>
-    public void ObtainShader()
-    {
-        Shader?.RemoveUser();
-        Shader = BackendShaderReference.Get(ShaderName);
-        Shader.AddUser();
     }
 
 
@@ -143,7 +129,7 @@ public partial class MaterialResource :
 
         var arguments = MaterialPropertySerializerDeserializer.Instance.ReadKnownType<Dictionary<string, object>>(ref reader); 
 
-        return new MaterialResource(shaderName, arguments, finaltextures, key);
+        return new MaterialResource(new Rendering.NamedShaderReference(shaderName), arguments, finaltextures, key);
     }
 
 
@@ -155,21 +141,21 @@ public partial class MaterialResource :
     /// </summary>
     public struct MaterialResolution
     {
-        public BackendShaderReference Shader;
+        public Rendering.NamedShaderReference ShaderRef;
 
         public RasterizationDetails RasterizationDetails;
         public BlendState BlendState;
         public DepthStencilState DepthStencilState;
 
-        public UnmanagedKeyValueHandleCollection<string, BackendResourceSetReference> MaterialResourceSets;
+        public UnmanagedKeyValueCollection<WeakObjRef<string>, WeakObjRef<BackendResourceSetReference>> MaterialResourceSets;
 
-        public MaterialResolution(BackendShaderReference shader, RasterizationDetails rasterizationDetails, BlendState blendState, DepthStencilState depthStencilState, UnmanagedKeyValueHandleCollection<string, BackendResourceSetReference> materialResourceSets)
+        public MaterialResolution(Rendering.NamedShaderReference shaderName, RasterizationDetails rasterizationDetails, BlendState blendState, DepthStencilState depthStencilState, UnmanagedKeyValueCollection<WeakObjRef<string>, WeakObjRef<BackendResourceSetReference>> materialResourceSets)
         {
-            Shader=shader;
-            RasterizationDetails=rasterizationDetails;
-            BlendState=blendState;
-            DepthStencilState=depthStencilState;
-            MaterialResourceSets=materialResourceSets;
+            ShaderRef = shaderName;
+            RasterizationDetails = rasterizationDetails;
+            BlendState = blendState;
+            DepthStencilState = depthStencilState;
+            MaterialResourceSets = materialResourceSets;
         }
     }
 

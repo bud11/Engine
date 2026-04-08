@@ -21,6 +21,7 @@ using ZstdSharp;
 #if DEBUG
 using System.IO.Hashing;
 using System.Reflection;
+using Engine.Stripped;
 #endif
 
 
@@ -932,7 +933,7 @@ public static partial class Loading
 #if ENGINE_BUILD_PASS
             Console.WriteLine(
 #else
-            Debug.Print(
+            EngineDebug.Print(
 #endif
             p);
 
@@ -1073,23 +1074,6 @@ public static partial class Loading
         LoadedResources.Remove(resource.Key);
         LoadedResourcesSemaphore.Release();
     }
-
-
-
-    public static void UnloadAllResources()
-    {
-        LoadedResourcesSemaphore.Wait();
-        var l = LoadedResources.Values.ToArray();
-        LoadedResourcesSemaphore.Release();
-
-        foreach (var entry in l) entry.Task.Result.Free();
-
-        LoadedResourcesSemaphore.Wait();
-        LoadedResources.Clear();
-        LoadedResourcesSemaphore.Release();
-    }
-
-
 
 
 

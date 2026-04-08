@@ -1,6 +1,10 @@
 ﻿using Engine.Core;
 
 
+using static Engine.Core.References;
+
+
+
 #if DEBUG
 using Engine.Stripped;
 #endif
@@ -68,6 +72,9 @@ public static partial class Entry
 
     private const string ShaderName = "TriangleShader";
 
+    private static Rendering.NamedShaderReference ShaderRef;
+
+
 
 
 #if DEBUG
@@ -79,7 +86,7 @@ public static partial class Entry
     {
 
 
-        // This is a simple red NDC coordinate shader written in GLSL.
+        // This is a simple red NDC coordinate vertex + fragment shader pair written in GLSL.
 
 
         ShaderCompilation.RegisterShader(
@@ -148,12 +155,10 @@ public static partial class Entry
     // -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 
     // Next up is creating a vertex buffer, and a collection to hold/interpret it.
-    
 
 
-
-    private static RenderingBackend.BackendVertexBufferAllocationReference TriangleVertPos;
-    private static UnmanagedKeyValueHandleCollectionOwner<string, RenderingBackend.VertexAttributeDefinitionPlusBufferClass> TriangleAttributes;
+    private static RenderingBackend.BackendBufferReference.IVertexBuffer TriangleVertPos;
+    private static Dictionary<string, RenderingBackend.VertexAttributeDefinitionBufferPair> TriangleAttributes;
 
 
 
@@ -163,25 +168,31 @@ public static partial class Entry
     public static partial void Init()
     {
 
-        TriangleVertPos = RenderingBackend.BackendVertexBufferAllocationReference.Create(
+        ShaderRef = new Rendering.NamedShaderReference(ShaderName);
+
+
+
+        TriangleVertPos = (RenderingBackend.BackendBufferReference.IVertexBuffer)   //<-- created buffers can be cast to interfaces, allowing specific usages...
+            RenderingBackend.BackendBufferReference.Create(
              [
                 -0.5f, -0.5f,
                  0.5f, -0.5f,
                  0.0f,  0.5f
-             ],
-             writeable: false);
+             ], RenderingBackend.BufferUsageFlags.Vertex, default);   //<-- ...given they were created with the correct corresponding usage flag
+
+
 
 
         TriangleAttributes = new()
         {
             {
-                "Position",     //<-- this matches our shader's Position attribute name. 
+                "Position",     
 
                 new(
 
                     TriangleVertPos,    //<-- this is the buffer we just created
 
-                    new(         //and this is how the GPU should interpret the buffer.
+                    new(         // and this is how the GPU should interpret the buffer.
                             
                         RenderingBackend.VertexAttributeBufferComponentFormat.Float,
                         Stride: sizeof(float) * 2,
@@ -191,7 +202,6 @@ public static partial class Entry
                 )
 
             }
-
         };
     }
 
@@ -220,22 +230,23 @@ public static partial class Entry
 
 
         
-        Rendering.SetScissor(new (0,0), RenderingBackend.CurrentSwapchainDetails.Size);   //The scissor state needs to be manually maintained.
+        Rendering.SetScissor(new (0,0), RenderingBackend.CurrentSwapchainDetails.Size);   // The scissor state needs to be manually maintained.
 
 
 
         Rendering.Draw(
-            Attributes: TriangleAttributes.GetUnderlyingCollection(),
-            ResourceSets: default,             
-            Shader: RenderingBackend.BackendShaderReference.Get(ShaderName),
+            Attributes: TriangleAttributes.VertexAttributeDictToUnmanaged(),   //<-- this converts the collection into a weak-referencing, ummanaged copy.
+            ResourceSets: default,            
+            Shader: ShaderRef.Shader,         //<-- our shader
 
-            //the rasterization, blending and depth stencil structs already have sane new()s/defaults that we can use here.
+            // The rasterization, blending and depth stencil structs already have sane new()s/defaults that we can use here.
             Rasterization: new(),
             Blending: new(),
             DepthStencil: default,
 
+            //we dont need an index buffer given that this is a simple triangle.
             IndexBuffer: null,     
-            IndexingDetails: new(Start: 0, End: 3, BaseVertex: 0, InstanceCount: 1)
+            IndexingDetails: new(Start: 0, End: 3, BaseVertex: 0, InstanceCount: 1)    
         );
 
 

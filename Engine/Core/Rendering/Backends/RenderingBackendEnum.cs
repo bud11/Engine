@@ -4,10 +4,6 @@
 
 namespace Engine.Core;
 
-
-using static Rendering;
-
-
 public static partial class RenderingBackend
 {
 
@@ -26,7 +22,7 @@ public static partial class RenderingBackend
     {
 
 #if IncludeVulkanBackend
-        { RenderingBackendEnum.Vulkan.ToString(), new RenderingBackendCreationInfo(SDL3.SDL.WindowFlags.Vulkan, ShaderFormat.SPIRV, init => new VulkanBackend(init)) }
+        { RenderingBackendEnum.Vulkan.ToString(), new RenderingBackendCreationInfo(SDL3.SDL.WindowFlags.Vulkan, init => new VulkanBackend(init)) }
 #endif
 
     };
@@ -35,8 +31,6 @@ public static partial class RenderingBackend
     private readonly record struct RenderingBackendCreationInfo(
 
         SDL3.SDL.WindowFlags Flags,        //flag(s) the backend needs the sdl window to have
-
-        ShaderFormat RequiredShaderFormat,   //the shader format the backend needs to consume (this may be replaced with a delegate of some form in future for more control over how shaders are compiled per backend)
 
         Func<nint, IRenderingBackend> Constructor   //constructor that returns an instance of the backend
 

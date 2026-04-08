@@ -325,7 +325,7 @@ public partial class GameObject : Freeable
         NamedGameObjects.Remove(Name);
 
 
-        if (Parent != null) Parent.RemoveChild(this);
+        Parent?.RemoveChild(this);
 
         GameObject[] array = [.. Children];
 

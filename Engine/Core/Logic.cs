@@ -92,24 +92,21 @@ public static class Logic
 
 
 
-
-
-
-
-
-
-
+    private static readonly List<Action> StartOfFrameActions = new();
 
     /// <summary>
-    /// Equivalent to calling <see cref="AppendEndOfFrameAction"/> with <see cref="Freeable.Free"/>.
+    /// Adds <paramref name="action"/> to a list of actions be invoked on the main logic thread, before any other logic thread processing. Removed after execution.
     /// </summary>
-    /// <param name="inst"></param>
-    public static void FreeDeferred(this Freeable inst) => AppendEndOfFrameAction(inst.Free);
+    /// <param name="action"></param>
+    public static void AppendStartOfFrameAction(Action action)
+    {
+        lock (StartOfFrameActions)
+            StartOfFrameActions.Add(action);
+    }
 
 
 
-
-    private static List<Action> EndOfFrameActions = new();
+    private static readonly List<Action> EndOfFrameActions = new();
 
     /// <summary>
     /// Adds <paramref name="action"/> to a list of actions be invoked on the main logic thread, after all logic has been processed but before rendering begins. Removed after execution.
@@ -123,7 +120,9 @@ public static class Logic
     }
 
 
-    private static List<Action> PermanentEndOfFrameActions = new();
+
+
+    private static readonly List<Action> PermanentEndOfFrameActions = new();
 
     /// <summary>
     /// Appends <paramref name="action"/> to a list of actions to be invoked on the main logic thread, after all logic has been processed but before rendering begins, every frame until removed.
@@ -155,33 +154,30 @@ public static class Logic
 
     /// <summary>
     /// Blocks until a frame is processing, and indicates that you don't want the frame to be allowed to end until <see cref="ExitFrameGate"/> is called.
-    /// <br/> Thread affinity/identity of callers don't matter, so long as each call is matched with some eventual <see cref="ExitFrameGate"/> call.
+    /// <br/> Thread affinity/identity of callers don't matter, so long as each call is matched with some eventual counteracting <see cref="ExitFrameGate"/> call.
     /// </summary>
     public static void EnterFrameGate()
     {
         while (true)
         {
-            // 1. Wait until the gate is open *at least once*
+            // Wait until the gate is open at least once
             _gateOpen.Wait();
 
-            // 2. Speculatively claim activity
+            // Speculatively claim activity
             Interlocked.Increment(ref _active);
 
-            // 3. If the gate stayed open, we're good
+            // If the gate stayed open, we're good
             if (Volatile.Read(ref _open) != 0)
             {
                 _drained.Reset();
                 return;
             }
 
-            // 4. Gate closed during entry → rollback claim
+            // Gate closed during entry -> rollback claim
             ExitFrameGate();
             // loop and try again
         }
     }
-
-
-
 
 
     /// <summary>
@@ -190,7 +186,6 @@ public static class Logic
     /// <exception cref="InvalidOperationException"></exception>
     public static void ExitFrameGate()
     {
-
 
 #if DEBUG
         if (Volatile.Read(ref _active) <= 0)
@@ -225,40 +220,6 @@ public static class Logic
 
 
 
-    private static void CloseFrameGateAndWait()
-    {
-        if (Interlocked.Exchange(ref _open, 0) == 0)
-            return;
-
-        _gateOpen.Reset();   // block new entrants
-        _drained.Wait();    // wait for all active to exit
-    }
-
-
-    private static void OpenFrameGate()
-    {
-        Volatile.Write(ref _open, 1);
-        _gateOpen.Set();
-    }
-
-
-
-
-
-
-    /*
-        private static readonly DynamicUnmanagedHAllocator LogicContentAllocator = new();
-
-        /// <summary>
-        /// Allocates temporary unmanaged heap memory that will be valid until the end of the logic frame.
-        /// </summary>
-        public static unsafe byte* AllocateLogicTemporaryUnmanaged(int bytes) => LogicContentAllocator.Alloc(bytes);
-
-    */
-
-
-
-
 
     public static float Delta { get; private set; }
 
@@ -269,8 +230,36 @@ public static class Logic
 
 
 
+
+    private static void OpenFrameGate()
+    {
+        Volatile.Write(ref _open, 1);
+        _gateOpen.Set();
+    }
+
+    private static void CloseFrameGateAndWait()
+    {
+        if (Interlocked.Exchange(ref _open, 0) == 0)
+            return;
+
+        _gateOpen.Reset();
+        _drained.Wait();
+    }
+
+
+
+
     public static void LogicThreadLoop()
     {
+
+
+        lock (StartOfFrameActions)
+        {
+            for (int i = 0; i < StartOfFrameActions.Count; i++)
+                StartOfFrameActions[i].Invoke();
+
+            StartOfFrameActions.Clear();
+        }
 
 
 
@@ -289,11 +278,6 @@ public static class Logic
         Entry.Loop();
 
         CloseFrameGateAndWait();
-
-
-
-
-
 
 
 
@@ -322,9 +306,6 @@ public static class Logic
         //wait for framerate lock
         while (LogicStopWatch.Elapsed.TotalSeconds < (1d / EngineSettings.LogicRateTarget)) ;
 
-
-
-        var time = LogicStopWatch.Elapsed.TotalSeconds;
 
 
         RenderThread.TryPushRenderCommands();

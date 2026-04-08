@@ -9,6 +9,8 @@ using Engine.Core;
 
 using static Engine.Core.Parsing;
 
+using static Engine.Core.References;
+
 
 
 #if DEBUG
@@ -31,10 +33,10 @@ public class ModelResource : GameResource, GameResource.ILoads
 
     public readonly AABB BaseAABB;
 
-    public readonly BackendIndexBufferAllocationReference IndexBuffer;
+    public readonly BackendBufferReference.IIndexBuffer IndexBuffer;
 
-    public readonly UnmanagedKeyValueHandleCollectionOwner<string, VertexAttributeDefinitionPlusBufferClass> Buffers;
 
+    public readonly Dictionary<string, VertexAttributeDefinitionBufferPair> Buffers;
 
 
 
@@ -47,8 +49,8 @@ public class ModelResource : GameResource, GameResource.ILoads
     /// </summary>
     /// <param name="def"></param>
     /// <param name="data"></param>
-    /// <param name="writeable"></param>
-    public record struct VertexAttributeDefinitionPlusData(VertexAttributeDefinition def, byte[] data, bool writeable)
+    /// <param name="mutable"></param>
+    public record struct VertexAttributeDefinitionPlusData(VertexAttributeDefinition def, byte[] data, bool mutable)
     {
 
 
@@ -59,16 +61,16 @@ public class ModelResource : GameResource, GameResource.ILoads
         /// <typeparam name="ArrayType"></typeparam>
         /// <param name="def"></param>
         /// <param name="data"></param>
-        /// <param name="writeable"></param>
+        /// <param name="mutable"></param>
         /// <returns></returns>
-        public static unsafe VertexAttributeDefinitionPlusData CreateFromArray<ArrayType>(VertexAttributeDefinition def, ArrayType[] data, bool writeable) where ArrayType : unmanaged
+        public static unsafe VertexAttributeDefinitionPlusData CreateFromArray<ArrayType>(VertexAttributeDefinition def, ArrayType[] data, bool mutable) where ArrayType : unmanaged
         {
             if (data == null) throw new Exception("Data can't be null");
 
 
             //no need to convert
             if (typeof(ArrayType) == typeof(byte))
-                return new(def, (byte[])(object)data, writeable);
+                return new(def, (byte[])(object)data, mutable);
 
 
             byte[] newdata = new byte[data.Length * sizeof(ArrayType)];
@@ -77,7 +79,7 @@ public class ModelResource : GameResource, GameResource.ILoads
             fixed (void* p = data)
                 Unsafe.CopyBlockUnaligned(d, p, (uint)newdata.Length);
 
-            return new VertexAttributeDefinitionPlusData(def, newdata, writeable);
+            return new VertexAttributeDefinitionPlusData(def, newdata, mutable);
         }
 
 
@@ -88,7 +90,7 @@ public class ModelResource : GameResource, GameResource.ILoads
         /// </summary>
         public static unsafe Dictionary<string, VertexAttributeDefinitionPlusData> CreateInterwoven(
             Dictionary<string, VertexAttributeDefinitionPlusData> buffers,
-            bool writeable)
+            bool mutable)
 
         {
 
@@ -206,7 +208,7 @@ public class ModelResource : GameResource, GameResource.ILoads
                 result[name] = new VertexAttributeDefinitionPlusData(
                     newDef,
                     interleaved,
-                    writeable
+                    mutable
                 );
             }
 
@@ -230,18 +232,23 @@ public class ModelResource : GameResource, GameResource.ILoads
 
 
 
-        BackendVertexBufferAllocationReference[] buffers = new BackendVertexBufferAllocationReference[bufferCount];
+        var buffers = new BackendBufferReference.IVertexBuffer[bufferCount];
+
 
         for (var i = 0; i < bufferCount; i++)
         {
-            bool writeable = stream.ReadByte() == 1;
+            bool mutable = stream.ReadByte() == 1;
             var data = reader.ReadLengthPrefixedUnmanagedSpan<byte>();
 
-            buffers[i] = BackendVertexBufferAllocationReference.Create<byte>(data, writeable);
+            var buf = (BackendBufferReference.IVertexBuffer)BackendBufferReference.Create<byte>(data, BufferUsageFlags.Vertex, mutable ? ReadWriteFlags.CPUWrite : default);
+
+            buffers[i] = buf; 
         }
 
 
-        var attributes = new Dictionary<string, VertexAttributeDefinitionPlusBufferClass>();
+
+
+        var attributes = new Dictionary<string, VertexAttributeDefinitionBufferPair>();
 
 
         for (var i = 0; i < attribDefCount; i++)
@@ -254,16 +261,16 @@ public class ModelResource : GameResource, GameResource.ILoads
             var scope = (VertexAttributeScope)stream.ReadByte();
             byte bufferIndex = (byte)stream.ReadByte();
 
-            attributes[name] = new VertexAttributeDefinitionPlusBufferClass(buffers[bufferIndex], new VertexAttributeDefinition(componentFormat, stride, offset, scope));
+            attributes[name] = new VertexAttributeDefinitionBufferPair(buffers[bufferIndex], new VertexAttributeDefinition(componentFormat, stride, offset, scope));
         }
 
 
         var submeshes = reader.ReadLengthPrefixedUnmanagedSpan<SubmeshRange>();
 
+
+
         var idxbuffer = reader.ReadLengthPrefixedUnmanagedSpan<uint>();
-
-        BackendIndexBufferAllocationReference indexbuffer = idxbuffer == null ? null : BackendIndexBufferAllocationReference.Create(idxbuffer, false);
-
+        var indexbuffer = idxbuffer == null ? default : (BackendBufferReference.IIndexBuffer)BackendBufferReference.Create<uint>(idxbuffer, BufferUsageFlags.Index, default);
 
 
 
@@ -280,6 +287,68 @@ public class ModelResource : GameResource, GameResource.ILoads
 
 
 
+    public ModelResource(
+
+        Dictionary<string, VertexAttributeDefinitionBufferPair> buffers,
+        SubmeshRange[] submeshes,
+        BackendBufferReference.IIndexBuffer indexBuffer = default,
+
+        AABB baseAABB = default,
+
+        string key = null) : base(key)
+    {
+
+        Buffers = buffers.ToDictionary();
+
+        SubMeshes = submeshes;
+        BaseAABB = baseAABB;
+        IndexBuffer = indexBuffer;
+    }
+
+
+
+
+    public ModelResource(
+
+        Dictionary<string, VertexAttributeDefinitionPlusData> buffers,
+        SubmeshRange[] submeshes,
+        uint[] indexBuffer = null,
+        bool mutableIndexBuffer = false,
+
+        AABB baseAABB = default,
+
+        string key = null) : base(key)
+    {
+
+
+        Buffers = new();
+        var createdBuffers = new Dictionary<byte[], BackendBufferReference.IVertexBuffer>();
+
+
+        foreach (var kv in buffers)
+        {
+            if (!createdBuffers.TryGetValue(kv.Value.data, out var get))
+                get = createdBuffers[kv.Value.data] = (BackendBufferReference.IVertexBuffer)BackendBufferReference.Create<byte>(kv.Value.data, BufferUsageFlags.Vertex, kv.Value.mutable ? ReadWriteFlags.CPUWrite : default);
+
+            Buffers[kv.Key] = new VertexAttributeDefinitionBufferPair(get, kv.Value.def);
+
+        }
+
+
+
+        SubMeshes = submeshes;
+        BaseAABB = baseAABB;
+
+        IndexBuffer = (BackendBufferReference.IIndexBuffer)(indexBuffer != null ? (BackendBufferReference.Create<uint>(indexBuffer, BufferUsageFlags.Index, mutableIndexBuffer ? ReadWriteFlags.CPUWrite : default)) : default);
+    }
+
+
+
+
+
+
+
+
 
 
 #if DEBUG
@@ -288,12 +357,12 @@ public class ModelResource : GameResource, GameResource.ILoads
 
     public static async Task<IConverts.FinalAssetBytes> ConvertToFinalAssetBytes(Loading.Bytes bytes, string key)
     {
-        var dict = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(bytes.ByteArray, Parsing.JsonAssetLoadingOptions);
+        var dict = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(bytes.ByteArray, JsonAssetLoadingOptions);
 
         bytes.Dispose();
 
 
-        var attribs = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(dict["AttributeData"], Parsing.JsonAssetLoadingOptions);
+        var attribs = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(dict["AttributeData"], JsonAssetLoadingOptions);
 
 
 
@@ -350,7 +419,7 @@ public class ModelResource : GameResource, GameResource.ILoads
         //buffer count
         write.WriteUnmanaged<byte>(1);
 
-        //buffer 0 writeable
+        //buffer 0 mutable
         write.WriteUnmanaged<byte>(0);
 
         //buffer 0 content
@@ -402,68 +471,9 @@ public class ModelResource : GameResource, GameResource.ILoads
     }
     
 
-
-
 #endif
 
 
-
-
-    public ModelResource(
-
-        Dictionary<string, VertexAttributeDefinitionPlusData> buffers,
-        SubmeshRange[] submeshes,
-        uint[] indexBuffer = null,
-        bool writeableIndexBuffer = false,
-
-        AABB baseAABB = default,
-
-        string key = null) : base(key)
-    {
-
-
-        var buffersfinal = new Dictionary<string, VertexAttributeDefinitionPlusBufferClass>();
-
-        var createdBuffers = new Dictionary<byte[], BackendVertexBufferAllocationReference>();
-
-
-        foreach (var kv in buffers)
-        {
-            if (!createdBuffers.TryGetValue(kv.Value.data, out var get))
-                get = createdBuffers[kv.Value.data] = BackendVertexBufferAllocationReference.Create<byte>(kv.Value.data, kv.Value.writeable);
-
-            buffersfinal.Add(kv.Key, new VertexAttributeDefinitionPlusBufferClass(get, kv.Value.def));
-        }
-
-
-
-        Buffers = new (buffersfinal);
-
-        SubMeshes = submeshes;
-        BaseAABB = baseAABB;
-
-        IndexBuffer = indexBuffer != null ? BackendIndexBufferAllocationReference.Create(indexBuffer, writeableIndexBuffer) : null;
-    }
-
-
-
-
-    public ModelResource(
-
-        Dictionary<string, VertexAttributeDefinitionPlusBufferClass> buffers,
-        SubmeshRange[] submeshes,
-        BackendIndexBufferAllocationReference indexBuffer = null,
-
-        AABB baseAABB = default,
-
-        string key = null) : base(key)
-    {
-
-        Buffers = new (buffers);
-        SubMeshes = submeshes;
-        BaseAABB = baseAABB;
-        IndexBuffer = indexBuffer;
-    }
 
 
 }

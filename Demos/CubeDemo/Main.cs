@@ -4,6 +4,10 @@ using Engine.GameResources;
 using System.Numerics;
 using ImGuiNET;
 
+using static Engine.Core.References;
+using System.Diagnostics;
+
+
 
 
 #if DEBUG
@@ -87,6 +91,8 @@ public static unsafe partial class Entry
         // This time, we need to define resource sets in our shader.
 
         // Resource sets are logical groups of shader resources, such as textures and uniform buffers, which can be shared across shaders.
+
+
 
         // Given that resource sets are indeed often shared or used at different semantic levels, sometimes a stable layout is required.
         // This method lets you enforce that as a contract, both for the sake of clarity and to enable fetching metadata for these sets later without also needing a relative shader instance's metadata.
@@ -244,21 +250,9 @@ public static unsafe partial class Entry
 
         public override void PreDraw()
         {
-
-            // Buffer writes operate as direct, unsafe batches.
-            // Writing multiple values in one is typically more optimal than unique batches amongst other benefits.
-            
-            // Writing can also be done with much less safety than this if speed is a bigger concern. Read summaries for more info
-
-
-            
-
-            var buffer = ModelInstanceResourceSets["ModelResources"].GetUniformBuffer("ModelUBO");
-
-            var writehandle = buffer.StartWrite(false);
-            writehandle.PushWriteFromOffsetOf("ModelMatrix", GlobalTransform);
-            writehandle.EndWrite();
-
+            ModelInstanceResourceSets["ModelResources"]
+                .GetResource<RenderingBackend.BackendBufferReference.IDataBuffer>("ModelUBO")
+                .WriteFromOffsetOf("ModelMatrix", GlobalTransform);
 
             base.PreDraw();
         }
@@ -275,16 +269,17 @@ public static unsafe partial class Entry
 
     //global resources + metadata
 
-    public static RenderingBackend.BackendResourceSetReference GlobalResources;
-    private static RenderingBackend.BackendUniformBufferAllocationReference GlobalUniformBuffer;
+    private static RenderingBackend.BackendResourceSetReference GlobalResources;
+    private static RenderingBackend.BackendBufferReference.IDataBuffer GlobalUniformBuffer;
 
 
     //screen quad for drawing to screen
 
-    private static RenderingBackend.BackendVertexBufferAllocationReference ScreenQuadVertPos;
-    private static UnmanagedKeyValueHandleCollectionOwner<string, RenderingBackend.VertexAttributeDefinitionPlusBufferClass> ScreenQuadAttributes;
-    private static UnmanagedKeyValueHandleCollectionOwner<string, RenderingBackend.BackendResourceSetReference> ScreenQuadResourceSetCollection;
-    private static RenderingBackend.BackendShaderReference ScreenQuadShader;
+    private static RenderingBackend.BackendBufferReference.IVertexBuffer ScreenQuadVertPos;
+    private static Dictionary<string, RenderingBackend.VertexAttributeDefinitionBufferPair> ScreenQuadAttributes;
+    private static Dictionary<string, RenderingBackend.BackendResourceSetReference> ScreenQuadResourceSetCollection;
+    private static Rendering.NamedShaderReference ScreenQuadShaderRef;
+
 
 
     //objects
@@ -304,16 +299,22 @@ public static unsafe partial class Entry
     {
 
 
+#if DEBUG
+        EngineDebug.FreeableConstructorStackTraceStorage = true;
+#endif
+
+
+
         // -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 
         // Global resources / materials
 
 
-        //We need a material to draw the cube with.
-        //Materials are vague data containers designed to be interpreted at draw time, so no control is particularly lost over manual drawing, nor is any particular pipeline idea imposed.
+        // We need a material to draw the cube with.
+        // Materials are vague data containers designed to be interpreted at draw time, so no control is particularly lost over manual drawing, nor is any particular pipeline idea imposed.
 
         var material = new MaterialResource(
-                                        shaderName: "exampleShader",
+                                        shaderRef: new Rendering.NamedShaderReference("exampleShader"),
 
                                         //Arbitrary parameters and texture references can be defined and interpreted later. in this case, neither are required.
                                         parameters: null,         
@@ -329,12 +330,10 @@ public static unsafe partial class Entry
 
 
         
-        //This is fairly self explanatory. We're actualizing GlobalResources and GlobalUBO with a method that cuts down on some boilerplate, and then holding onto it.
-        //As usual, check the method summaries for more info.
 
-        GlobalResources = RenderingBackend.BackendResourceSetReference.CreateFromMetadata("GlobalResources", createInitialBuffers: ["GlobalUBO"]);
+        GlobalResources = RenderingBackend.BackendResourceSetReference.CreateFromMetadata("GlobalResources");
 
-        GlobalUniformBuffer = GlobalResources.GetUniformBuffer("GlobalUBO");
+        GlobalUniformBuffer = GlobalResources.SetResource("GlobalUBO", RenderingBackend.BackendBufferReference.CreateDataBufferFromMetadata(GlobalResources.Metadata.Buffers["GlobalUBO"].Metadata, extraAccessFlags: RenderingBackend.ReadWriteFlags.CPUWrite));
 
 
 
@@ -353,9 +352,22 @@ public static unsafe partial class Entry
         Cube.Materials = [material];
 
 
-        Cube.ModelInstanceResourceSets["ModelResources"] = RenderingBackend.BackendResourceSetReference.CreateFromMetadata("ModelResources", ["ModelUBO"]);
+
+
+        // Models have differently-scoped resource sets that can be hooked into.
+
+        var modelresources = RenderingBackend.BackendResourceSetReference.CreateFromMetadata("ModelResources");
+
+        modelresources.SetResource("ModelUBO", RenderingBackend.BackendBufferReference.CreateDataBufferFromMetadata(modelresources.Metadata.Buffers["ModelUBO"].Metadata, extraAccessFlags: RenderingBackend.ReadWriteFlags.CPUWrite));
+
+        Cube.ModelInstanceResourceSets["ModelResources"] = modelresources;
+
 
         ModelInstance.GlobalModelInstanceResourceSets["GlobalResources"] = GlobalResources;
+
+
+
+
 
 
 
@@ -385,21 +397,24 @@ public static unsafe partial class Entry
 
         //The final screen quad isn't an object in the scene and doesn't need to be treated like one.
 
-
-        ScreenQuadVertPos = RenderingBackend.BackendVertexBufferAllocationReference.Create<float>(initialcontent: [-1, -1, 1, -1, 1, 1, -1, -1, -1, 1, 1, 1], writeable: false);
+        ScreenQuadVertPos = (RenderingBackend.BackendBufferReference.IVertexBuffer)RenderingBackend.BackendBufferReference.Create<float>([-1, -1, 1, -1, 1, 1, -1, -1, -1, 1, 1, 1], RenderingBackend.BufferUsageFlags.Vertex, default);
 
 
         ScreenQuadAttributes =
             new()
             {
-                { "Position", new RenderingBackend.VertexAttributeDefinitionPlusBufferClass(
-                ScreenQuadVertPos,
-                new(
-                    RenderingBackend.VertexAttributeBufferComponentFormat.Float,
-                    sizeof(float),
-                    0,
-                    RenderingBackend.VertexAttributeScope.PerVertex
-                    )
+                { 
+                    "Position", 
+
+                    new(
+                        ScreenQuadVertPos,
+                        new
+                        (
+                            RenderingBackend.VertexAttributeBufferComponentFormat.Float,
+                            sizeof(float),
+                            0,
+                            RenderingBackend.VertexAttributeScope.PerVertex
+                        )
                     )
                 }
             };
@@ -407,23 +422,21 @@ public static unsafe partial class Entry
 
 
 
+        ScreenQuadShaderRef = new Rendering.NamedShaderReference("screenQuad");
 
 
-        ScreenQuadShader = RenderingBackend.BackendShaderReference.Get("screenQuad");
+        var screenQuadResourceSet = RenderingBackend.BackendResourceSetReference.CreateFromMetadata(ScreenQuadShaderRef.Shader, "TextureResources");
 
-        var screenQuadResourceSet = RenderingBackend.BackendResourceSetReference.CreateFromMetadata(ScreenQuadShader, "TextureResources");
-
-        ScreenQuadResourceSetCollection = new UnmanagedKeyValueHandleCollectionOwner<string, RenderingBackend.BackendResourceSetReference>() { ["TextureResources"] = screenQuadResourceSet };
-
-
+        ScreenQuadResourceSetCollection = new() { ["TextureResources"] = screenQuadResourceSet };
 
 
 
-        //Textures (and texture + sampler pairs) are immutable, so if the resolution changes, the old texture becomes invalid, and the set needs to be updated.
+
+
+        // Textures (and texture + sampler pairs) are immutable, so if the resolution changes, the old texture becomes invalid, and the set needs to be updated.
 
         Camera.OnResolutionChanged.Add(() =>
         {
-
             var cameraTexture = new RenderingBackend.BackendTextureAndSamplerReferencesPair(
 
                                         //the color buffer from the camera that we want to display on screen
@@ -442,14 +455,8 @@ public static unsafe partial class Entry
                                         );
 
 
-
-            var wr3 = screenQuadResourceSet.StartWrite(true);
-            wr3.PushWrite("Texture", cameraTexture);
-            wr3.EndWrite();
+            screenQuadResourceSet.SetResource("Texture", cameraTexture);
         });
-
-
-
 
 
     }
@@ -493,13 +500,8 @@ public static unsafe partial class Entry
         // After that is rendering.
 
 
-
-        var writehandle = GlobalUniformBuffer.StartWrite(true);
-
-        writehandle.PushWriteFromOffsetOf("ProjectionMatrix", Camera.GetProjectionMatrix());
-        writehandle.PushWriteFromOffsetOf("ViewMatrix", Camera.GetViewMatrix());
-
-        writehandle.EndWrite();
+        GlobalUniformBuffer.WriteFromOffsetOf("ProjectionMatrix", Camera.GetProjectionMatrix());
+        GlobalUniformBuffer.WriteFromOffsetOf("ViewMatrix", Camera.GetViewMatrix());
 
 
 
@@ -557,11 +559,11 @@ public static unsafe partial class Entry
         // This is a very simple and literal resolve, but you could for example differ behavior based on the material's high level parameters or the pass this is being used for.
 
         static MaterialResource.MaterialResolution ResolveMaterial(MaterialResource mat)
-            => new MaterialResource.MaterialResolution(mat.Shader,
+            => new MaterialResource.MaterialResolution(mat.ShaderRef,
                                                        new RenderingBackend.DrawPipelineDetails.RasterizationDetails(),
                                                        new RenderingBackend.DrawPipelineDetails.BlendState(),
                                                        new RenderingBackend.DrawPipelineDetails.DepthStencilState(),
-                                                       mat.MaterialResourceSets.GetUnderlyingCollection());
+                                                       mat.MaterialResourceSets.DictToUnmanagedKV());
 
 
 
@@ -585,9 +587,9 @@ public static unsafe partial class Entry
 
 
         Rendering.Draw(
-            Attributes: ScreenQuadAttributes.GetUnderlyingCollection(),
-            ResourceSets: ScreenQuadResourceSetCollection.GetUnderlyingCollection(),           
-            Shader: ScreenQuadShader,
+            Attributes: ScreenQuadAttributes.VertexAttributeDictToUnmanaged(),
+            ResourceSets: ScreenQuadResourceSetCollection.DictToUnmanagedKV(),           
+            Shader: ScreenQuadShaderRef.Shader,
 
             //the rasterization, blending and depth stencil structs already have sane defaults that we can use here.
             Rasterization: new(),
@@ -611,7 +613,7 @@ public static unsafe partial class Entry
         EngineDebug.ThrowIfVertexBufferMissing = 
         EngineDebug.ThrowIfResourceSetMissing =
         EngineDebug.ThrowIfResourceMissing = 
-        EngineDebug.DeferredCommandStackTraceStorage = false;
+        EngineDebug.DeferredCommandStackTraceStorage = true;
 
 #endif
 

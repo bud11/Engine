@@ -19,8 +19,24 @@ using static Engine.Core.Loading;
 /// <br/> <inheritdoc cref="IConverts"/>
 /// </summary>
 /// 
-public abstract partial class GameResource(string key) : RefCounted
+public abstract partial class GameResource : RefCounted
 {
+
+
+    /// <summary>
+    /// Contains all valid resource instances, no matter how or where they were created.
+    /// </summary>
+    public static readonly HashSet<GameResource> AllResources = new();
+
+
+
+    public GameResource(string key)
+    {
+        Key = key;
+
+        lock (AllResources)
+            AllResources.Add(this);
+    }
 
 
 
@@ -95,7 +111,7 @@ public abstract partial class GameResource(string key) : RefCounted
     /// <summary>
     /// The key this resource is indexed by within <see cref="Loading"/>, or if not, null. <br/> If this resource was loaded via <see cref="LoadResource{T}(string)"/> or similar, this will be equal to the resource file path.
     /// </summary>
-    public readonly string Key = key;
+    public readonly string Key;
 
 
 
@@ -103,6 +119,7 @@ public abstract partial class GameResource(string key) : RefCounted
 
 
     private bool NotifyLoadedCalled = false;
+
 
     public void Register()
     {
@@ -122,6 +139,9 @@ public abstract partial class GameResource(string key) : RefCounted
     protected override void OnFree()
     {
         if (Key != null) Loading.SetResourceUnloaded(this);
+
+        lock (AllResources)
+            AllResources.Remove(this);
     }
 
 

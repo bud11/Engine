@@ -5,12 +5,15 @@ using Engine.Stripped;
 using System;
 using System.Buffers;
 using System.Collections;
-using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.Drawing;
 using System.Linq;
+using System.Numerics;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
+using System.Text;
+using static Engine.Core.References;
 
 
 
@@ -49,9 +52,9 @@ public abstract class RefCounted : Freeable
 
 /// <summary>
 /// A base for any object with a lifetime.
-/// <br /> <b>You should ALWAYS call <see cref="Free"/> to destroy an object. Each freeable claims a <see cref="System.Runtime.InteropServices.GCHandle"/> (<see cref="GCHandle"/>) for itself automatically for use in unmanaged memory and only releases that handle during <see cref="Free"/>. </b>
+/// <br /> <b><see cref="Free"/>, or <see cref="IDisposable.Dispose"/>, should always be called to destroy a <see cref="Freeable"/>.</b>
 /// </summary>
-public abstract class Freeable : IGCHandleOwner
+public abstract class Freeable : IDisposable
 {
 
     public bool Valid { get; private set; } = true;
@@ -64,59 +67,101 @@ public abstract class Freeable : IGCHandleOwner
             if (Valid)
             {
                 Valid = false;
-                if (OnFree != null) OnFreeEvent.Invoke();
+                OnFreeEvent.Invoke();
                 OnFree();
 
-                GCHandle.Free();
+
+                // debug finalizer can catch memory leaks
+#if !DEBUG
+                GC.SuppressFinalize(this);
+#endif
+
             }
         }
     }
 
+
     protected abstract void OnFree();
+
+
+
+#pragma warning disable CA1816  // Dispose methods should call SuppressFinalize
+
+    public void Dispose() => Free();
+
+#pragma warning restore CA1816 
+
+
 
 
 
     public readonly ThreadSafeEventAction OnFreeEvent = new();
 
 
+
+
+
     /// <summary>
-    /// A GC handle owned by the object. Freed on <see cref="Free"/>.
+    /// A reference to this. Used by <see cref="References.GetRef{T}(T, bool)"/>.
     /// </summary>
-    public GCHandle GCHandle => _handle;
-
-    private readonly GCHandle _handle;
-
-
+    public readonly WeakObjRef SelfRef;
 
     public Freeable()
     {
-        _handle = GCHandle.Alloc(this, GCHandleType.Normal);
+        SelfRef = this.GetRef(false);
+
+#if DEBUG
+        if (EngineDebug.FreeableConstructorStackTraceStorage) 
+            ConstructorStackTrace = new();
+#endif
     }
 
+
+
+#if DEBUG
+
+    private readonly StackTrace ConstructorStackTrace;
+
+    ~Freeable()
+    {
+        if (Valid) 
+            throw new Exception($"Memory leak: this {nameof(Freeable)} was not freed, but is now being garbage collected. \n --- CREATION STACKTRACE --- \n {ConstructorStackTrace.ToClickableSrcLinesString()}");
+    }
+
+#endif
+
+
 }
 
-
-
-/// <summary>
-/// An interface for objects that own their own GC handles.
-/// </summary>
-public interface IGCHandleOwner
-{
-    public GCHandle GCHandle { get; }
-}
 
 
 public static class MiscExtensions
 {
 
-    /// <summary>
-    /// Returns <typeparamref name="T"/>'s <see cref="IGCHandleOwner.GCHandle"/> cast to <see cref="GCHandle{T}"/>.
-    /// </summary>
-    /// <typeparam name="T"></typeparam>
-    /// <param name="target"></param>
-    /// <returns></returns>
-    public static GCHandle<T> GetGenericGCHandle<T>(this T target) where T : class, IGCHandleOwner
-        => (GCHandle<T>)target.GCHandle;
+
+
+    public static bool HasFlags<T>(this T self, ReadOnlySpan<T> vals) where T : Enum
+    {
+        for (int i = 0; i < vals.Length; i++)
+            if (!self.HasFlag(vals[i])) return false;
+
+        return true;
+    }
+
+
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static Vector4 ToVector4(this Color Col)
+    {
+        return new Vector4(Col.R, Col.G, Col.B, Col.A)/255f;
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static Color ToColor(this Vector4 Col)
+    {
+        return Color.FromArgb((int)(Col.W * 255), (int)(Col.X * 255), (int)(Col.Y * 255), (int)(Col.Z * 255));
+    }
+
 
 }
 
@@ -125,313 +170,248 @@ public static class MiscExtensions
 
 
 
+
+
+
+
+
 /// <summary>
-/// A small unmanaged dictionary-style collection that uses supplied <see cref="GCHandle"/>s for keys and values to allow stack allocation.
-/// <br/> Given <see cref="GCHandle"/>s must be managed manually. This collection doesn't own or manage handles. See <seealso cref="UnmanagedKeyValueHandleCollectionOwner{KeyType, ValueType}"/> for a wrapper that does.
+/// A small unmanaged dictionary-style collection that can be stack allocated. Optimized for being frequently copied and permutated. See <see cref="SizeLimit"/>.
 /// </summary>
-public unsafe struct UnmanagedKeyValueHandleCollection<KeyT, ValueT> where KeyT : class where ValueT : class
+public unsafe struct UnmanagedKeyValueCollection<TKey, TValue> : IEnumerable<KeyValuePair<TKey, TValue>> where TKey : unmanaged where TValue : unmanaged
 {
 
-    ////////////////////////////////////////////////
-    private const int SizeLimit = 16;
-    ////////////////////////////////////////////////
+
+
+    public const int SizeLimit = 16;
 
 
 
     [InlineArray(SizeLimit)]
-    private struct KVPairs { public KeyValuePair<GCHandle<KeyT>, GCHandle<ValueT>> value; }
-
-    private KVPairs KVs;
-    private int _count;
+    public struct KVPairs { public KeyValuePair<TKey, TValue> value; }
 
 
-    public UnmanagedKeyValueHandleCollection(ReadOnlySpan<KeyValuePair<GCHandle<KeyT>, GCHandle<ValueT>>> entries)
+    /// <summary>
+    /// The actual internal keys/values laid out within struct memory. Shouldn't be directly modified.
+    /// </summary>
+    public KVPairs KeyValuePairs;
+
+    public int Count;
+
+
+    public TValue this[in TKey key]
     {
-        if (entries.Length > SizeLimit)
-            throw new IndexOutOfRangeException();
-
-        _count = entries.Length;
-        KVs = default;
-
-        for (int i = 0; i < _count; i++)
-            KVs[i] = entries[i];
+        readonly get => Get(key);
+        set => Set(key, value);
     }
 
 
-    public readonly int Count => _count;
 
 
-
-    public readonly KeyValuePair<GCHandle<KeyT>, GCHandle<ValueT>> this[int i] => KVs[i];
-
-
-
-    //because of the small key counts, iterating over all keys is fine
-
-    public readonly GCHandle<ValueT> this[KeyT key]
+    public UnmanagedKeyValueCollection(IDictionary<TKey, TValue> from)
     {
-        get
-        {
-            for (int i = 0; i < _count; i++)
-            {
-                var kv = KVs[i];
 
-                if (KeyEquals(kv.Key.Target, key))
-                    return kv.Value;
+#if DEBUG
+        if (from.Count > SizeLimit)
+            throw new InvalidOperationException();
+#endif
 
-            }
-            return default;
-        }
+        // we can trust that all keys are unique 
+
+        foreach (var kv in from)
+            KeyValuePairs[Count++] = new(kv.Key, kv.Value);
+
     }
 
-    public GCHandle<ValueT> this[GCHandle<KeyT> key]
+
+
+
+
+
+
+
+
+    public bool TryAdd(in TKey key, in TValue value)
     {
-        readonly get
+#if DEBUG
+        if (Count >= SizeLimit)
+            throw new InvalidOperationException();
+#endif
+
+        for (int i = 0; i < Count; i++)
         {
-            for (int i = 0; i < _count; i++)
-            {
-                var kv = KVs[i];
-
-                if (KeyEquals(kv.Key.Target, key.Target))
-                    return kv.Value;
-
-            }
-
-            return default;
+            ref var kv = ref KeyValuePairs[i];
+            if (KeyEquals(kv.Key, key)) return false;
         }
 
-        set
+        KeyValuePairs[Count++] = new(key, value);
+        return true;
+    }
+
+    public void Add(in TKey key, in TValue value)
+    {
+        if (!TryAdd(key, value)) 
+            throw new Exception();
+    }
+
+
+
+
+    public void Set(in TKey key, in TValue value)
+    {
+        for (int i = 0; i < Count; i++)
         {
-
-            for (int i = 0; i < _count; i++)
+            ref var kv = ref KeyValuePairs[i];
+            if (KeyEquals(kv.Key, key))
             {
-                ref var kv = ref KVs[i];
+                kv = new(kv.Key, value);
+                return;
+            }
+        }
 
-                if (KeyEquals(kv.Key.Target, key.Target))
+#if DEBUG
+        if (Count >= SizeLimit)
+            throw new InvalidOperationException();
+#endif
+
+        KeyValuePairs[Count++] = new(key, value);
+    }
+
+
+
+    public readonly bool TryGet(in TKey key, out TValue value)
+    {
+        for (int i = 0; i < Count; i++)
+        {
+            var kv = KeyValuePairs[i];
+            if (KeyEquals(kv.Key, key))
+            {
+                value = kv.Value;
+                return true;
+            }
+        }
+
+        value = default;
+        return false;
+    }
+    public readonly TValue Get(in TKey key)
+    {
+        if (!TryGet(key, out var get)) 
+            throw new Exception();
+
+        return get;
+    }
+
+
+
+    public bool TryRemove(in TKey key)
+    {
+        for (int i = 0; i < Count; i++)
+        {
+            var kv = KeyValuePairs[i];
+            if (KeyEquals(kv.Key, key))
+            {
+                int tailCount = Count - i - 1;
+                if (tailCount > 0)
                 {
-                    if (!key.IsAllocated)
-                    {
-                        int tailCount = _count - i - 1;
-                        if (tailCount > 0)
-                        {
-                            var src = MemoryMarshal.CreateSpan(ref KVs[i + 1], tailCount);
-                            var dst = MemoryMarshal.CreateSpan(ref KVs[i], tailCount);
-                            src.CopyTo(dst);
-                        }
-
-                        _count--;
-                        return;
-                    }
-
-                    kv = new(key, value);
-                    return;
+                    var src = MemoryMarshal.CreateSpan(ref KeyValuePairs[i + 1], tailCount);
+                    var dst = MemoryMarshal.CreateSpan(ref KeyValuePairs[i], tailCount);
+                    src.CopyTo(dst);
                 }
+
+                Count--;
+
+                return true;
             }
-
-            if (_count >= SizeLimit)
-                throw new IndexOutOfRangeException();
-
-            if (!key.IsAllocated) return;
-
-            KVs[_count++] = new(key, value);
-
         }
+
+        return false;
     }
-
-
-    public void Add(GCHandle<KeyT> key, GCHandle<ValueT> value)
-        => this[key] = value;
-
-
-    public readonly Enumerator GetEnumerator()
-        => new(this);
-
-
-    public ref struct Enumerator : IEnumerator
+    public void Remove(in TKey key)
     {
-        private readonly UnmanagedKeyValueHandleCollection<KeyT, ValueT> _owner;
-        private int _index;
-
-        public Enumerator(UnmanagedKeyValueHandleCollection<KeyT, ValueT> owner)
-        {
-            _owner = owner;
-            _index = -1;
-        }
-
-        public bool MoveNext()
-            => ++_index < _owner._count;
-
-
-        public readonly KeyValuePair<GCHandle<KeyT>, GCHandle<ValueT>> Current => _owner.KVs[_index];
-
-
-        readonly object IEnumerator.Current => Current;
-        public void Reset() => _index = -1;
+        if (!TryRemove(key))
+            throw new Exception();
     }
-
 
 
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private static bool KeyEquals(KeyT a, KeyT b) => EqualityComparer<KeyT>.Default.Equals(a, b);
+    private static bool KeyEquals(in TKey a, in TKey b) 
+        => EqualityComparer<TKey>.Default.Equals(a, b);
 
 
-    public readonly UnmanagedKeyValueHandleCollection<KeyT, ValueT> Combine(in UnmanagedKeyValueHandleCollection<KeyT, ValueT> b)
+
+
+
+    /// <summary>
+    /// Combines two <see cref="UnmanagedKeyValueCollection{TKey, TValue}"/>s.
+    /// </summary>
+    /// <param name="b"></param>
+    /// <returns></returns>
+    public readonly UnmanagedKeyValueCollection<TKey, TValue> Combine(in UnmanagedKeyValueCollection<TKey, TValue> b)
     {
-        if (_count == 0 && b._count == 0) return default;
-        if (_count == 0) return b;
-        if (b._count == 0) return this;
+        if (Count == 0 && b.Count == 0) return default;
+        if (Count == 0) return b;
+        if (b.Count == 0) return this;
 
 
         var result = this;
 
-        for (int i = 0; i < b._count; i++)
+        for (int i = 0; i < b.Count; i++)
         {
-            var key = b.KVs[i].Key;
+            var key = b.KeyValuePairs[i].Key;
             result[key] = b[key];
         }
 
         return result;
     }
-}
-
-
-
-/// <summary>
-/// Wraps an <see cref="UnmanagedKeyValueHandleCollection{KeyT, ValueT}"/> and creates and releases <see cref="GCHandle"/>s when keys/values are added/removed.
-/// <br/> Handles will be released on object destruction.
-/// </summary>
-public class UnmanagedKeyValueHandleCollectionOwner<KeyT, ValueT> : IEnumerable<KeyValuePair<KeyT, ValueT>> where KeyT : class where ValueT : class
-{
-
-    public UnmanagedKeyValueHandleCollectionOwner(IEnumerable<KeyValuePair<KeyT, ValueT>> enumerable)
-    {
-        _enumerator = new(this);
-
-        foreach (var kv in enumerable) 
-            this[kv.Key] = kv.Value;
-    }
-
-
-
-    public UnmanagedKeyValueHandleCollectionOwner()
-    {
-        _enumerator = new(this);
-    }
-
-
-    private UnmanagedKeyValueHandleCollection<KeyT, ValueT> Collection;
-
-    private readonly Dictionary<KeyT, GCHandle> keyhandles = new();
-    private readonly Dictionary<ValueT, GCHandle> valuehandles = new();
-
-
-    /// <summary>
-    /// Returns the underlying <see cref="UnmanagedKeyValueHandleCollection{KeyT, ValueT}"/> struct that this wraps.
-    /// </summary>
-    /// <returns></returns>
-    public ref UnmanagedKeyValueHandleCollection<KeyT, ValueT> GetUnderlyingCollection() => ref Collection;
-
-
-
-    public ValueT this[KeyT key]
-    {
-        get => Collection[key].Target;
-        set
-        {
-            var khandle = (GCHandle<KeyT>)AcquireGCHandleFor(key, keyhandles);
-
-            if (value == null)
-            {
-                Collection[khandle] = default;
-                khandle.Free();
-                keyhandles.Remove(key);
-                return;
-            }
-
-            Collection[khandle] = (GCHandle<ValueT>)AcquireGCHandleFor(value, valuehandles);
-        }
-    }
-
-
-
-    private static GCHandle AcquireGCHandleFor<T>(T key, Dictionary<T, GCHandle> handles) where T : class
-    {
-        if (handles.TryGetValue(key, out var kget)) return kget;
-        else kget = handles[key] = GCHandle.Alloc(key, GCHandleType.Normal);
-
-        return kget;
-    }
-
-
-
-    ~UnmanagedKeyValueHandleCollectionOwner()
-    {
-        foreach (var kv in keyhandles) kv.Value.Free();
-        foreach (var kv in valuehandles) kv.Value.Free();
-    }
 
 
 
 
 
-    public int Count => Collection.Count;
-
-
-
-    public void Add(KeyT key, ValueT value)
-        => this[key] = value;
-
-    public IEnumerator<KeyValuePair<KeyT, ValueT>> GetEnumerator()
-    {
-        _enumerator.Reset();
-        return _enumerator;
-    }
-
-    IEnumerator IEnumerable.GetEnumerator()
-    {
-        return GetEnumerator();
-    }
-
-
-    //class with single instance to prevent gc / boxing
-    private readonly Enumerator _enumerator;
-
-
-
-    public class Enumerator(UnmanagedKeyValueHandleCollectionOwner<KeyT, ValueT> owner) : IEnumerator<KeyValuePair<KeyT, ValueT>>
+    public struct Enumerator(UnmanagedKeyValueCollection<TKey, TValue> owner) : IEnumerator<KeyValuePair<TKey, TValue>>
     {
         private int _index = -1;
 
-        public bool MoveNext() => ++_index < owner.Collection.Count;
-
-        public KeyValuePair<KeyT, ValueT> Current
-        {
-            get
-            {
-                var get = owner.Collection[_index];
-                return new(get.Key.Target, get.Value.Target);
-            }
-        }
+        public bool MoveNext()
+            => ++_index < owner.Count;
 
 
-        object IEnumerator.Current => Current;
+        public readonly KeyValuePair<TKey, TValue> Current => owner.KeyValuePairs[_index];
 
+
+        readonly object IEnumerator.Current => Current;
         public void Reset() => _index = -1;
 
-        public void Dispose() { }
+
+        public readonly void Dispose() { }
     }
 
 
+    public readonly Enumerator GetEnumerator() => new(this);
+
+    readonly IEnumerator<KeyValuePair<TKey, TValue>> IEnumerable<KeyValuePair<TKey, TValue>>.GetEnumerator() => GetEnumerator();
+    readonly IEnumerator IEnumerable.GetEnumerator() => GetEnumerator();
+
+
+
+
+
+#if DEBUG
+    public override string ToString()
+    {
+        StringBuilder sb = new();
+        foreach (var kv in this)
+            sb.AppendLine($"{{ {{ {kv.Key.ToString()}, {{ {kv.Value.ToString()} }} }} }}");
+
+        return sb.ToString();
+    }
+
+#endif
+
+
 }
-
-
-
-
-
-
-
-
 
 
 
@@ -604,176 +584,9 @@ public static class Comparisons
 
 
 
-/// <summary>
-/// Wraps <see cref="GCHandle"/> with a strongly typed generic.
-/// </summary>
-/// <typeparam name="T"></typeparam>
-public unsafe struct GCHandle<T>(GCHandle handle) where T : class 
-{
-
-    private GCHandle Handle = handle;
-
-
-    /// <summary>
-    /// Gets the object this handle represents.
-    /// </summary>
-    public readonly T Target => (T)Handle.Target;
-
-    public void Free()
-    {
-        Handle.Free();
-        Handle = default;
-    }
-
-    public readonly bool IsAllocated => Handle.IsAllocated;
-
-
-    public static GCHandle<T> Alloc(T reference, GCHandleType type) => new(GCHandle.Alloc(reference, type));
-    public static GCHandle<T> Alloc(T reference) => new(GCHandle.Alloc(reference));
-
-
-    public static GCHandle<T> FromIntPtr(nint value) => (GCHandle<T>)GCHandle.FromIntPtr(value);
-    public readonly IntPtr ToIntPtr() => GCHandle.ToIntPtr(Handle);
 
 
 
-    public static explicit operator GCHandle<T> (GCHandle handle) => new(handle);
-    public static explicit operator GCHandle(GCHandle<T> handle) => handle.Handle;
-
-}
-
-
-
-
-
-
-
-
-
-public static class Sorting
-{
-
-    /// <summary>
-    /// Sorts a span of (T, float) by the floats.
-    /// </summary>
-    /// <typeparam name="T"></typeparam>
-    /// <param name="source"></param>
-    /// <param name="largestFirst"></param>
-    /// <returns></returns>
-    /// <exception cref="Exception"></exception>
-    public static unsafe void RadixSort<T>(this Span<(T item, float key)> source, bool largestFirst = false)
-    {
-        int n = source.Length;
-        if (n == 0) return;
-
-        var bufA = source; // input span
-        var tempArr = ArrayPools.RentArrayFromPool<(T, float)>(n); // temporary buffer for radix passes
-        var bufB = tempArr.Ref;
-
-        (T, float)* a = ((T, float)*)Unsafe.AsPointer(ref bufA[0]);
-        (T, float)* b = ((T, float)*)Unsafe.AsPointer(ref bufB[0]);
-
-
-        uint* keys = stackalloc uint[n];
-        int* count = stackalloc int[256];
-        int* offset = stackalloc int[256];
-
-
-        // --------------------------
-        // Build sortable keys
-        // --------------------------
-        int i = 0;
-        int unrolled = n & ~3;
-        for (; i < unrolled; i += 4)
-        {
-            float f0 = a[i + 0].Item2;
-            float f1 = a[i + 1].Item2;
-            float f2 = a[i + 2].Item2;
-            float f3 = a[i + 3].Item2;
-
-            uint b0 = *(uint*)&f0 ^ (uint)((int)*(uint*)&f0 >> 31 | 0x80000000);
-            uint b1 = *(uint*)&f1 ^ (uint)((int)*(uint*)&f1 >> 31 | 0x80000000);
-            uint b2 = *(uint*)&f2 ^ (uint)((int)*(uint*)&f2 >> 31 | 0x80000000);
-            uint b3 = *(uint*)&f3 ^ (uint)((int)*(uint*)&f3 >> 31 | 0x80000000);
-
-            keys[i + 0] = b0;
-            keys[i + 1] = b1;
-            keys[i + 2] = b2;
-            keys[i + 3] = b3;
-        }
-        for (; i < n; i++)
-        {
-            float f = a[i].Item2;
-            keys[i] = *(uint*)&f ^ (uint)((int)*(uint*)&f >> 31 | 0x80000000);
-        }
-
-        const int PASSES = 4;
-        for (int pass = 0; pass < PASSES; pass++)
-        {
-            int shift = pass * 8;
-
-            // zero counts
-            for (int j = 0; j < 256; j += 8)
-            {
-                count[j + 0] = 0; count[j + 1] = 0;
-                count[j + 2] = 0; count[j + 3] = 0;
-                count[j + 4] = 0; count[j + 5] = 0;
-                count[j + 6] = 0; count[j + 7] = 0;
-            }
-
-            // COUNT
-            for (i = 0; i < n; i++)
-            {
-                count[(keys[i] >> shift) & 0xFF]++;
-            }
-
-            // prefix
-            int running = 0;
-            for (i = 0; i < 256; i++)
-            {
-                offset[i] = running;
-                running += count[i];
-            }
-
-            // SCATTER
-            for (i = 0; i < n; i++)
-            {
-                int pos = offset[(int)((keys[i] >> shift) & 0xFF)]++;
-                b[pos] = a[i];
-            }
-
-            // swap buffers
-            var tmp = a;
-            a = b;
-            b = tmp;
-        }
-
-        // Copy back if the sorted data isn't already in the input
-        if (a != ((T, float)*)Unsafe.AsPointer(ref source[0]))
-        {
-            Buffer.MemoryCopy(a, Unsafe.AsPointer(ref source[0]), n * sizeof((T, float)), n * sizeof((T, float)));
-        }
-
-
-        // reverse if needed
-        if (largestFirst)
-        {
-            i = 0;
-            int j = n - 1;
-            while (i < j)
-            {
-                var tmp = source[i];
-                source[i] = source[j];
-                source[j] = tmp;
-                i++; j--;
-            }
-        }
-
-        tempArr.Return();
-    }
-
-
-}
 
 
 
@@ -822,8 +635,8 @@ public static class ArrayPools
             set => Ref[idx] = value;
         }
 
-        public static implicit operator Span<T>(ArrayFromPool<T> a) => new Span<T>(a.Ref, 0, a.Length);
-        public static implicit operator ReadOnlySpan<T>(ArrayFromPool<T> a) => new ReadOnlySpan<T>(a.Ref, 0, a.Length);
+        public static implicit operator Span<T>(ArrayFromPool<T> a) => new(a.Ref, 0, a.Length);
+        public static implicit operator ReadOnlySpan<T>(ArrayFromPool<T> a) => new(a.Ref, 0, a.Length);
 
 
 #if DEBUG
@@ -1002,9 +815,10 @@ public unsafe readonly struct WriteRange(uint offset, uint length, void* content
 /// An interface to define unmanaged deferred command structs for consumption via <see cref="DeferredCommandBuffer"/>.
 /// <br /> Commands should store/reference immutable data to work as intended.
 /// </summary>
-public unsafe interface IDeferredCommand
+public unsafe interface IDeferredCommand<TSelf>
+    where TSelf : unmanaged, IDeferredCommand<TSelf>
 {
-    public static abstract void Execute(void* self);
+    static abstract void Execute(TSelf* self);
 }
 
 
@@ -1043,7 +857,7 @@ public unsafe sealed class DeferredCommandBuffer
 
 
 
-    public unsafe void PushCommand(void* fn)
+    public unsafe void PushCommand(delegate*<void> fn)
     {
         lock (this)
         {
@@ -1061,24 +875,70 @@ public unsafe sealed class DeferredCommandBuffer
                 PushTrace(dst);
             }
 
-            _offset += sizeof(CommandHeader);
+            _offset += header.Size;
         }
 
     }
 
 
 
-    public void PushCommand<T>(T cmd) where T : unmanaged, IDeferredCommand
+    public void PushCommand<TData>(TData data, delegate*<TData*, void> fn)
+        where TData : unmanaged
     {
-
         lock (this)
         {
             CommandHeader header = new CommandHeader
             {
-                ExecuteFn = (delegate*<void*, void>) &T.Execute,
-                Size = (ushort)(sizeof(CommandHeader) + sizeof(T))
+                ExecuteFn = (void*)(delegate*<void*, void>)&Invoke,
+                Size = (ushort)(
+                    sizeof(CommandHeader) +
+                    sizeof(void*) +   
+                    sizeof(TData))
             };
 
+
+            fixed (byte* dst = &_buffer[_offset])
+            {
+                byte* ptr = dst;
+
+                Unsafe.WriteUnaligned(ptr, header);
+                ptr += sizeof(CommandHeader);
+
+                *(void**)ptr = (void*)fn;
+                ptr += sizeof(void*);
+
+                Unsafe.WriteUnaligned(ptr, data);
+
+                PushTrace(dst);
+            }
+
+            _offset += header.Size;
+        }
+
+
+        static void Invoke(void* ptr)
+        {
+            byte* p = (byte*)ptr;
+
+            var fn = (delegate*<TData*, void>)(*(void**)p);
+
+            var dataPtr = (TData*)(p + sizeof(void*));
+
+            fn(dataPtr);
+        }
+    }
+
+
+    public void PushCommand<T>(T cmd)
+        where T : unmanaged, IDeferredCommand<T>
+    {
+        lock (this)
+        {
+            CommandHeader header = new CommandHeader
+            {
+                ExecuteFn = (void*)(delegate*<void*, void>)&Execute<T>,
+                Size = (ushort)(sizeof(CommandHeader) + sizeof(T))
+            };
 
             fixed (byte* dst = &_buffer[_offset])
             {
@@ -1088,10 +948,19 @@ public unsafe sealed class DeferredCommandBuffer
                 PushTrace(dst);
             }
 
-            _offset += sizeof(CommandHeader) + sizeof(T);
+            _offset += header.Size;
         }
 
+        static void Execute<TCmd>(void* ptr)
+            where TCmd : unmanaged, IDeferredCommand<TCmd>
+        {
+            TCmd.Execute((TCmd*)ptr);
+        }
     }
+
+
+
+
 
 
 
@@ -1130,6 +999,10 @@ public unsafe sealed class DeferredCommandBuffer
     /// <summary>
     /// Executes all commands and resets.
     /// </summary>
+
+    [DebuggerHidden]
+    [StackTraceHidden]
+
     public void Execute()
     {
         lock (this)
@@ -1162,16 +1035,7 @@ public unsafe sealed class DeferredCommandBuffer
                     }
                     catch (Exception ex)
                     {
-                        if (header->DebugIndex != -1)
-                        {
-                            var originTrace = _debugOrigins[header->DebugIndex];
-                            throw new Exception(
-                                "Deferred command originally submitted from:\n" +
-                                originTrace + "\n\nDeferred command failure:\n" +
-                                ex,
-                                ex);
-                        }
-                        throw;
+                        Throw(header, ex);
                     }
 #endif
 
@@ -1184,6 +1048,26 @@ public unsafe sealed class DeferredCommandBuffer
         }
 
     }
+
+
+    private void Throw(CommandHeader* header, Exception ex)
+    {
+        if (header->DebugIndex != -1)
+        {
+            var originTrace = _debugOrigins[header->DebugIndex];
+            throw new Exception(
+                "Deferred command originally submitted from:\n" +
+                originTrace.ToClickableSrcLinesString() + "\n\nDeferred command failure:\n" +
+                ex,
+                ex);
+        }
+
+        throw ex;
+    }
+
+
+
+
 
 
     /// <summary>

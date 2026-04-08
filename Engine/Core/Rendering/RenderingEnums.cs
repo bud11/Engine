@@ -8,14 +8,6 @@ using System;
 public static partial class RenderingBackend
 {
 
-    public enum ShaderFormat : byte
-    {
-        SPIRV,
-        GLSL,
-        HLSL
-    }
-
-
 
 
 
@@ -291,13 +283,31 @@ public static partial class RenderingBackend
 
 
 
+    /// <summary>
+    /// Flags which indicate the binding capabilities of a buffer.
+    /// </summary>
     [Flags]
-    public enum SSBOReadWriteFlags : byte
+    public enum BufferUsageFlags : byte
     {
-        Read = 1 << 0,
-        Write = 1 << 1,
+        Vertex = 1 << 0,
+        Index = 1 << 1,
+        Uniform = 1 << 2,
+        Storage = 1 << 3,
     }
 
+
+    /// <summary>
+    /// Flags which indicate capacity of access and mutability for a gpu resource.
+    /// </summary>
+    [Flags]
+    public enum ReadWriteFlags : byte
+    {
+        GPURead = 1 << 0,
+        GPUWrite = 1 << 1,
+
+        CPURead = 1 << 2,
+        CPUWrite = 1 << 3
+    }
 
 
 }
