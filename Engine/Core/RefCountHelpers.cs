@@ -3,6 +3,7 @@
 using System.Collections;
 using System.Diagnostics.CodeAnalysis;
 using System.Runtime.CompilerServices;
+using static Engine.Core.References;
 
 namespace Engine.Core;
 
@@ -18,7 +19,7 @@ public static class RefCountCollections
     /// </summary>
     /// <typeparam name="T"></typeparam>
     [CollectionBuilder(typeof(RefCountCollections), nameof(CreateRefCountedArray))]
-    public class RefCountedArray<T> : RefCounted, IEnumerable<T>
+    public class RefCountedArray<T> : Freeable, IEnumerable<T>
         where T : RefCounted
     {
 
@@ -47,9 +48,7 @@ public static class RefCountCollections
             get => _arr[idx];
             set
             {
-                var ret = ReferenceReplaceLogic(_arr[idx], value);
-
-                if (ret.changed)
+                if (ReferenceReplaceLogic(_arr[idx], value))
                 {
                     _arr[idx] = value;
                     OnValueChanged.Invoke((idx, value));
@@ -99,7 +98,7 @@ public static class RefCountCollections
     /// </summary>
     /// <typeparam name="TKey"></typeparam>
     /// <typeparam name="TValue"></typeparam>
-    public class RefCountedDictionary<TKey, TValue> : RefCounted, IDictionary<TKey, TValue> where TKey : notnull where TValue : RefCounted
+    public class RefCountedDictionary<TKey, TValue> : Freeable, IDictionary<TKey, TValue> where TKey : class where TValue : RefCounted
     {
         public RefCountedDictionary(int Length) 
             => _dict = new(Length);
@@ -109,11 +108,20 @@ public static class RefCountCollections
 
         public RefCountedDictionary(IDictionary<TKey, TValue> from)
         {
-            foreach (var v in from.Values) 
-                v?.AddUser();
+            _dict = new(from.Count);
 
-            _dict = from.ToDictionary();
+            foreach (var kv in from)
+            {
+                _dict.Add(kv.Key, kv.Value);
+
+                if (_dict.Count <= UnmanagedKeyValueCollection<byte, byte>.SizeLimit)
+                    _unmanaged[kv.Key.GetRef()] = kv.Value.GetRef();
+
+                kv.Value?.AddUser();
+            }
+
         }
+
 
 
         public static explicit operator RefCountedDictionary<TKey, TValue>(Dictionary<TKey, TValue> from) 
@@ -122,7 +130,7 @@ public static class RefCountCollections
 
 
 
-        private readonly Dictionary<TKey, TValue> _dict;
+        private Dictionary<TKey, TValue> _dict;
 
 
         public TValue this[TKey idx]
@@ -130,17 +138,25 @@ public static class RefCountCollections
             get => _dict[idx];
             set
             {
-                _dict.TryGetValue(idx, out var get);
-
-                var (res, changed) = ReferenceReplaceLogic(get, value);
-
-                if (changed)
+                if (!_dict.TryGetValue(idx, out var get))  //not present
                 {
+                    _unmanaged.Add(idx.GetRef(), value.GetRef());
+
+                    _dict[idx] = value;
+                    OnValueChanged.Invoke((idx, value));
+                }
+
+
+                else if (ReferenceReplaceLogic(get, value))  //present but changed
+                {
+                    _unmanaged.Set(idx.GetRef(), value.GetRef(), addNew: false);
+
                     _dict[idx] = value;
                     OnValueChanged.Invoke((idx, value));
                 }
             }
         }
+
 
         public readonly ThreadSafeEventAction<(TKey idx, TValue newvalue)> OnValueChanged = new();
 
@@ -149,6 +165,20 @@ public static class RefCountCollections
             foreach (var val in _dict.Values) 
                 val.RemoveUser();
 
+            _dict = null;
+            _unmanaged = default;
+        }
+
+
+
+        private UnmanagedKeyValueCollection<WeakObjRef<TKey>, WeakObjRef<TValue>> _unmanaged = new();
+        public ref UnmanagedKeyValueCollection<WeakObjRef<TKey>, WeakObjRef<TValue>> AsUnmanaged()
+        {
+#if DEBUG
+            if (_dict.Count > UnmanagedKeyValueCollection<byte, byte>.SizeLimit) throw new InvalidCastException($"Collection is too big to be represented by {typeof(UnmanagedKeyValueCollection<WeakObjRef<TKey>, WeakObjRef<TValue>>).Name}");
+#endif
+
+            return ref _unmanaged;
         }
 
 
@@ -178,6 +208,8 @@ public static class RefCountCollections
         {
             if (_dict.TryGetValue(key, out var get))
             {
+                _unmanaged.TryRemove(key.GetRef());
+
                 get.RemoveUser();
                 return ((IDictionary<TKey, TValue>)_dict).Remove(key);
             }
@@ -200,8 +232,9 @@ public static class RefCountCollections
         public void Clear()
         {
             foreach (var k in _dict.Keys) 
-                _dict.Remove(k);
+                Remove(k);
         }
+
 
         public bool Contains(KeyValuePair<TKey, TValue> item)
         {
@@ -232,18 +265,24 @@ public static class RefCountCollections
 
 
 
-    private static (T res, bool changed) ReferenceReplaceLogic<T>(T originalValue, T newValue) where T : RefCounted
+
+
+
+
+
+    private static bool ReferenceReplaceLogic<T>(T? originalValue, T? newValue) where T : RefCounted
     {
         bool changed = false;
 
         if (originalValue != newValue)
         {
-            if (newValue != null) newValue.AddUser();
-            if (originalValue != null) originalValue.RemoveUser();
+            newValue?.AddUser();
+            originalValue?.RemoveUser();
 
             changed = true;
         }
-        return (newValue, changed);
+
+        return changed;
     }
 
 

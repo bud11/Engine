@@ -296,7 +296,7 @@ public partial class Camera : GameObject
 
         delegate*<MaterialResource, MaterialResource.MaterialResolution> materialResolver = null,
 
-        delegate*<ReadOnlySpan<(DrawObject obj, float distance)>, delegate*<MaterialResource, MaterialResource.MaterialResolution>, void> drawCallIssuer = null
+        delegate*<ReadOnlySpan<(DrawObject obj, float distance)>, void> drawCallIssuer = null
 
     )
     {
@@ -308,7 +308,7 @@ public partial class Camera : GameObject
 
         public readonly delegate*<MaterialResource, MaterialResource.MaterialResolution> MaterialResolver = materialResolver;
 
-        public readonly delegate*<ReadOnlySpan<(DrawObject obj, float distance)>, delegate*<MaterialResource, MaterialResource.MaterialResolution>, void> DrawCallIssuer = drawCallIssuer;
+        public readonly delegate*<ReadOnlySpan<(DrawObject obj, float distance)>, void> DrawCallIssuer = drawCallIssuer;
     }
 
 
@@ -386,26 +386,31 @@ public partial class Camera : GameObject
             for (int sp = 0; sp < subpasses.Length; sp++)
             {
                 var subpass = subpasses[sp];
-                var whitelist = subpass.ObjectWhiteList.Dereference(); 
+                var whitelist = subpass.ObjectWhiteList.Dereference();
 
+                ArrayPools.ArrayFromPool<(DrawObject, float)> objs;
 
 
 
                 ///////////////////////////////////////////////////////////////////////////////////////
                 //get a list of the visible and in camera objects...
 
-                ArrayPools.ArrayFromPool<(DrawObject, float)> objs = ArrayPools.RentArrayFromPool<(DrawObject, float)>(whitelist.Count);
-
-                var idx = 0;
-                for (int i = 0; i < whitelist.Count; i++)
+                lock (whitelist)
                 {
-                    var o = whitelist[i];
+                    objs = ArrayPools.RentArrayFromPool<(DrawObject, float)>(whitelist.Count);
 
-                    //if (o.IsVisibleInTree() && IsAABBInFrustum(o.GetOrRecalculateCachedGlobalAABB(), frustumPlanes))
-                        objs[idx++] = (o, subpass.Ordering != CameraDrawSortMode.Unordered ? o.GlobalPosition.DistanceToSquared(GlobalPosition) : 0);
+                    var idx = 0;
+                    for (int i = 0; i < whitelist.Count; i++)
+                    {
+                        var o = whitelist[i];
+
+                        //if (o.IsVisibleInTree() && IsAABBInFrustum(o.GetOrRecalculateCachedGlobalAABB(), frustumPlanes))
+                            objs[idx++] = (o, subpass.Ordering != CameraDrawSortMode.Unordered ? o.GlobalPosition.DistanceToSquared(GlobalPosition) : 0);
+                    }
+
+                    objs.Length = idx;
                 }
 
-                objs.Length = idx;
 
 
 
@@ -434,7 +439,7 @@ public partial class Camera : GameObject
 
 
 
-                if (subpass.DrawCallIssuer != null) subpass.DrawCallIssuer(objs, subpass.MaterialResolver);
+                if (subpass.DrawCallIssuer != null) subpass.DrawCallIssuer(objs);
 
                 else
                 {

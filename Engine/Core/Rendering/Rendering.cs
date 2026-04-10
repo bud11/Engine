@@ -3,13 +3,14 @@
 
 namespace Engine.Core;
 
-using Engine.Stripped;
 using System;
 using System.Collections.Generic;
 using System.Collections.Immutable;
 using System.Diagnostics;
 using System.Linq;
+using System.Numerics;
 using System.Runtime.CompilerServices;
+using System.Runtime.InteropServices;
 using static Engine.Core.References;
 using static EngineMath;
 using static RenderingBackend;
@@ -17,6 +18,9 @@ using static RenderingBackend.DrawPipelineDetails;
 using static RenderThread;
 
 
+#if DEBUG
+using Engine.Stripped;
+#endif
 
 
 /// <summary>
@@ -546,6 +550,216 @@ public static class Rendering
 
 
 
+    [StructLayout(LayoutKind.Sequential, Pack = 1, Size = 12)]
+    private readonly record struct QuadVertex(Vector2 Position, byte U, byte V);
+
+
+
+    /// <summary>
+    /// Defers a draw call for a basic arbitrary 2D quad with an optional texture.
+    /// </summary>
+    /// <param name="bottomLeftNDC"></param>
+    /// <param name="topRightNDC"></param>
+    /// <param name="texture"></param>
+    public static void DrawQuad(Vector2 bottomLeftNDC,
+                                Vector2 topRightNDC,
+                                BackendTextureAndSamplerReferencesPair texture = null)
+    {
+
+
+#if DEBUG
+        if (!CompiledQuadDrawShader) 
+            throw new Exception($"Call {nameof(InitQuadDrawDefaultShader)} from {nameof(Entry.InitShaders)} to enable this method");
+#endif
+
+
+        if (BasicQuadVertexBuffer == null)
+        {
+            BasicQuadVertexBuffer = PooledBuffer.Create(BufferUsageFlags.Vertex, ReadWriteFlags.CPUWrite);
+            BasicQuadDefaultShader = new NamedShaderReference(BasicQuadDefaultShaderName);
+            BasicQuadSetPool = PooledResourceSet.CreateFromMetadata(BasicQuadDefaultShader.Shader.Metadata.ResourceSets["Resources"].Metadata);
+        }
+
+
+
+
+        ReadOnlySpan<QuadVertex> bufData =
+        [
+            new() { Position = bottomLeftNDC, U = 0,   V = 0 },
+            new() { Position = new(bottomLeftNDC.X, topRightNDC.Y), U = 0,   V = 255 },
+            new() { Position = topRightNDC, U = 255, V = 255 },
+
+            new() { Position = bottomLeftNDC, U = 0,   V = 0 },
+            new() { Position = topRightNDC, U = 255, V = 255 },
+            new() { Position = new(topRightNDC.X, bottomLeftNDC.Y), U = 255, V = 0 },
+        ];
+
+
+
+        BasicQuadVertexBuffer.Advance((uint)MemoryMarshal.AsBytes(bufData).Length);
+
+        var buf = BasicQuadVertexBuffer.GetCurrent();
+
+        buf.Write(bufData, 0, false);
+
+
+        BasicQuadSetPool.Advance();
+        BasicQuadSetPool.GetCurrent().SetResource("Texture", texture);
+
+
+
+
+        Draw(
+            new UnmanagedKeyValueCollection<WeakObjRef<string>, VertexAttributeDefinitionBufferPair.Struct>()
+            {
+                {
+                    "Position".GetRef(),
+
+                    new VertexAttributeDefinitionBufferPair.Struct(
+                        ((BackendBufferReference.IVertexBuffer)buf).GetRef(),
+                        new
+                        (
+                            VertexAttributeBufferComponentFormat.Float,
+                            12,
+                            0,
+                            VertexAttributeScope.PerVertex
+                        )
+                    )
+                },
+
+                {
+                    "UV".GetRef(),
+
+                    new VertexAttributeDefinitionBufferPair.Struct(
+                        ((BackendBufferReference.IVertexBuffer)buf).GetRef(),
+                        new
+                        (
+                            VertexAttributeBufferComponentFormat.Byte,
+                            12,
+                            8,
+                            VertexAttributeScope.PerVertex
+                        )
+                    )
+                }
+            },
+
+            new UnmanagedKeyValueCollection<WeakObjRef<string>, WeakObjRef<BackendResourceSetReference>>()
+            {
+                { "Resources".GetRef(), BasicQuadSetPool.GetCurrent().GetRef() }
+            },
+
+            BasicQuadDefaultShader.Shader,
+
+            new() { CullMode = CullMode.Disabled },
+
+            new() { Enable = true },
+
+            new() { DepthWrite = false, DepthFunction = DepthOrStencilFunction.Always },
+
+            null,
+
+            new(0, 6, 0, 1)
+
+            );
+
+    }
+
+
+
+    private static PooledBuffer BasicQuadVertexBuffer;
+    private static PooledResourceSet BasicQuadSetPool;
+
+
+    private static NamedShaderReference BasicQuadDefaultShader;
+
+
+    private const string BasicQuadDefaultShaderName = "___default_draw_quad";
+
+
+#if DEBUG
+    private static bool CompiledQuadDrawShader = false;
+#endif
+
+
+#if DEBUG
+    /// <summary>
+    /// Registers a basic default shader, which enables <see cref="DrawQuad(Vector2, Vector2, BackendTextureAndSamplerReferencesPair)"/>.
+    /// </summary>
+    public static void InitQuadDrawDefaultShader()
+    {
+
+        CompiledQuadDrawShader = true;
+
+
+
+        ShaderCompilation.RegisterShader(
+
+            shaderName: BasicQuadDefaultShaderName,
+
+            resourceSetNames:
+            [
+                "Resources"
+            ],
+
+            vertexSource:
+            """
+
+            in vec2 Position;
+            in vec2 UV;
+
+            out vec2 FragUV;
+            out vec4 FragColor;
+
+            void main()
+            {
+                FragUV = UV;
+                FragColor = vec4(1.0);
+                gl_Position = vec4(Position, 0.0, 1.0);
+            }
+
+            """,
+
+            fragmentSource:
+            """
+
+            layout(set = 0) uniform sampler2D Texture;
+
+            in vec2 FragUV;
+            in vec4 FragColor;
+
+            out vec4 FinalColor;
+
+            void main()
+            {
+                FinalColor = FragColor * texture(Texture, FragUV);
+            }
+
+            """,
+
+
+            languageHandler: ShaderCompilation.GLSL
+
+        );
+    }
+
+#endif
+
+
+    public static void ResetQuadDrawResources()
+    {
+        if (BasicQuadVertexBuffer != null)
+        {
+            BasicQuadVertexBuffer.Reset();
+            BasicQuadSetPool.Reset();
+        }
+    }
+
+
+
+
+
+
+
 
 
 
@@ -612,10 +826,9 @@ public static class Rendering
                 {
                     var res = sp[i];
 
-                    if (IsResourceDummy((IBackendResourceReference)res))
-                    {
+                    if (res == null)
                         throw new Exception($"Missing resource '{(res is BackendTextureAndSamplerReferencesPair ? set.Value.Dereference().Metadata.TexturesIndexed[i].Name : set.Value.Dereference().Metadata.BuffersIndexed[i].Name)}' in set '{set.Key.Dereference()}'");
-                    }
+
                 }
             }
         }

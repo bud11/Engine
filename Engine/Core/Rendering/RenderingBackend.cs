@@ -20,6 +20,11 @@ using static RenderThread;
 
 
 
+#if DEBUG
+using Engine.Stripped;
+#endif
+
+
 
 /// <summary>
 /// Provides near direct immediate access to the current rendering backend. Also see <seealso cref="Rendering"/> and/or <seealso cref="IDeferredCommand{TSelf}"/>
@@ -37,12 +42,12 @@ public static partial class RenderingBackend
 
 
 
-    public static void CreateBackend(RenderingBackendEnum Backend, nint sdlwindow)
+    public static void CreateBackend(RenderingBackendEnum backend, nint sdlwindow)
     {
-        var get = RenderingBackendData[Backend.ToString()];
+        var get = RenderingBackendData[backend.ToString()];
 
         RenderingBackend.Backend = get.Constructor.Invoke(sdlwindow);
-        CurrentBackend = Backend;
+        CurrentBackend = backend;
 
 
 
@@ -51,11 +56,11 @@ public static partial class RenderingBackend
 
 
 #if RELEASE 
-        foreach (var kv in ShaderSources[RenderingBackendEnum.Vulkan])
-            Shaders[kv.Key] = new BackendShaderReference(kv.Value.Metadata, CreateShader(kv.Value));
+        foreach (var kv in ShaderSources[backend])
+            Shaders[kv.Key] = BackendShaderReference.Create(kv.Key, kv.Value);
 
-        foreach (var kv in ComputeShaderSources[RenderingBackendEnum.Vulkan])
-            ComputeShaders[kv.Key] = new BackendComputeShaderReference(kv.Value.Metadata, CreateComputeShader(kv.Value));
+        foreach (var kv in ComputeShaderSources[backend])
+            ComputeShaders[kv.Key] = BackendComputeShaderReference.Create(kv.Key, kv.Value);
 #endif
 
 
@@ -134,17 +139,25 @@ public static partial class RenderingBackend
 
 
 
-    private static SortedDictionary<uint, BackendBufferReference> DummyBuffers = new();
+    private static List<BackendBufferReference> DummyBuffers = new();
+    
+    private static HashSet<BackendBufferReference> DummyBuffersHashSet = new();
 
     public static BackendBufferReference GetDummyBuffer(uint sizeReq, BufferUsageFlags type, ReadWriteFlags flags)
     {
         lock (DummyBuffers)
         {
-            foreach (var kv in DummyBuffers)
-                if (kv.Value.Size >= sizeReq)
-                    return kv.Value;
+            for (int i = 0; i < DummyBuffers.Count; i++)
+            {
+                var get = DummyBuffers[i];
+                if (get.Size > sizeReq) 
+                    return get;
+            }
 
-            var ret = DummyBuffers[sizeReq] = BackendBufferReference.Create(sizeReq, type, flags);
+            var ret = BackendBufferReference.Create(sizeReq, type, flags);
+
+            DummyBuffers.Add(ret);
+            DummyBuffersHashSet.Add(ret);
 
             return ret;
         }
@@ -157,7 +170,12 @@ public static partial class RenderingBackend
         if (res == Dummy3DTextureSamplerPair) return true;
         if (res == DummyCubeTextureSamplerPair) return true;
 
-        if (res is BackendBufferReference databuf && DummyBuffers.ContainsValue(databuf)) return true;
+        if (res is BackendBufferReference databuf)
+        {
+            lock (DummyBuffers)
+                return DummyBuffersHashSet.Contains(databuf);
+        }
+            
 
         return false;
     }
@@ -218,8 +236,14 @@ public static partial class RenderingBackend
 
 
 
-    public class VertexAttributeDefinitionBufferPair
+    public class VertexAttributeDefinitionBufferPair : RefCounted
     {
+
+
+        protected override void OnFree() 
+            => ((BackendBufferReference)Buf).RemoveUser();
+
+
 
         private BackendBufferReference.IVertexBuffer Buf;
         private WeakObjRef<BackendBufferReference.IVertexBuffer> BufRef;
@@ -239,6 +263,8 @@ public static partial class RenderingBackend
 
         public VertexAttributeDefinitionBufferPair(BackendBufferReference.IVertexBuffer buffer, VertexAttributeDefinition definition)
         {
+            ((BackendBufferReference)buffer).AddUser();
+
             Buffer = buffer;
             Definition = definition;
         }
@@ -250,16 +276,24 @@ public static partial class RenderingBackend
     }
 
 
-
-    public static UnmanagedKeyValueCollection<WeakObjRef<string>, VertexAttributeDefinitionBufferPair.Struct> VertexAttributeDictToUnmanaged(this IDictionary<string, VertexAttributeDefinitionBufferPair> dict)
+    public static UnmanagedKeyValueCollection<WeakObjRef<string>, VertexAttributeDefinitionBufferPair.Struct> VertexAttributesToUnmanaged(this RefCountCollections.RefCountedDictionary<string, VertexAttributeDefinitionBufferPair> dict)
     {
+        ref var basecol = ref dict.AsUnmanaged();
+
         var attrs = new UnmanagedKeyValueCollection<WeakObjRef<string>, VertexAttributeDefinitionBufferPair.Struct>();
 
-        foreach (var kv in dict)
-            attrs.KeyValuePairs[attrs.Count++] = new(kv.Key.GetRef(), kv.Value.GetStruct());
+        for (int i = 0; i < basecol.Count; i++)
+        {
+            ref var get = ref basecol.KeyValuePairs[i];
+            attrs.KeyValuePairs[attrs.Count++] = new(get.Key, get.Value.Dereference().GetStruct());
+        }
+
 
         return attrs;
     }
+
+
+
 
 
 
@@ -309,18 +343,26 @@ public static partial class RenderingBackend
     {
 
 
-
-
         /// <summary>
         /// A <see cref="BackendBufferReference"/> created with <see cref="BufferUsageFlags.Vertex"/>. Should never be implemented elsewhere.
         /// </summary>
-        public interface IVertexBuffer;
+        public interface IVertexBuffer
+        {
+            public unsafe void Write(WriteRange write, bool nessecary);
+            public unsafe void Write<T>(T write, uint offset, bool nessecary) where T : unmanaged;
+            public unsafe void Write<T>(ReadOnlySpan<T> write, uint offset, bool nessecary) where T : unmanaged;
+        }
 
 
         /// <summary>
         /// A <see cref="BackendBufferReference"/> created with <see cref="BufferUsageFlags.Index"/>. Should never be implemented elsewhere.
         /// </summary>
-        public interface IIndexBuffer;
+        public interface IIndexBuffer
+        {
+            public unsafe void Write(WriteRange write, bool nessecary);
+            public unsafe void Write<T>(T write, uint offset, bool nessecary) where T : unmanaged;
+            public unsafe void Write<T>(ReadOnlySpan<T> write, uint offset, bool nessecary) where T : unmanaged;
+        }
 
 
 
@@ -341,25 +383,31 @@ public static partial class RenderingBackend
             /// <param name="val"></param>
             /// <param name="extraOffset"></param>
             /// <param name="skipPadding"></param>
-            public void WriteFromOffsetOf<ValueT>(string fieldName, ValueT val, uint extraOffset = 0, bool skipPadding = true) where ValueT : unmanaged;
+            public void WriteFromOffsetOf<ValueT>(string fieldName, ValueT val, bool nessecary, uint extraOffset = 0, bool skipPadding = true) where ValueT : unmanaged;
 
 
             /// <summary>
-            /// <inheritdoc cref="WriteFromOffsetOf{ValueT}(string, ValueT, uint, bool)"/>
+            /// <inheritdoc cref="WriteFromOffsetOf{ValueT}(string, ValueT, bool, uint, bool)"/>
             /// </summary>
             /// <param name="fieldName"></param>
             /// <param name="dataSize"></param>
             /// <param name="dataPtr"></param>
             /// <param name="extraOffset"></param>
             /// <param name="skipPadding"></param>
-            public void WriteFromOffsetOf(string fieldName, uint dataSize, void* dataPtr, uint extraOffset = 0, bool skipPadding = true);
+            public void WriteFromOffsetOf(string fieldName, uint dataSize, void* dataPtr, bool nessecary, uint extraOffset = 0, bool skipPadding = true);
 
 
             /// <summary>
             /// Writes into this buffer while skipping over padding defined in given metadata.
             /// </summary>
             /// <param name="write"></param>
-            public unsafe void WriteAndSkipPadding(WriteRange write);
+            public unsafe void WriteAndSkipPadding(WriteRange write, bool nessecary);
+
+
+
+            public unsafe void Write(WriteRange write, bool nessecary);
+            public unsafe void Write<T>(T write, uint offset, bool nessecary) where T : unmanaged;
+            public unsafe void Write<T>(ReadOnlySpan<T> write, uint offset, bool nessecary) where T : unmanaged;
         }
 
 
@@ -510,19 +558,19 @@ public static partial class RenderingBackend
 
 
 
-            if (usageFlags.HasFlags([BufferUsageFlags.Vertex, BufferUsageFlags.Storage]))
+            if (usageFlags.EnumHasValues([BufferUsageFlags.Vertex, BufferUsageFlags.Storage]))
                 return new BackendBufferReference_VertexANDStorage(size, usageFlags, accessFlags, metadata, backendRef);
 
-            if (usageFlags.HasFlags([BufferUsageFlags.Vertex]))
+            if (usageFlags.EnumHasValues([BufferUsageFlags.Vertex]))
                 return new BackendBufferReference_Vertex(size, usageFlags, accessFlags, backendRef);
 
-            if (usageFlags.HasFlags([BufferUsageFlags.Index, BufferUsageFlags.Storage]))
+            if (usageFlags.EnumHasValues([BufferUsageFlags.Index, BufferUsageFlags.Storage]))
                 return new BackendBufferReference_IndexANDStorage(size, usageFlags, accessFlags, metadata, backendRef);
 
-            if (usageFlags.HasFlags([BufferUsageFlags.Index]))
+            if (usageFlags.EnumHasValues([BufferUsageFlags.Index]))
                 return new BackendBufferReference_Index(size, usageFlags, accessFlags, backendRef);
 
-            if (usageFlags.HasFlag(BufferUsageFlags.Storage) || usageFlags.HasFlag(BufferUsageFlags.Uniform))
+            if (usageFlags.EnumHasValue(BufferUsageFlags.Storage) || usageFlags.EnumHasValue(BufferUsageFlags.Uniform))
                 return new BackendBufferReference_Data(size, usageFlags, accessFlags, metadata, backendRef);
 
 
@@ -582,36 +630,61 @@ public static partial class RenderingBackend
 
             [DebuggerHidden]
             [StackTraceHidden]
-            public void WriteFromOffsetOf<ValueT>(string fieldName, ValueT val, uint extraOffset = 0, bool skipPadding = true) where ValueT : unmanaged
+            public void WriteFromOffsetOf<ValueT>(string fieldName, ValueT val, bool nessecary, uint extraOffset = 0, bool skipPadding = true) where ValueT : unmanaged
             {
                 AssetHasMetadata();
 
-                if (skipPadding) WriteAndSkipPadding(new WriteRange(Metadata.FieldOffsets[fieldName] + extraOffset, (uint)sizeof(ValueT), &val));
-                else PushDeferredWrite(new WriteRange(Metadata.FieldOffsets[fieldName] + extraOffset, (uint)sizeof(ValueT), &val));
+                if (skipPadding) WriteAndSkipPadding(new WriteRange(Metadata.FieldOffsets[fieldName] + extraOffset, (uint)sizeof(ValueT), &val), nessecary);
+                else Write(new WriteRange(Metadata.FieldOffsets[fieldName] + extraOffset, (uint)sizeof(ValueT), &val), nessecary);
             }
 
             [DebuggerHidden]
             [StackTraceHidden]
-            public void WriteFromOffsetOf(string fieldName, uint dataSize, void* dataPtr, uint extraOffset = 0, bool skipPadding = true)
+            public void WriteFromOffsetOf(string fieldName, uint dataSize, void* dataPtr, bool nessecary, uint extraOffset = 0, bool skipPadding = true)
             {
                 AssetHasMetadata();
 
-                if (skipPadding) WriteAndSkipPadding(new WriteRange(Metadata.FieldOffsets[fieldName] + extraOffset, dataSize, dataPtr));
-                else PushDeferredWrite(new WriteRange(Metadata.FieldOffsets[fieldName] + extraOffset, dataSize, dataPtr));
+                if (skipPadding) WriteAndSkipPadding(new WriteRange(Metadata.FieldOffsets[fieldName] + extraOffset, dataSize, dataPtr), nessecary);
+                else Write(new WriteRange(Metadata.FieldOffsets[fieldName] + extraOffset, dataSize, dataPtr), nessecary);
             }
 
             [DebuggerHidden]
             [StackTraceHidden]
-            public unsafe void WriteAndSkipPadding(WriteRange write)
+            public unsafe void WriteAndSkipPadding(WriteRange write, bool nessecary)
             {
                 AssetHasMetadata();
 
-                var alloc = AllocateRenderTemporaryUnmanaged((int)write.Length);
-                BufferToPaddedBufferCopy((byte*)write.Content, write.Length, 0, alloc, Metadata.ContiguousRegions.AsSpan());
+                var contiguous = Metadata.ContiguousRegions.AsSpan();
 
-                PushDeferredWrite(new WriteRange(write.Offset, write.Length, alloc));
+                var allocrequirement = (int)GetBufferToPaddedBufferAllocationRequirement(write.Length, write.Offset, contiguous);
+
+                var alloc 
+                    = nessecary 
+                    ? AllocateNessecaryRenderTemporaryUnmanaged(allocrequirement)
+                    : AllocateRenderTemporaryUnmanaged(allocrequirement);
+
+                BufferToPaddedBufferCopy((byte*)write.Content, write.Length, 0, alloc, contiguous);
+
+                Write(new WriteRange(write.Offset, (uint)allocrequirement, alloc), nessecary);
             }
 
+        }
+
+
+
+        [DebuggerHidden]
+        [StackTraceHidden]
+        public unsafe void Write<T>(T write, uint offset, bool nessecary) where T : unmanaged
+            => Write(new WriteRange(offset, (uint)sizeof(T), &write), nessecary);
+
+
+
+        [DebuggerHidden]
+        [StackTraceHidden]
+        public unsafe void Write<T>(ReadOnlySpan<T> write, uint offset, bool nessecary) where T : unmanaged
+        {
+            fixed (void* ptr = write)
+                Write(new WriteRange(offset, (uint)(write.Length*sizeof(T)), ptr), nessecary);
         }
 
 
@@ -619,11 +692,11 @@ public static partial class RenderingBackend
 
         [DebuggerHidden]
         [StackTraceHidden]
-        public unsafe void PushDeferredWrite(WriteRange write)
+        public unsafe void Write(WriteRange write, bool nessecary)
         {
 
 #if DEBUG
-            if (!AccessFlags.HasFlag(ReadWriteFlags.CPUWrite)) 
+            if (!AccessFlags.EnumHasValue(ReadWriteFlags.CPUWrite)) 
                 throw new InvalidOperationException($"This buffer wasn't created with {nameof(ReadWriteFlags.CPUWrite)}");
 
             if (write.Length == 0 || write.Content == null)
@@ -635,13 +708,23 @@ public static partial class RenderingBackend
 
 
 
-            var alloc = AllocateRenderTemporaryUnmanaged((int)write.Length);
+            var alloc 
+                = nessecary 
+                ? AllocateNessecaryRenderTemporaryUnmanaged((int)write.Length)
+                : AllocateRenderTemporaryUnmanaged((int)write.Length);
+
+
 
             Unsafe.CopyBlockUnaligned(alloc, (byte*)write.Content, write.Length);
 
+            var cmddata = (new WriteRange(write.Offset, write.Length, alloc), this.GetRef());
 
 
-            PushDeferredPreRenderThreadCommand( (new WriteRange(write.Offset, write.Length, alloc), this.GetRef()),  &Execute);
+            if (nessecary)
+                PushDeferredNessecaryPreRenderThreadCommand(cmddata, &Execute);
+            else
+                PushDeferredPreRenderThreadCommand(cmddata, &Execute);
+
 
             static void Execute( (WriteRange wr, WeakObjRef<BackendBufferReference> bufhandle)* arg )
                 => Backend.WriteToBuffer(arg->bufhandle.Dereference(), arg->wr);
@@ -673,6 +756,7 @@ public static partial class RenderingBackend
 
 
 
+
     /// <summary>
     /// Represents a collection of <see cref="IBackendResourceReference"/>s that shaders can access.
     /// </summary>
@@ -701,7 +785,7 @@ public static partial class RenderingBackend
 
         protected override void OnFree()
         {
-            PushRenderThreadAction(() => { Backend.DestroyResourceSet(this); return null; });
+            PushDeferredIdleRenderThreadAction(() => { Backend.DestroyResourceSet(this); return null; });
 
             base.OnFree();
         }
@@ -765,25 +849,36 @@ public static partial class RenderingBackend
 
 
 
+
+            var final = (RefCounted)(dummy ? null : resource);
+
+            bool changed = false;
             lock (this)
-                Contents[binding] = (RefCounted)(dummy ? null : resource);  //<-- avoid exposing dummy resources
+            {
+                if (Contents[binding] != final)
+                {
+                    Contents[binding] = final;
+                    changed = true;
+                }
+            }
 
 
+            if (changed)
+            {
+                var write = new ResourceSetResourceBind(binding, resource, range);
+                PushDeferredNessecaryPreRenderThreadCommand((this.GetRef(), write), &Execute);
 
 
-            var write = new ResourceSetResourceBind(binding, resource, range);
-
-            PushDeferredPreRenderThreadCommand((this.GetRef(), write), &Execute);
+                static void Execute((WeakObjRef<BackendResourceSetReference> Target, ResourceSetResourceBind Bind)* ptr)
+                {
+                    CheckOutsideOfRendering();
+                    Backend.WriteToResourceSet(ptr->Target.Dereference(), ptr->Bind);
+                }
+            }
 
 
             return resource;
 
-
-            static void Execute( (WeakObjRef<BackendResourceSetReference> Target, ResourceSetResourceBind Bind)* ptr)
-            {
-                CheckOutsideOfRendering();
-                Backend.WriteToResourceSet(ptr->Target.Dereference(), ptr->Bind);
-            }
         }
 
 
@@ -974,7 +1069,7 @@ public static partial class RenderingBackend
 
         protected override void OnFree()
         {
-            PushRenderThreadAction(() => { Backend.DestroyTexture(this); return null; });
+            PushDeferredIdleRenderThreadAction(() => { Backend.DestroyTexture(this); return null; });
 
             base.OnFree();
         }
@@ -996,7 +1091,7 @@ public static partial class RenderingBackend
 
         protected override void OnFree()
         {
-            PushRenderThreadAction(() => { Backend.DestroyTextureSampler(this); return null; });
+            PushDeferredIdleRenderThreadAction(() => { Backend.DestroyTextureSampler(this); return null; });
             base.OnFree();
         }
 
@@ -1102,27 +1197,29 @@ public static partial class RenderingBackend
 
         protected override void OnFree()
         {
-            PushRenderThreadAction(() => { Backend.DestroyShader(this); return null; });
+            PushDeferredIdleRenderThreadAction(() => { Backend.DestroyShader(this); return null; });
 
             base.OnFree();
         }
 
 
 
-#if DEBUG
         /// <summary>
-        /// Debug only development-time method which compiles and uploads a shader under a given name, such that it can be fetched in future via <see cref="Get"/>.
+        /// Compiles and uploads a shader under a given name, such that it can be fetched in future via <see cref="Get"/>.
         /// </summary>
         /// <param name="name"></param>
         /// <param name="src"></param>
-        public static void Create(string name, ShaderSource src)
+        public static BackendShaderReference Create(string name, ShaderSource src)
         {
             var shader = new BackendShaderReference(src.Metadata, Backend.CreateShader(src));
 
             lock (Shaders)
                 Shaders[name] = shader;
+
+            return shader;
         }
-#endif
+
+
 
 
         /// <summary>
@@ -1133,11 +1230,8 @@ public static partial class RenderingBackend
         /// <exception cref="Exception"></exception>
         public static BackendShaderReference Get(string name)
         {
-#if DEBUG
             lock (Shaders)
-#endif
-                return Shaders[name];
-
+                return Shaders.TryGetValue(name, out var get) ? get : null;
         }
 
     }
@@ -1161,7 +1255,7 @@ public static partial class RenderingBackend
 
         protected override void OnFree()
         {
-            PushRenderThreadAction(() => { Backend.DestroyComputeShader(this); return null; });
+            PushDeferredIdleRenderThreadAction(() => { Backend.DestroyComputeShader(this); return null; });
 
             base.OnFree();
         }
@@ -1170,20 +1264,21 @@ public static partial class RenderingBackend
 
 
 
-#if DEBUG
         /// <summary>
-        /// Debug only development-time method which compiles and uploads a shader under a given name, such that it can be fetched in future via <see cref="Get"/>.
+        /// Compiles and uploads a shader under a given name, such that it can be fetched in future via <see cref="Get"/>.
         /// </summary>
         /// <param name="name"></param>
         /// <param name="src"></param>
-        public static void Create(string name, ComputeShaderSource src)
+        public static BackendComputeShaderReference Create(string name, ComputeShaderSource src)
         {
             var shader = new BackendComputeShaderReference(src.Metadata, Backend.CreateComputeShader(src));
 
             lock (ComputeShaders)
                 ComputeShaders[name] = shader;
+
+            return shader;
         }
-#endif
+
 
 
         /// <summary>
@@ -1194,10 +1289,8 @@ public static partial class RenderingBackend
         /// <exception cref="Exception"></exception>
         public static BackendComputeShaderReference Get(string name)
         {
-#if DEBUG
             lock (ComputeShaders)
-#endif
-                return ComputeShaders[name];
+                return ComputeShaders.TryGetValue(name, out var get) ? get : null;
 
         }
 
@@ -1326,7 +1419,7 @@ public static partial class RenderingBackend
 
 
     /// <summary>
-    /// Represents a contiguous region of data within a buffer, used by <see cref="BufferToPaddedBufferCopy(byte*, uint, uint, byte*, ContiguousRegion[])"/> etc
+    /// Represents a contiguous region of data within a buffer, used by <see cref="BufferToPaddedBufferCopy(byte*, uint, uint, byte*, ReadOnlySpan{ContiguousRegion})"/> etc
     /// </summary>
     /// <param name="start"></param>
     /// <param name="end"></param>
@@ -1372,9 +1465,44 @@ public static partial class RenderingBackend
     }
 
 
+    /// <summary>
+    /// Returns the size <see cref="BufferToPaddedBufferCopy(byte*, uint, uint, byte*, ReadOnlySpan{ContiguousRegion})"/> will need, in order to allow preallocation.
+    /// </summary>
+    /// <param name="dataSize"></param>
+    /// <param name="offset"></param>
+    /// <param name="regions"></param>
+    /// <returns></returns>
+    public static uint GetBufferToPaddedBufferAllocationRequirement(
+        uint dataSize,
+        uint offset,
+        ReadOnlySpan<ContiguousRegion> regions)
+    {
+        uint srcIndex = 0;
+        ulong maxDstIndex = 0;
 
+        for (int i = 0; i < regions.Length && srcIndex < dataSize; i++)
+        {
+            var region = regions[i];
 
+            if (region.end <= offset)
+                continue;
 
+            ulong dstStart = Math.Max(region.start, offset);
+
+            ulong available = region.end - dstStart;
+            uint toCopy = (uint)Math.Min(available, dataSize - srcIndex);
+
+            srcIndex += toCopy;
+            maxDstIndex = dstStart + toCopy;
+        }
+
+#if DEBUG
+        if (srcIndex < dataSize)
+            throw new OverflowException("Not enough regions to fit data.");
+#endif
+
+        return (uint)(maxDstIndex - offset);
+    }
 
 
 
@@ -1391,7 +1519,7 @@ public static partial class RenderingBackend
 
         protected override void OnFree()
         {
-            PushRenderThreadAction(() => { Backend.DestroyDrawPipeline(this); return null; });
+            PushDeferredIdleRenderThreadAction(() => { Backend.DestroyDrawPipeline(this); return null; });
 
             base.OnFree();
         }
@@ -1417,12 +1545,7 @@ public static partial class RenderingBackend
 
                     spec.Shader.Dereference().OnFreeEvent.Add(get.Free);
 
-                    get.OnFreeEvent.Add(() =>
-                    {
-                        lock (DrawPipelineCache)
-                            DrawPipelineCache.Remove(spec);
-                    });
-
+                    AddRemovePipelineFromCacheEvent(get, spec);
 
                     if (CurrentBackendRenderProgress != BackendRenderProgress.DrawingToScreen)
                         ActiveFramebufferPipeline.OnFreeEvent.Add(get.Free);
@@ -1434,6 +1557,19 @@ public static partial class RenderingBackend
                 return get;
             }
         }
+
+
+        // this being separate prevents constant lambda allocations
+        private static void AddRemovePipelineFromCacheEvent(BackendDrawPipelineReference get, DrawPipelineDetails spec)
+        {
+            get.OnFreeEvent.Add(() =>
+            {
+                lock (DrawPipelineCache)
+                    DrawPipelineCache.Remove(spec);
+            });
+
+        }
+
     }
 
 
@@ -1541,7 +1677,6 @@ public static partial class RenderingBackend
 
 
 
-    [Flags]
     public enum FrameBufferPipelineAttachmentAccessFlags : byte
     {
         None = 1 << 0,
@@ -1675,7 +1810,7 @@ public static partial class RenderingBackend
 
         protected override void OnFree()
         {   
-            PushRenderThreadAction(() => { Backend.DestroyFrameBufferPipeline(this); return null; });
+            PushDeferredIdleRenderThreadAction(() => { Backend.DestroyFrameBufferPipeline(this); return null; });
 
             base.OnFree();
         }
@@ -1752,7 +1887,7 @@ public static partial class RenderingBackend
 
         protected override void OnFree()
         {
-            PushRenderThreadAction(() => { Backend.DestroyFrameBufferObject(this); return null; });
+            PushDeferredIdleRenderThreadAction(() => { Backend.DestroyFrameBufferObject(this); return null; });
         }
     }
 
@@ -1866,7 +2001,7 @@ public static partial class RenderingBackend
 
 
     /// <summary>
-    /// <br/><b> WARNING: This method touches existing backend resources or state, and should be called outside of active frame rendering, from any thread. See <see cref="PushRenderThreadAction(Func{object})"/> or <see cref="PushDeferredPreRenderThreadCommand{T}"/>. </b>
+    /// <br/><b> WARNING: This method touches existing backend resources or state, and should be called outside of active frame rendering, from any thread. See <see cref="PushDeferredIdleRenderThreadAction(Func{object})"/> or <see cref="PushDeferredPreRenderThreadCommand{T}"/>. </b>
     /// </summary>
     private struct _callonanythreadoutsideofrendering;
 
@@ -2010,8 +2145,9 @@ public static partial class RenderingBackend
     /// <param name="stageIndex"></param>
     public static void AdvanceFrameBufferPipeline(BackendFrameBufferObjectReference fbo, BackendFrameBufferPipelineReference pipeline)
     {
-        CheckDuringRendering();
-        Backend.AdvanceFrameBufferPipeline(fbo, pipeline, ActiveFrameBufferPipelineStage++);
+        CheckDuringRendering(); 
+        ActiveFrameBufferPipelineStage++;
+        Backend.AdvanceFrameBufferPipeline(fbo, pipeline, ActiveFrameBufferPipelineStage);
     }
 
 

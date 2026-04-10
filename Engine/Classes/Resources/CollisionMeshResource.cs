@@ -10,21 +10,21 @@ using Engine.Attributes;
 using static Engine.Core.EngineMath;
 using Engine.Core;
 
+using static Engine.Core.Parsing;
 
 
 #if DEBUG
 using System.Text.Json;
-using static Engine.Core.Parsing;
 #endif
 
 
 
 
 [FileExtensionAssociation(".col")]
-public class CollisionMeshResource : GameResource, GameResource.ILoads,
+public class CollisionMeshResource : GameResource, GameResource.ILoads
 
 #if DEBUG
-    GameResource.IConverts
+    , GameResource.IConverts
 #endif
 {
 

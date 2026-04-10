@@ -3,12 +3,11 @@
 
 
 
-#define ENABLE_VULKAN_DEBUGGING    //<--- enables validation layers etc
+//#define ENABLE_VULKAN_DEBUGGING    //<--- enables validation layers etc
 
 
 namespace Engine.Core;
 
-using Engine.Stripped;
 using Silk.NET.Core.Native;
 using Silk.NET.Vulkan;
 using Silk.NET.Vulkan.Extensions.EXT;
@@ -21,6 +20,9 @@ using static Engine.Core.EngineMath;
 using static Engine.Core.References;
 
 
+#if DEBUG
+using Engine.Stripped;
+#endif
 
 
 
@@ -192,7 +194,7 @@ public static partial class RenderingBackend
             };
 
 
-            var extensions = GetRequiredExtensions();
+            var extensions = GetRequiredInstanceExtensions();
 
 
             createInfo.EnabledExtensionCount = (uint)extensions.Length;
@@ -229,12 +231,14 @@ public static partial class RenderingBackend
 
 
 
-        private unsafe string[] GetRequiredExtensions()
+        private unsafe string[] GetRequiredInstanceExtensions()
         {
             var extensions = SDL3.SDL.VulkanGetInstanceExtensions(out var _);
             
             if (extensions == null) 
                 throw new Exception();
+
+            extensions = extensions.Append(KhrExternalSemaphoreCapabilities.ExtensionName).ToArray();
 
 
 #if DEBUG && ENABLE_VULKAN_DEBUGGING
@@ -271,7 +275,7 @@ public static partial class RenderingBackend
             uint i = 0;
             foreach (var queueFamily in queueFamilies)
             {
-                if (queueFamily.QueueFlags.HasFlag(QueueFlags.GraphicsBit))
+                if (queueFamily.QueueFlags.EnumHasValue(QueueFlags.GraphicsBit))
                 {
                     indices.GraphicsFamily = i;
                 }
@@ -560,7 +564,7 @@ public static partial class RenderingBackend
 
             //EngineEngineDebug.Print(err);
 
-            if (messageSeverity.HasFlag(DebugUtilsMessageSeverityFlagsEXT.ErrorBitExt))
+            if (messageSeverity.EnumHasValue(DebugUtilsMessageSeverityFlagsEXT.ErrorBitExt))
                 throw new Exception(err);
 
 
@@ -1041,7 +1045,7 @@ public static partial class RenderingBackend
                         //UBO
                         new DescriptorPoolSize
                         {
-                            Type = DescriptorType.UniformBufferDynamic,
+                            Type = DescriptorType.UniformBuffer,
                             DescriptorCount = MaxUBOsPerSet * MaxSets
                         },
 
@@ -1049,7 +1053,7 @@ public static partial class RenderingBackend
                          //SSBO
                         new DescriptorPoolSize
                         {
-                            Type = DescriptorType.StorageBufferDynamic,
+                            Type = DescriptorType.StorageBuffer,
                             DescriptorCount = MaxSSBOsPerSet * MaxSets
                         },
 
@@ -1244,15 +1248,24 @@ public static partial class RenderingBackend
             uint size,
             Silk.NET.Vulkan.BufferUsageFlags usage,
             MemoryPropertyFlags memoryFlags, 
-            void* initialContent = null,
+            void* initialContent = null
 
 #if DEBUG
-            [CallerFilePath] string fPath = "",
+            , [CallerFilePath] string fPath = "",
             [CallerLineNumber] uint fNumber = 0
 #endif
 
             )
         {
+
+
+            if (usage.EnumHasValue(Silk.NET.Vulkan.BufferUsageFlags.UniformBufferBit))
+                size = size.Align((uint)physicalDeviceProperties.Limits.MinUniformBufferOffsetAlignment);
+
+            if (usage.EnumHasValue(Silk.NET.Vulkan.BufferUsageFlags.StorageBufferBit))
+                size = size.Align((uint)physicalDeviceProperties.Limits.MinStorageBufferOffsetAlignment);
+
+
 
 
             BufferCreateInfo bufferInfo = new BufferCreateInfo
@@ -1362,10 +1375,6 @@ public static partial class RenderingBackend
 
 
 
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private static uint AlignUp(uint size, uint alignment) => (size + alignment - 1) & ~(alignment - 1);
-
-
 
 
 
@@ -1378,27 +1387,27 @@ public static partial class RenderingBackend
 
             //  Standard usage equivalents
 
-            if (usageFlags.HasFlag(BufferUsageFlags.Vertex)) 
+            if (usageFlags.EnumHasValue(BufferUsageFlags.Vertex)) 
                 usage |= Silk.NET.Vulkan.BufferUsageFlags.VertexBufferBit;
 
-            if (usageFlags.HasFlag(BufferUsageFlags.Index))
+            if (usageFlags.EnumHasValue(BufferUsageFlags.Index))
                 usage |= Silk.NET.Vulkan.BufferUsageFlags.IndexBufferBit;
 
-            if (usageFlags.HasFlag(BufferUsageFlags.Uniform))
+            if (usageFlags.EnumHasValue(BufferUsageFlags.Uniform))
                 usage |= Silk.NET.Vulkan.BufferUsageFlags.UniformBufferBit;
 
-            if (usageFlags.HasFlag(BufferUsageFlags.Storage))
+            if (usageFlags.EnumHasValue(BufferUsageFlags.Storage))
                 usage |= Silk.NET.Vulkan.BufferUsageFlags.StorageBufferBit;   
 
 
 
             // GPU read / write
 
-            if (readWriteFlags.HasFlag(ReadWriteFlags.GPUWrite)
-                || (initialContent != null && !readWriteFlags.HasFlag(ReadWriteFlags.CPUWrite)))   //<-- staging buffer must copy initial content in if cpuwrite isnt present
+            if (readWriteFlags.EnumHasValue(ReadWriteFlags.GPUWrite)
+                || (initialContent != null && !readWriteFlags.EnumHasValue(ReadWriteFlags.CPUWrite)))   //<-- staging buffer must copy initial content in if cpuwrite isnt present
                 usage |= Silk.NET.Vulkan.BufferUsageFlags.TransferDstBit;
 
-            if (readWriteFlags.HasFlag(ReadWriteFlags.GPURead))      
+            if (readWriteFlags.EnumHasValue(ReadWriteFlags.GPURead))      
                 usage |= Silk.NET.Vulkan.BufferUsageFlags.TransferSrcBit;
 
 
@@ -1409,8 +1418,8 @@ public static partial class RenderingBackend
 
             MemoryPropertyFlags access = 0;
 
-            bool cpuRead = readWriteFlags.HasFlag(ReadWriteFlags.CPURead);
-            bool cpuWrite = readWriteFlags.HasFlag(ReadWriteFlags.CPUWrite);
+            bool cpuRead = readWriteFlags.EnumHasValue(ReadWriteFlags.CPURead);
+            bool cpuWrite = readWriteFlags.EnumHasValue(ReadWriteFlags.CPUWrite);
 
             if (cpuRead || cpuWrite)
             {
@@ -1648,7 +1657,7 @@ public static partial class RenderingBackend
                             DstSet = vkset.Set,
                             DstBinding = slot.Binding,
                             DescriptorCount = 1,
-                            DescriptorType = dataBuffer.UsageFlags.HasFlag(BufferUsageFlags.Uniform) ? DescriptorType.UniformBuffer : DescriptorType.StorageBuffer,
+                            DescriptorType = dataBuffer.UsageFlags.EnumHasValue(BufferUsageFlags.Uniform) ? DescriptorType.UniformBuffer : DescriptorType.StorageBuffer,
                             PBufferInfo = p
                         };
                     }
@@ -2579,7 +2588,7 @@ public static partial class RenderingBackend
 
 
 
-            var retArray = new VulkanPipelineAndLayout [  FramebufferPipeline == null ? 1 : ((VulkanFramebufferPipeline)FramebufferPipeline.BackendRef).RenderPasses.Length  ];
+            var retArray = new VulkanPipelineAndLayout [  FramebufferPipeline == null ? 1 : ((VulkanFramebufferPipeline)FramebufferPipeline.BackendRef).Stages.Length  ];
 
 
 
@@ -2647,7 +2656,7 @@ public static partial class RenderingBackend
 
                 foreach (var buffer in Set.Metadata.Buffers.Values)
                 {
-                    layoutDetails.ResourceType[buffer.Binding] = buffer.Metadata.UsageFlags.HasFlag(BufferUsageFlags.Uniform) ? (byte)DescriptorType.UniformBuffer : (byte)DescriptorType.StorageBuffer;
+                    layoutDetails.ResourceType[buffer.Binding] = buffer.Metadata.UsageFlags.EnumHasValue(BufferUsageFlags.Uniform) ? (byte)DescriptorType.UniformBuffer : (byte)DescriptorType.StorageBuffer;
                     layoutDetails.ResourceArrayLength[buffer.Binding] = 1;
 
                     layoutDetails.ResourceCount++;
@@ -2766,7 +2775,7 @@ public static partial class RenderingBackend
 
 
 
-            for (int neededPassIdx = 0; neededPassIdx < retArray.Length; neededPassIdx++)
+            for (int neededStageIdx = 0; neededStageIdx < retArray.Length; neededStageIdx++)
             {
 
 
@@ -2873,6 +2882,21 @@ public static partial class RenderingBackend
 
 
 
+                RenderPass rp;
+                uint subPass = 0;
+
+                if (FramebufferPipeline == null) rp = SwapChainRenderPass;
+                else
+                {
+                    var backendRef = (VulkanFramebufferPipeline)(FramebufferPipeline.BackendRef);
+
+                    var stage = backendRef.Stages[neededStageIdx];
+                    rp = backendRef.RenderPasses[stage.RenderPass].Pass;
+                    subPass = stage.SubPass;
+                }
+
+
+
                 // --- construct final pipeline create info ---
                 GraphicsPipelineCreateInfo pipelineInfo = new()
                 {
@@ -2888,8 +2912,8 @@ public static partial class RenderingBackend
                     PColorBlendState = &colorBlending,
                     PDynamicState = &dynamicState,
                     Layout = layout,
-                    RenderPass = FramebufferPipeline == null ? SwapChainRenderPass : ((VulkanFramebufferPipeline)(FramebufferPipeline.BackendRef)).RenderPasses[neededPassIdx].Pass,
-                    Subpass = 0
+                    RenderPass = rp,
+                    Subpass = subPass
                 };
 
                 // create pipeline
@@ -2898,7 +2922,7 @@ public static partial class RenderingBackend
 
 
 
-                retArray[neededPassIdx] = new VulkanPipelineAndLayout(pipeline, layout);
+                retArray[neededStageIdx] = new VulkanPipelineAndLayout(pipeline, layout);
 
             }
 
@@ -3531,6 +3555,7 @@ public static partial class RenderingBackend
 
 
 
+        private Pipeline lastPipelineUsed;
 
 
 
@@ -3554,8 +3579,13 @@ public static partial class RenderingBackend
             var vkLayout = vkPipelineAndLayout.Layout;
 
 
+            if (lastPipelineUsed.Handle != vkpipeline.Handle)
+            {
+                lastPipelineUsed = vkpipeline;
+                VK.CmdBindPipeline(RenderThreadCommandBuffer, PipelineBindPoint.Graphics, vkpipeline);
+            }
 
-            VK.CmdBindPipeline(RenderThreadCommandBuffer, PipelineBindPoint.Graphics, vkpipeline);
+
 
 
 
@@ -3587,52 +3617,66 @@ public static partial class RenderingBackend
 
 
 
+
+            var sets = stackalloc DescriptorSet[ResourceSets.Length];
+
             for (int i = 0; i < ResourceSets.Length; i++)
             {
-                var get = ResourceSets[i].Dereference();
+                var setRef = ResourceSets[i].Dereference();
+                sets[i] = ((VulkanDescriptorSet)setRef.BackendRef).Set;
+            }
 
-                var set = (VulkanDescriptorSet)get.BackendRef;
-                var s = set.Set;
 
-                VK.CmdBindDescriptorSets(
-                    RenderThreadCommandBuffer,
-                    PipelineBindPoint.Graphics,
-                    vkLayout,
-                    (uint)i,
-                    1,
-                    &s,
-                    0,
-                    null
-                );
+            VK.CmdBindDescriptorSets(
+                RenderThreadCommandBuffer,
+                PipelineBindPoint.Graphics,
+                vkLayout,
+                0,                             
+                (uint)ResourceSets.Length,      
+                sets,                            
+                0,
+                null
+            );
+
+
+
+
+
+            if (LastFBPipelineUsed != ActiveFrameBufferObject)
+            {
+                LastFBPipelineUsed = ActiveFrameBufferObject;
+
+                var dims = ActiveFrameBufferObject == null ? CurrentSwapchainDetails.Size : ActiveFrameBufferObject.Dimensions;
+
+                Viewport viewport = new()
+                {
+                    X = 0,
+                    Y = 0,
+                    Width = dims.X,
+                    Height = dims.Y,
+                    MinDepth = 0.0f,
+                    MaxDepth = 1.0f
+                };
+
+
+                VK.CmdSetViewport(RenderThreadCommandBuffer, 0, 1, &viewport);
             }
 
 
 
-
-
-            var dims = ActiveFrameBufferObject == null ? CurrentSwapchainDetails.Size : ActiveFrameBufferObject.Dimensions;
-
-            Viewport viewport = new()
+            if (ScissorDirty)
             {
-                X = 0,
-                Y = 0,
-                Width = dims.X,
-                Height = dims.Y,
-                MinDepth = 0.0f,
-                MaxDepth = 1.0f
-            };
+                Rect2D scissor = new()
+                {
+                    Offset = new Offset2D { X = (int)ScissorOffset.X, Y = (int)ScissorOffset.Y },
+                    Extent = new Extent2D { Width = ScissorSize.X, Height = ScissorSize.Y }
+                };
+
+                VK.CmdSetScissor(RenderThreadCommandBuffer, 0, 1, &scissor);
 
 
-            VK.CmdSetViewport(RenderThreadCommandBuffer, 0, 1, &viewport);
-
-
-            Rect2D scissor = new()
-            {
-                Offset = new Offset2D { X = (int)ScissorOffset.X, Y = (int)ScissorOffset.Y },
-                Extent = new Extent2D { Width = ScissorSize.X, Height = ScissorSize.Y }
-            };
-
-            VK.CmdSetScissor(RenderThreadCommandBuffer, 0, 1, &scissor);
+                ScissorDirty = false;
+            }
 
 
 
@@ -3662,6 +3706,7 @@ public static partial class RenderingBackend
 
 
 
+        private BackendFrameBufferObjectReference LastFBPipelineUsed;
 
 
 
@@ -3669,17 +3714,15 @@ public static partial class RenderingBackend
 
 
 
-
-
-
-
+        private bool ScissorDirty = false;
         private static Vector2<uint> ScissorOffset, ScissorSize;
-
 
         public void SetScissor(Vector2<uint> offset, Vector2<uint> size)
         { 
             ScissorOffset = offset;
             ScissorSize = size;
+
+            ScissorDirty = true;
         }
 
 

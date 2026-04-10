@@ -80,12 +80,6 @@ public static partial class Loading
 
 #endif
 
-
-    /// <summary>
-    /// The path to the release-build directory which contains asset archives.
-    /// </summary>
-    public static readonly string ReleaseRootAssetArchivePath = Directory.GetCurrentDirectory();
-
     // ------------------------------------------------------------------------------------------------------------------------------------ \\
 
 
@@ -121,7 +115,7 @@ public static partial class Loading
 
 
     /// <summary>
-    /// (Re)scans for (registered, not arbitrary) asset archives within <see cref="Loading.ReleaseRootAssetArchivePath"/>. Only affects release builds.
+    /// (Re)scans for (registered, not arbitrary) asset archives>. Only affects release builds.
     /// </summary>
     
     public static unsafe void ScanForAssetArchives()
@@ -136,7 +130,7 @@ public static partial class Loading
 
         foreach (string archiveName in AssetArchiveNames)
         {
-            var archivePath = Path.Combine(Loading.ReleaseRootAssetArchivePath, archiveName);
+            var archivePath = Path.Combine(Directory.GetCurrentDirectory(), archiveName);
 
             using (var filestream = new FileStream(archivePath, FileMode.Open, FileAccess.Read))
             {
@@ -431,8 +425,8 @@ public static partial class Loading
             StringComparison.OrdinalIgnoreCase
         )) Throw();
 
-        static void Throw() => 
-            throw new Exception("cannot load asset from outside of a subfolder of the root asset directory");
+        void Throw() => 
+            throw new Exception($"Invalid path '{filePath}'; Cannot load asset from outside of a subfolder of the root asset directory '{AssetRootDirectoryPath}'");
     }
 
 

@@ -175,7 +175,9 @@ public static partial class Parsing
     public unsafe struct ValueWriter
     {
         private readonly Memory<byte> _memory;
-        private int _written;
+
+        public int Written { get; private set; }
+
 
         private readonly ArrayBufferWriter<byte>? _bufferWriter;
         private readonly Stream? _stream;
@@ -185,7 +187,7 @@ public static partial class Parsing
             _memory = memory;
             _bufferWriter = bufferWriter;
             _stream = stream;
-            _written = 0;
+            Written = 0;
         }
 
         public static ValueWriter FromMemory(Memory<byte> memory)
@@ -219,11 +221,11 @@ public static partial class Parsing
             }
 
             // Memory mode
-            if (_memory.Length - _written < size)
+            if (_memory.Length - Written < size)
                 throw new InvalidOperationException();
 
-            MemoryMarshal.Write(_memory.Span.Slice(_written, size), in value);
-            _written += size;
+            MemoryMarshal.Write(_memory.Span.Slice(Written, size), in value);
+            Written += size;
         }
 
         public void WriteUnmanagedSpan<T>(ReadOnlySpan<T> values) where T : unmanaged
@@ -244,11 +246,11 @@ public static partial class Parsing
             }
 
             // Memory mode
-            if (_memory.Length - _written < len)
+            if (_memory.Length - Written < len)
                 throw new InvalidOperationException();
 
-            bytes.CopyTo(_memory.Span.Slice(_written, len));
-            _written += len;
+            bytes.CopyTo(_memory.Span.Slice(Written, len));
+            Written += len;
         }
 
         public void WriteLengthPrefixedUnmanagedSpan<T>(ReadOnlySpan<T> values) where T : unmanaged
@@ -290,11 +292,11 @@ public static partial class Parsing
             }
 
             // Memory mode
-            if (_memory.Length - _written < len)
+            if (_memory.Length - Written < len)
                 throw new InvalidOperationException();
 
-            Encoding.UTF8.GetBytes(str, _memory.Span.Slice(_written, len));
-            _written += len;
+            Encoding.UTF8.GetBytes(str, _memory.Span.Slice(Written, len));
+            Written += len;
         }
 
         public void WriteVariableLengthUnsigned(ulong value)
@@ -319,7 +321,7 @@ public static partial class Parsing
             if (_stream != null)
                 throw new InvalidOperationException();
 
-            return _memory.Span[.._written];
+            return _memory.Span[..Written];
         }
     }
 

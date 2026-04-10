@@ -2,7 +2,6 @@
 using Engine.GameObjects;
 using Engine.GameResources;
 using System.Numerics;
-using ImGuiNET;
 
 using static Engine.Core.References;
 using System.Diagnostics;
@@ -250,9 +249,21 @@ public static unsafe partial class Entry
 
         public override void PreDraw()
         {
-            ModelInstanceResourceSets["ModelResources"]
-                .GetResource<RenderingBackend.BackendBufferReference.IDataBuffer>("ModelUBO")
-                .WriteFromOffsetOf("ModelMatrix", GlobalTransform);
+
+            // Here, we can use this simple method to check if we need to (re)upload the global model matrix.
+            
+            if (IsGlobalTransformDirtyForDraw())
+            {
+                ModelInstanceResourceSets["ModelResources"]
+                    .GetResource<RenderingBackend.BackendBufferReference.IDataBuffer>("ModelUBO")
+                    .WriteFromOffsetOf("ModelMatrix", GlobalTransform, nessecary: true);     //  <-----------------
+
+
+                // Notice the "nessecary" flag - if a resource modification is flagged UNNESSECARY, then if the upcoming rendered frame is dropped, the modification will also be dropped.
+                // For consistent every-frame updates, it should be false, to reduce overhead.
+            }
+
+
 
             base.PreDraw();
         }
@@ -276,8 +287,8 @@ public static unsafe partial class Entry
     //screen quad for drawing to screen
 
     private static RenderingBackend.BackendBufferReference.IVertexBuffer ScreenQuadVertPos;
-    private static Dictionary<string, RenderingBackend.VertexAttributeDefinitionBufferPair> ScreenQuadAttributes;
-    private static Dictionary<string, RenderingBackend.BackendResourceSetReference> ScreenQuadResourceSetCollection;
+    private static RefCountCollections.RefCountedDictionary<string, RenderingBackend.VertexAttributeDefinitionBufferPair> ScreenQuadAttributes;
+    private static RefCountCollections.RefCountedDictionary<string, RenderingBackend.BackendResourceSetReference> ScreenQuadResourceSetCollection;
     private static Rendering.NamedShaderReference ScreenQuadShaderRef;
 
 
@@ -487,21 +498,10 @@ public static unsafe partial class Entry
         // First up is logic.
         // All we need to do in this case is call each object's loop, but you can do whatever you want in whatever order you want.
 
-        for (int i = 0; i < GameObject.AllGameObjects.Count; i++)
-            GameObject.AllGameObjects[i].Loop();
+        lock (GameObject.AllGameObjects)
+            for (int i = 0; i < GameObject.AllGameObjects.Count; i++)
+                GameObject.AllGameObjects[i].Loop();
 
-
-
-
-
-
-        // -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
-
-        // After that is rendering.
-
-
-        GlobalUniformBuffer.WriteFromOffsetOf("ProjectionMatrix", Camera.GetProjectionMatrix());
-        GlobalUniformBuffer.WriteFromOffsetOf("ViewMatrix", Camera.GetViewMatrix());
 
 
 
@@ -509,6 +509,32 @@ public static unsafe partial class Entry
         // -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 
         // Next up is rendering with the camera.
+
+
+
+        GlobalUniformBuffer.WriteFromOffsetOf("ProjectionMatrix", Camera.GetProjectionMatrix(), nessecary: false);   // These writes can be treated as unnessecary, since we want changes every frame and caching isnt worth it.
+        GlobalUniformBuffer.WriteFromOffsetOf("ViewMatrix", Camera.GetViewMatrix(), nessecary: false);
+
+
+        // ---------------------------------------------------------------------------
+
+        // Writes can also be done with less safety if speed is a bigger concern, like for example this;
+
+        var upload = stackalloc Matrix4x4[] { Camera.GetProjectionMatrix(), Camera.GetViewMatrix() };
+
+        GlobalUniformBuffer.WriteAndSkipPadding(new WriteRange(0, 128, upload), nessecary: false);
+
+
+        // Or even this, if you're totally confident in the underlying data layout:
+
+        GlobalUniformBuffer.Write(new WriteRange(0, 128, upload), nessecary: false);
+
+        // ---------------------------------------------------------------------------
+
+
+
+
+
         // Cameras have a flexible programmable pipeline system, but all we need to do here is draw everything, so this is a simple one stage pipeline with basic material handling.
 
 
@@ -563,7 +589,7 @@ public static unsafe partial class Entry
                                                        new RenderingBackend.DrawPipelineDetails.RasterizationDetails(),
                                                        new RenderingBackend.DrawPipelineDetails.BlendState(),
                                                        new RenderingBackend.DrawPipelineDetails.DepthStencilState(),
-                                                       mat.MaterialResourceSets.DictToUnmanagedKV());
+                                                       mat.MaterialResourceSets.AsUnmanaged());
 
 
 
@@ -587,8 +613,8 @@ public static unsafe partial class Entry
 
 
         Rendering.Draw(
-            Attributes: ScreenQuadAttributes.VertexAttributeDictToUnmanaged(),
-            ResourceSets: ScreenQuadResourceSetCollection.DictToUnmanagedKV(),           
+            Attributes: ScreenQuadAttributes.VertexAttributesToUnmanaged(),
+            ResourceSets: ScreenQuadResourceSetCollection.AsUnmanaged(),           
             Shader: ScreenQuadShaderRef.Shader,
 
             //the rasterization, blending and depth stencil structs already have sane defaults that we can use here.

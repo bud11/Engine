@@ -261,7 +261,10 @@ public static partial class ShaderCompilation
 
 
             else if (ValidateResourceSetContracts(result.Metadata.ResourceSets, info).Count != 0)
+            {
+                ShowShaderDebugHtml(shaderName + " [Contract Error]", string.Empty, ValidateResourceSetContracts(result.Metadata.ResourceSets, info), languageHandler);
                 error = true;
+            }
 
 
 
@@ -270,7 +273,9 @@ public static partial class ShaderCompilation
                 var src = new ShaderSource(result.Metadata, ImmutableArray.Create(result.Vertex.Spirv), ImmutableArray.Create(result.Fragment.Spirv));
 
 #if ENGINE_BUILD_PASS
-                EngineBuildProcess.ShaderSources[CurrentBackend].Add(shaderName, src);                
+
+                lock (EngineBuildProcess.ShaderSources)
+                    EngineBuildProcess.ShaderSources[CurrentBackend].Add(shaderName, src);                
 #else
                 BackendShaderReference.Create(shaderName, src);
 #endif
@@ -329,6 +334,7 @@ public static partial class ShaderCompilation
             bool error = false;
 
 
+
             if (result.Main.Errors != null)
             {
                 ShowShaderDebugHtml(shaderName + " [Compute Shader Error]", result.Main.SourceForUserDebugging, result.Main.Errors, languageHandler);
@@ -336,16 +342,18 @@ public static partial class ShaderCompilation
             }
 
 
-            else if(result.GeneralErrors != null && result.GeneralErrors.Count != 0)
+            else if (result.GeneralErrors != null && result.GeneralErrors.Count != 0)
             {
                 ShowShaderDebugHtml(shaderName + " [General Error]", string.Empty, result.GeneralErrors, languageHandler);
                 error = true;
             }
 
 
-
             else if (ValidateResourceSetContracts(result.Metadata.ResourceSets, info).Count != 0)
+            {
+                ShowShaderDebugHtml(shaderName + " [Contract Error]", string.Empty, ValidateResourceSetContracts(result.Metadata.ResourceSets, info), languageHandler);
                 error = true;
+            }
 
 
 
@@ -355,7 +363,8 @@ public static partial class ShaderCompilation
                 var src = new ComputeShaderSource(result.Metadata, ImmutableArray.Create(result.Main.Spirv));
 
 #if ENGINE_BUILD_PASS
-                EngineBuildProcess.ShaderSources[CurrentBackend].Add(shaderName, src);                
+                lock (EngineBuildProcess.ComputeShaderSources)
+                    EngineBuildProcess.ComputeShaderSources[CurrentBackend].Add(shaderName, src);                
 #else
                 BackendComputeShaderReference.Create(shaderName, src);
 #endif

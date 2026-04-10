@@ -24,6 +24,8 @@ public abstract partial class AABBObject : GameObject
 
 
 
+
+
     private AABB CachedCurrentGlobalSpaceAABB;
     private bool CachedAABBIsDirty = true;
 
@@ -39,14 +41,15 @@ public abstract partial class AABBObject : GameObject
 
     public AABB GetOrRecalculateCachedGlobalAABB()
     {
+        return AABB.FromCenterExtent(Vector3.Zero, Vector3.One) * GlobalTransform;
+
+
         if (!IsEnableCameraCullingInTree()) return AABB.MaxValue;
 
 
         if (CachedAABBIsDirty)
         {
-            
             CachedCurrentGlobalSpaceAABB = BaseAABB * GlobalTransform;
-
 
             CachedAABBIsDirty = false;
         }

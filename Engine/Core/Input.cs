@@ -610,7 +610,7 @@ public static class Input
 
 
         public float GetMouseScrollDelta() => Window.MouseScrollWheelDelta;
-        public Vector2 GetMousePositionDelta() => new(MouseDeltaX, MouseDeltaY);
+        public Vector2 GetMousePositionDelta() => new Vector2(MouseDeltaX, MouseDeltaY) / Logic.Delta;
 
 
         public void SetMouseRelative(bool enabled) => Window.MouseModeRelative = enabled;

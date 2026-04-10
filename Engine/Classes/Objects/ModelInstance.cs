@@ -5,11 +5,15 @@ namespace Engine.GameObjects;
 using Engine.Attributes;
 using Engine.Core;
 using Engine.GameResources;
+using System.Drawing;
 using static Engine.Core.EngineMath;
 using static Engine.Core.References;
 using static Engine.Core.RenderingBackend;
 
 
+#if DEBUG
+using Engine.Stripped;
+#endif
 
 
 /// <summary>
@@ -36,19 +40,19 @@ public partial class ModelInstance : DrawObject
     /// <summary>
     /// Resource sets to be used globally for every model instance.
     /// </summary>
-    public static readonly Dictionary<string, BackendResourceSetReference> GlobalModelInstanceResourceSets = new();
+    public static readonly RefCountCollections.RefCountedDictionary<string, BackendResourceSetReference> GlobalModelInstanceResourceSets = new();
 
 
     /// <summary>
     /// Resource sets to be used at the individual model instance level.
     /// </summary>
-    public readonly Dictionary<string, BackendResourceSetReference> ModelInstanceResourceSets = new();
+    public readonly RefCountCollections.RefCountedDictionary<string, BackendResourceSetReference> ModelInstanceResourceSets = new();
 
 
     /// <summary>
     /// Vertex attributes to be used at the individual model instance level.
     /// </summary>
-    public readonly Dictionary<string, VertexAttributeDefinitionBufferPair> ModelInstanceVertexAttributeBuffers = new();
+    public readonly RefCountCollections.RefCountedDictionary<string, VertexAttributeDefinitionBufferPair> ModelInstanceVertexAttributeBuffers = new();
 
 
 
@@ -57,13 +61,16 @@ public partial class ModelInstance : DrawObject
     public override void Init()
     {
         base.Init();
-        AllDrawableObjects.Add(this);
+
+        lock (AllDrawableObjects)
+            AllDrawableObjects.Add(this);
     }
 
 
     protected override void OnFree()
     {
-        AllDrawableObjects.Remove(this);
+        lock (AllDrawableObjects)
+            AllDrawableObjects.Remove(this);
 
         Model.RemoveUser();
 
@@ -80,6 +87,7 @@ public partial class ModelInstance : DrawObject
     /// <param name="resolver"></param>
     public unsafe override void Draw(delegate*<MaterialResource, MaterialResource.MaterialResolution> resolver)
     {
+
         for (var i = 0; i < Model.SubMeshes.Length; i++)
         {
             var mat = Materials[i];
@@ -116,8 +124,8 @@ public partial class ModelInstance : DrawObject
         var resolve = resolver(material);
         if (resolve.ShaderRef == null) return;
 
-        Rendering.Draw(Model.Buffers.VertexAttributeDictToUnmanaged().Combine(ModelInstanceVertexAttributeBuffers.VertexAttributeDictToUnmanaged()),
-                        GlobalModelInstanceResourceSets.DictToUnmanagedKV().Combine(ModelInstanceResourceSets.DictToUnmanagedKV()).Combine(in resolve.MaterialResourceSets),
+        Rendering.Draw(Model.Buffers.VertexAttributesToUnmanaged().Combine(ModelInstanceVertexAttributeBuffers.VertexAttributesToUnmanaged()),
+                        GlobalModelInstanceResourceSets.AsUnmanaged().Combine(ModelInstanceResourceSets.AsUnmanaged()).Combine(in resolve.MaterialResourceSets),
                         resolve.ShaderRef.Shader,
                         resolve.RasterizationDetails,
                         resolve.BlendState,

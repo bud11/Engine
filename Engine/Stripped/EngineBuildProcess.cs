@@ -41,7 +41,7 @@ public static class EngineBuildProcess
     private static async Task Main(string[] args)
     {
 
-        var compressionQuality = int.Parse(args[0]);
+        var compressionQuality = int.Parse(args[1]);
 
 
 
@@ -54,9 +54,10 @@ public static class EngineBuildProcess
 
 
 
+        var releasepath = args[0];
 
+        Directory.CreateDirectory(releasepath);
 
-        Directory.CreateDirectory(ReleaseRootAssetArchivePath);
 
 
         foreach (var v in Enum.GetValues<RenderingBackendEnum>())
@@ -65,7 +66,7 @@ public static class EngineBuildProcess
             ComputeShaderSources[v] = new();
         }
 
-        ShaderCompilation.CompileShaders();
+        await ShaderCompilation.CompileShaders();
 
 
         Print("Compiled all shaders");
@@ -105,15 +106,6 @@ public static class EngineBuildProcess
 
 
 
-
-                        Parsing.ValueWriter header = new();
-
-                        //List<byte> header = new();
-
-
-
-
-
                         var allFiles = Directory
                             .GetFiles(archiveAbsolutePath, "*", SearchOption.AllDirectories)
                             .OrderBy(x => x.Replace("\\", "/"))   // Deterministic order
@@ -127,7 +119,7 @@ public static class EngineBuildProcess
 
 
 
-                        var tempPath = Path.Combine(ReleaseRootAssetArchivePath, archiveName + "_temp");
+                        var tempPath = Path.Combine(releasepath, archiveName + "_temp");
 
                         uint actualFiles = 0;
 
@@ -142,7 +134,7 @@ public static class EngineBuildProcess
                             compressionTasks.Add(
                                 Task.Run(async () =>
                                 {
-                                    var relativePath = Path.GetRelativePath(archiveAbsolutePath, assetAbsolutePath);
+                                    var relativePath = Path.GetRelativePath(AssetRootDirectoryPath, assetAbsolutePath);
 
 
                                     bool found = GameResourceFileAssociations.TryGetValue(Path.GetExtension(assetAbsolutePath), out var AssetFoundType);
@@ -183,7 +175,9 @@ public static class EngineBuildProcess
 
                                     using var compressor = new Compressor(compressionQuality);
 
-                                    return new AssetTaskData(Path.ChangeExtension(relativePath, null), AssetFoundType, compressor.Wrap(rawBytes).ToArray(), (uint)rawBytes.Length);
+                                    var finalpathwrite = Path.ChangeExtension(Path.GetRelativePath(archiveAbsolutePath, assetAbsolutePath), null);
+
+                                    return new AssetTaskData(finalpathwrite, AssetFoundType, compressor.Wrap(rawBytes).ToArray(), (uint)rawBytes.Length);
 
                                 })
                             );
@@ -195,6 +189,16 @@ public static class EngineBuildProcess
                         ulong currentOffset = 0;
 
                         List<ulong> offsetsToCorrect = new();
+
+
+
+
+
+                        using var header = new MemoryStream();
+
+                        Parsing.ValueWriter headerWriter = Parsing.ValueWriter.FromStream(header);
+
+
 
 
                         using (var archiveStream = File.Create(tempPath))
@@ -211,15 +215,18 @@ public static class EngineBuildProcess
                                     Print($"File written to archive '{archiveName}' successfully ({i}/{allFiles.Length}): {result.path}");
 
 
-                                    offsetsToCorrect.Add((ulong)header.GetSpan().Length);
+                                    offsetsToCorrect.Add((ulong)header.Length);
 
-                                    header.WriteUnmanaged((ulong)currentOffset);
-                                    header.WriteUnmanaged((ulong)result.uncompressedLength);
-                                    header.WriteString(result.path);
-                                    header.WriteUnmanaged(GameResource.GetGameResourceTypeID(result.type));
+                                    headerWriter.WriteUnmanaged((ulong)currentOffset);
+                                    headerWriter.WriteUnmanaged((ulong)result.uncompressedLength);
+                                    headerWriter.WriteString(result.path);
+                                    headerWriter.WriteUnmanaged(GameResource.GetGameResourceTypeID(result.type));
 
 
                                     currentOffset += (ulong)result.data.Length;
+
+                                    Print($"File written to archive '{archiveName}' successfully ({i}/{allFiles.Length}): {result.path}");
+
                                 }
                             }
                         }
@@ -230,10 +237,10 @@ public static class EngineBuildProcess
 
                         ulong headerSize =
                              sizeof(uint) +          // actualFiles uint at start
-                             (ulong)header.GetSpan().Length;    // header itself
+                             (ulong)header.Length;    // header itself
 
 
-                        Span<byte> headerSpan = header.GetSpan().ToArray().AsSpan();
+                        Span<byte> headerSpan = header.ToArray().AsSpan();
 
 
                         foreach (var p in offsetsToCorrect)
@@ -252,7 +259,7 @@ public static class EngineBuildProcess
 
 
 
-                        using (var outStream = new FileStream(Path.Combine(ReleaseRootAssetArchivePath, archiveName), FileMode.Create, FileAccess.Write))
+                        using (var outStream = new FileStream(Path.Combine(releasepath, archiveName), FileMode.Create, FileAccess.Write))
                         {
                             outStream.Write(BitConverter.GetBytes(actualFiles));
 
@@ -305,9 +312,10 @@ public static class EngineBuildProcess
 
         var shaderdedup = new DedupFields();
 
-        var shsrc = Emit(ShaderSources, 1, shaderdedup);
-        var Cshsrc = Emit(ComputeShaderSources, 1, shaderdedup);
+        var shaderSources = Emit(ShaderSources, 1, shaderdedup);
+        var computeShaderSources = Emit(ComputeShaderSources, 1, shaderdedup);
 
+        var globalMetadata = Emit(GlobalResourceSetMetadata, 1, shaderdedup);
 
 
 
@@ -315,8 +323,6 @@ public static class EngineBuildProcess
 
 
 namespace Engine.Core;
-
-using System.Collections.Immutable;
 
 
 //SHADERS
@@ -326,9 +332,11 @@ public static partial class RenderingBackend
 
 {shaderdedup.ToString()}
 
-    private static Dictionary<RenderingBackendEnum, Dictionary<string, ShaderSource>> ShaderSources = { shsrc };
+    private static readonly Dictionary<RenderingBackendEnum, Dictionary<string, ShaderSource>> ShaderSources = { shaderSources };
 
-    private static Dictionary<RenderingBackendEnum, Dictionary<string, ComputeShaderSource>> ComputeShaderSources = { Cshsrc };
+    private static readonly Dictionary<RenderingBackendEnum, Dictionary<string, ComputeShaderSource>> ComputeShaderSources = { computeShaderSources };
+
+    private static readonly Dictionary<string, ShaderMetadata.ShaderResourceSetMetadata> GlobalResourceSetMetadata = { globalMetadata };
 
 }}
 
@@ -469,9 +477,39 @@ public static partial class Loading
         if (T == typeof(string))
             return RegisterObject(obj, indent + $"\"{obj}\"");
 
+
+
         // Enums
         if (T.IsEnum)
-            return indent + $"{T.FullName!.Replace('+', '.')}.{obj}";
+        {
+            var value = Convert.ToUInt64(obj);
+
+            var parts = Enum.GetValues(T)
+                .Cast<object>()
+                .Select(v => new
+                {
+                    Name = v.ToString(),
+                    Value = Convert.ToUInt64(v)
+                })
+                .Where(x => x.Value != 0 && (value & x.Value) == x.Value)
+                .Select(x => $"{T.FullName}.{x.Name}".Replace("+", "."))
+                .ToList();
+
+            string result;
+
+            if (parts.Count > 0)
+            {
+                result = string.Join(" | ", parts);
+            }
+            else
+            {
+                // fallback for 0 or unknown combinations
+                result = $"{T.FullName}.{obj}".Replace("+", ".");
+            }
+
+            return indent + result;
+        }
+
 
         // Types
         if (obj is Type t)
@@ -517,12 +555,19 @@ public static partial class Loading
             var initializer = $"{{\n{indentInner}{inner}\n{indent}}}";
 
 
-            var keyType = GetFriendlyTypeName(T.GetGenericArguments()[0]);
-            var valueType = GetFriendlyTypeName(T.GetGenericArguments()[1]);
+            var dictInterface = T
+                .GetInterfaces()
+                .First(i => i.IsGenericType && i.GetGenericTypeDefinition() == typeof(IDictionary<,>));
+
+            var args = dictInterface.GetGenericArguments();
+
+            var keyType = GetFriendlyTypeName(args[0]);
+            var valueType = GetFriendlyTypeName(args[1]);
+
 
             var str = $"new Dictionary<{keyType}, {valueType}>(){initializer}";
 
-            return RegisterObject(obj, T.GetGenericTypeDefinition() == typeof(FrozenDictionary<,>) ? $"FrozenDictionary.ToFrozenDictionary({str})" : str);
+            return RegisterObject(obj, T.Namespace == "System.Collections.Frozen" ? $"System.Collections.Frozen.FrozenDictionary.ToFrozenDictionary({str})" : str);
         }
 
 
@@ -567,7 +612,7 @@ public static partial class Loading
         // Records / single-constructor types
         var ctors = T.GetConstructors(BindingFlags.Public | BindingFlags.Instance);
 
-        //use the only 1 argument constructor if there is one, otherwise try using the only 0 argument constructor, otherwise fail
+        // use the only 1 argument constructor if there is one, otherwise try using the only 0 argument constructor, otherwise fail
         var primaryCtor = ctors.FirstOrDefault(c => c.GetParameters().Length > 0)
                   ?? ctors.FirstOrDefault(c => c.GetParameters().Length == 0);
 
@@ -640,29 +685,48 @@ public static partial class Loading
 
 
 
-    private static string GetFriendlyTypeName(Type t)
+    private static string GetFriendlyTypeName(Type T)
     {
-        // Handle ValueTuple
-        if (t.IsGenericType && t.FullName!.StartsWith("System.ValueTuple`"))
+
+
+        if (T.Namespace == "System.Collections.Frozen" && T.FullName.Contains("FrozenDictionary"))
         {
-            var args = t.GetGenericArguments().Select(GetFriendlyTypeName);
+            var dictInterface = T
+                .GetInterfaces()
+                .First(i => i.IsGenericType && i.GetGenericTypeDefinition() == typeof(IDictionary<,>));
+
+            var args = dictInterface.GetGenericArguments();
+
+            var keyType = GetFriendlyTypeName(args[0]);
+            var valueType = GetFriendlyTypeName(args[1]);
+
+            return $"System.Collections.Frozen.FrozenDictionary<{keyType}, {valueType}>";
+        }
+
+
+
+        // Handle ValueTuple
+        if (T.IsGenericType && T.FullName!.StartsWith("System.ValueTuple`"))
+        {
+            var args = T.GetGenericArguments().Select(GetFriendlyTypeName);
             return $"({string.Join(", ", args)})";
         }
 
         // Handle generic types
-        if (t.IsGenericType)
+        if (T.IsGenericType)
         {
-            var genericArgs = t.GetGenericArguments().Select(GetFriendlyTypeName);
-            var name = t.Name.Substring(0, t.Name.IndexOf('`')); // strip `N
+            var genericArgs = T.GetGenericArguments().Select(GetFriendlyTypeName);
+            var name = T.Name.Substring(0, T.Name.IndexOf('`')); // strip `N
             return $"{name}<{string.Join(", ", genericArgs)}>";
         }
 
         // Handle arrays
-        if (t.IsArray)
-            return $"{GetFriendlyTypeName(t.GetElementType()!)}[]";
+        if (T.IsArray)
+            return $"{GetFriendlyTypeName(T.GetElementType()!)}[]";
+
 
         // Normal type
-        return t.FullName!.Replace("+", ".");
+        return T.FullName!.Replace("+", ".");
     }
 
 

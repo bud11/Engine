@@ -174,7 +174,7 @@ public static class References
 
 
     /// <summary>
-    /// <see cref="WeakObjRef"/> wrapped with a generic.
+    /// A stable, fast, unmanaged weak reference to an object instance of type <typeparamref name="T"/>.
     /// </summary>
     public readonly struct WeakObjRef<T> : IEquatable<WeakObjRef>, IEquatable<WeakObjRef<T>> where T : class
     {
@@ -253,70 +253,6 @@ public static class References
 
 
 
-    public static UnmanagedKeyValueCollection<WeakObjRef<TKey>, TValue> DictToUnmanagedK<TKey, TValue>(this IDictionary<TKey, TValue> from) where TKey : class where TValue : unmanaged
-    {
-
-#if DEBUG
-        if (from.Count > UnmanagedKeyValueCollection<byte,byte>.SizeLimit)
-            throw new InvalidOperationException();
-#endif
-
-        var collection = new UnmanagedKeyValueCollection<WeakObjRef<TKey>, TValue>();
-
-
-        //guaranteed unique items
-
-        foreach (var kv in from)
-            collection.KeyValuePairs[collection.Count++] = new(kv.Key.GetRef(), kv.Value);
-
-
-        return collection;
-    }
-
-
-    public static UnmanagedKeyValueCollection<WeakObjRef<TKey>, WeakObjRef<TValue>> DictToUnmanagedKV<TKey, TValue>(this IDictionary<TKey, TValue> from) where TKey : class where TValue : class
-    {
-
-#if DEBUG
-        if (from.Count > UnmanagedKeyValueCollection<byte, byte>.SizeLimit)
-            throw new InvalidOperationException();
-#endif
-
-        var collection = new UnmanagedKeyValueCollection<WeakObjRef<TKey>, WeakObjRef<TValue>>();
-
-
-        //guaranteed unique items
-
-        foreach (var kv in from)
-            collection.KeyValuePairs[collection.Count++] = new(kv.Key.GetRef(), kv.Value.GetRef());
-
-
-        return collection;
-    }
-
-
-    public static UnmanagedKeyValueCollection<TKey, WeakObjRef<TValue>> DictToUnmanagedV<TKey, TValue>(this IDictionary<TKey, TValue> from) where TKey : unmanaged where TValue : class
-    {
-
-#if DEBUG
-        if (from.Count > UnmanagedKeyValueCollection<byte, byte>.SizeLimit)
-            throw new InvalidOperationException();
-#endif
-
-        var collection = new UnmanagedKeyValueCollection<TKey, WeakObjRef<TValue>>();
-
-
-        //guaranteed unique items
-
-        foreach (var kv in from)
-            collection.KeyValuePairs[collection.Count++] = new(kv.Key, kv.Value.GetRef());
-
-
-        return collection;
-    }
-
-
-
 
 
 
@@ -346,12 +282,8 @@ public static class References
 
 
 
-    // this is a class so that volatileread can attain atomically
-    private sealed class RefSlot(int gen, GCHandle obj)
-    {
-        public int Gen = gen;
-        public GCHandle Obj = obj;
-    }
+    // this is a readonly class so that VolatileRead can attain in full atomically
+    private sealed record class RefSlot(int Gen, GCHandle Obj);
 
 
 
@@ -381,10 +313,7 @@ public static class References
                     ref var slot = ref ReferenceTable[ID];
 
                     if (slot.Obj.IsAllocated)
-                    {
                         slot.Obj.Free();
-                        slot.Obj = default;
-                    }
 
                     Gaps.Add(ID);
                 }
@@ -399,12 +328,18 @@ public static class References
 
 
     /// <summary>
-    /// Fetches or creates a weak stable reference for an object, which is automatically cleaned up once the object is garbage collected.
-    /// <br/> Each object can only ever have one ref at a time, assuming <paramref name="checkForExisting"/> is true. 
-    /// <br/> <paramref name="checkForExisting"/> should never be false unless you absolutely know the object does not have a ref allocated, you know what you're doing, and you NEED the check not to happen.
+    /// Fetches or creates a stable weak reference for an object, meaning it gets automatically cleaned up once the object is garbage collected, and does NOT count as a reference that prevents said garbage collection.
+    /// <br/> Each object can only ever have one <see cref="WeakObjRef"/>/<see cref="WeakObjRef{T}"/> at a time, assuming <paramref name="checkForExisting"/> is true. 
+    /// <br/> <paramref name="checkForExisting"/> should never be false unless you absolutely know the object does not have a ref allocated and you have very good reason to prevent the check.
     /// </summary>
-    public static WeakObjRef<T> GetRef<T>([DisallowNull] this T obj, bool checkForExisting = true) where T : class
+    public static WeakObjRef<T> GetRef<T>(this T obj, bool checkForExisting = true) where T : class
     {
+
+        if (obj == null) 
+            return default;
+
+
+
 
         if (checkForExisting)
         {
@@ -426,6 +361,13 @@ public static class References
 
         }
 
+#if DEBUG
+        else
+        {
+            if (ReferenceWeakTable.TryGetValue(obj, out var existing))
+                throw new InvalidOperationException("Reference for this object already exists");
+        }
+#endif
 
 
 
@@ -439,6 +381,13 @@ public static class References
                 if (ReferenceWeakTable.TryGetValue(obj, out var existing2))
                     return new WeakObjRef<T>(new WeakObjRef(existing2.ID, existing2.Gen));
             }
+
+
+            
+#if DEBUG
+            if (ReferenceWeakTable.TryGetValue(obj, out var existing))
+                throw new InvalidOperationException("Reference for this object already exists");
+#endif
 
 
 
@@ -462,16 +411,14 @@ public static class References
 
 
             ref var slotRef = ref ReferenceTable[id];
-            
-            if (slotRef == null)
-            {
-                slotRef = new RefSlot(0, GCHandle.Alloc(obj, GCHandleType.Weak));
-            }
-            else
-            {
-                slotRef.Obj = GCHandle.Alloc(obj, GCHandleType.Weak);
-                slotRef.Gen++;
-            }
+
+
+            // refslot is immutable to prevent volatile read errors later
+
+            var gen = (slotRef == null) ? 0 : slotRef.Gen;
+
+            slotRef = new RefSlot(gen, GCHandle.Alloc(obj, GCHandleType.Weak));
+
 
 
 

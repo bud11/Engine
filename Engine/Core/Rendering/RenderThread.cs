@@ -22,7 +22,7 @@ public static class RenderThread
 
 
 
-    public static volatile float Delta;
+    public static float Delta { get; private set; }
 
     private static readonly Stopwatch RenderStopWatch = new();
 
@@ -71,30 +71,34 @@ public static class RenderThread
 
         lock (RenderThreadLock)
         {
-            if (State == RenderThreadState.Idle && RenderStopWatch.Elapsed.TotalSeconds <= (1d / EngineSettings.RenderRateTarget) && Window.GetRenderCommandsValid())
+            if (State == RenderThreadState.Idle && (EngineSettings.RenderRateTarget == 0 || RenderStopWatch.Elapsed.TotalSeconds <= (1d / EngineSettings.RenderRateTarget)) && Window.GetRenderCommandsValid())
             {
-                RenderStopWatch.Start();
+                RenderStopWatch.Restart();
 
                 PushState = CommandPushState.Frame;
                 SwapBuffers();
+
+                ResetNessecaryBuffers();
             }
 
-            ResetBuffers();
+            ResetDiscardableBuffers();
         }
     }
 
     public static void FlushCommandsAndWait()
     {
-
-
         lock (RenderThreadLock)
         {
             if (State == RenderThreadState.Idle && Window.GetRenderCommandsValid())
             {
                 PushState = CommandPushState.Flush;
                 SwapBuffers();
+
+                ResetNessecaryBuffers();
             }
-            ResetBuffers();
+
+            ResetDiscardableBuffers();
+
         }
 
         WaitForFlushing();
@@ -117,12 +121,18 @@ public static class RenderThread
 
 
 
-    private static void ResetBuffers()
+    private static void ResetDiscardableBuffers()
     {
         RenderingCommandBufferB.Reset();
         PreRenderingCommandBufferB.Reset();
 
         RenderContentAllocatorB.Reset();
+    }
+
+    private static void ResetNessecaryBuffers()
+    {
+        NessecaryPreRenderingCommandBufferB.Reset();
+        NessecaryRenderContentAllocatorB.Reset();
     }
 
 
@@ -133,6 +143,8 @@ public static class RenderThread
 
         (RenderContentAllocatorB, RenderContentAllocatorA) = (RenderContentAllocatorA, RenderContentAllocatorB);
 
+        (NessecaryPreRenderingCommandBufferB, NessecaryPreRenderingCommandBufferA) = (NessecaryPreRenderingCommandBufferA, NessecaryPreRenderingCommandBufferB);
+        (NessecaryRenderContentAllocatorB, NessecaryRenderContentAllocatorA) = (NessecaryRenderContentAllocatorA, NessecaryRenderContentAllocatorB);
     }
 
 
@@ -152,14 +164,14 @@ public static class RenderThread
 
 
 
-            lock (RenderThreadActions)
+            if (AnyRenderThreadActions)
             {
-                if (RenderThreadActions.Count != 0)
+                lock (RenderThreadLock)
+                    State = RenderThreadState.ExecutingGeneral;
+
+
+                lock (RenderThreadActions)
                 {
-
-                    lock (RenderThreadLock)
-                        State = RenderThreadState.ExecutingGeneral;
-
                     for (int i = 0; i < RenderThreadActions.Count; i++)
                     {
                         ThreadBoundActionStruct f = RenderThreadActions[i];
@@ -167,34 +179,41 @@ public static class RenderThread
                         f.res.SetResult(res);
                     }
                     RenderThreadActions.Clear();
-
-
-                    lock (RenderThreadLock)
-                        State = RenderThreadState.Idle;
+                    AnyRenderThreadActions = false;
                 }
+
+
+                lock (RenderThreadLock)
+                    State = RenderThreadState.Idle;
             }
 
 
-            lock (RenderThreadLock)
+
+            if (PushState == CommandPushState.Frame)
             {
-                if (PushState == CommandPushState.Frame)
+                lock (RenderThreadLock)
                 {
                     State = RenderThreadState.ExecutingDeferredPre;
                     PushState = CommandPushState.None;
-                    break;
                 }
+                break;
+            }
 
-                if (PushState == CommandPushState.Flush)
+
+            if (PushState == CommandPushState.Flush)
+            {
+                lock (RenderThreadLock)
                 {
                     State = RenderThreadState.ExecutingDeferredFlushPre;
                     PushState = CommandPushState.None;
-                    break;
                 }
+                break;
             }
 
         }
 
 
+        NessecaryPreRenderingCommandBufferA.Execute();
 
 
         PreRenderingCommandBufferA.Execute();
@@ -209,19 +228,30 @@ public static class RenderThread
 
 
 
+
+
         RenderingBackend.StartFrameRendering(); 
 
         RenderingCommandBufferA.Execute();
 
+
+
+#if DEBUG
+        Stripped.EngineDebug.RenderThreadProcessingTime = (float)RenderStopWatch.Elapsed.TotalSeconds;
+#endif
+
         RenderingBackend.EndFrameRendering();
 
+#if DEBUG
+        Stripped.EngineDebug.RenderThreadRenderingTime = (float)RenderStopWatch.Elapsed.TotalSeconds - Stripped.EngineDebug.RenderThreadProcessingTime;
+#endif
 
 
         RenderContentAllocatorA.Reset();
 
 
 
-        if (State != RenderThreadState.ExecutingDeferredFlush)
+        if (State != RenderThreadState.ExecutingDeferredFlush && EngineSettings.RenderRateTarget != 0)
             Delta = float.Max((float)RenderStopWatch.Elapsed.TotalSeconds, 1f / EngineSettings.RenderRateTarget);
 
 
@@ -234,8 +264,6 @@ public static class RenderThread
         RenderStopWatch.Reset();
 
     }
-
-
 
 
 
@@ -271,7 +299,7 @@ public static class RenderThread
         var st = State;
 
         if (st == RenderThreadState.ExecutingDeferred || st == RenderThreadState.ExecutingDeferredFlush)
-            throw new Exception($"Calling method designed to be called outside of rendering - consider deferring via {nameof(PushDeferredPreRenderThreadCommand)} or {nameof(PushRenderThreadAction)}");
+            throw new Exception($"Calling method designed to be called outside of rendering - consider deferring via {nameof(PushDeferredPreRenderThreadCommand)} or {nameof(PushDeferredIdleRenderThreadAction)}");
     }
 
 
@@ -289,7 +317,7 @@ public static class RenderThread
         var st = State;
 
         if (!(st == RenderThreadState.ExecutingDeferred || st == RenderThreadState.ExecutingDeferredFlush))
-            throw new Exception($"Calling method designed to be called outside of rendering - consider deferring via {nameof(PushDeferredPreRenderThreadCommand)} or {nameof(PushRenderThreadAction)}");
+            throw new Exception($"Calling method designed to be called outside of rendering - consider deferring via {nameof(PushDeferredPreRenderThreadCommand)} or {nameof(PushDeferredIdleRenderThreadAction)}");
     }
 
 
@@ -299,13 +327,20 @@ public static class RenderThread
 
 
 
-    private static DynamicUnmanagedHAllocator RenderContentAllocatorA = new(), RenderContentAllocatorB = new();
+    private static DynamicUnmanagedHeapAllocator RenderContentAllocatorA = new(), RenderContentAllocatorB = new();
 
 
     /// <summary>
-    /// Allocates temporary unmanaged heap memory that will be valid until the end of the next rendered frame.
+    /// Allocates temporary unmanaged heap memory that will be valid until the upcoming frame is processed or dropped.
     /// </summary>
     public static unsafe byte* AllocateRenderTemporaryUnmanaged(int bytes) => RenderContentAllocatorB.Alloc(bytes);
+
+
+    /// <summary>
+    /// Allocates temporary unmanaged heap memory that will be valid until the end of the next successfully rendered frame.
+    /// </summary>
+    public static unsafe byte* AllocateNessecaryRenderTemporaryUnmanaged(int bytes) => NessecaryRenderContentAllocatorB.Alloc(bytes);
+
 
 
 
@@ -314,6 +349,12 @@ public static class RenderThread
 
     private static DeferredCommandBuffer RenderingCommandBufferA = new(), RenderingCommandBufferB = new();
     private static DeferredCommandBuffer PreRenderingCommandBufferA = new(), PreRenderingCommandBufferB = new();
+
+    private static DeferredCommandBuffer NessecaryPreRenderingCommandBufferA = new(), NessecaryPreRenderingCommandBufferB = new();
+
+
+    private static DynamicUnmanagedHeapAllocator NessecaryRenderContentAllocatorA = new(), NessecaryRenderContentAllocatorB = new();
+
 
 
 
@@ -374,6 +415,36 @@ public static class RenderThread
 
 
 
+    /// <summary>
+    /// Pushes an <see cref="IDeferredCommand{T}"/> to be executed just before the upcoming frame's rendering on the render thread. Guaranteed to run before the next frame. Thread safe.
+    /// </summary>
+    /// <typeparam name="T"></typeparam>
+    /// <param name="cmd"></param>
+    public static void PushDeferredNessecaryPreRenderThreadCommand<T>(in T cmd) where T : unmanaged, IDeferredCommand<T>
+        => NessecaryPreRenderingCommandBufferB.PushCommand(cmd);
+
+    /// <summary>
+    /// Pushes an static method pointer to be executed just before the upcoming frame's rendering on the render thread. Guaranteed to run before the next frame. Thread safe.
+    /// </summary>
+    /// <param name="ptr"></param>
+    public static unsafe void PushDeferredNessecaryPreRenderThreadCommand(delegate*<void> ptr)
+        => NessecaryPreRenderingCommandBufferB.PushCommand(ptr);
+
+
+
+    /// <summary>
+    /// Pushes an static method pointer to be executed just before the upcoming frame's rendering on the render thread. Guaranteed to run before the next frame. Thread safe.
+    /// </summary>
+    /// <typeparam name="TData"></typeparam>
+    /// <param name="data"></param>
+    /// <param name="ptr"></param>
+    public static unsafe void PushDeferredNessecaryPreRenderThreadCommand<TData>(TData data, delegate*<TData*, void> ptr) where TData : unmanaged
+        => NessecaryPreRenderingCommandBufferB.PushCommand(data, ptr);
+
+
+
+
+
 
 
 
@@ -381,25 +452,27 @@ public static class RenderThread
 
     private readonly record struct ThreadBoundActionStruct(Func<object> func, TaskCompletionSource<object> res);
 
+    private static readonly List<ThreadBoundActionStruct> RenderThreadActions = new();
 
-    private static List<ThreadBoundActionStruct> RenderThreadActions = new();
+    private static volatile bool AnyRenderThreadActions;
 
 
     /// <summary>
-    /// Pushes <paramref name="func"/> to be executed on the render thread as soon as possible (in other words, whenever the render thread isn't currently rendering).
-    /// <br/> This allocates and should be used sparingly. <see cref="PushDeferredRenderThreadCommand{T}(in T, string, int)"/> and <see cref="PushDeferredPreRenderThreadCommand{T}(in T, string, int)"/> are usually recommended instead.
+    /// Pushes <paramref name="func"/> to be executed during render thread idle time, guaranteeing it runs either immediately or after the upcoming frame. Thread safe.
+    /// <br/> This allocates, and should, if ever, be used primarily in cases where you specifically need to wait for execution to complete/wait for a result. 
     /// </summary>
     /// <param name="func"></param>
     /// <returns></returns>
-    public static async Task<object> PushRenderThreadAction(Func<object> func)
+    public static async Task<object> PushDeferredIdleRenderThreadAction(Func<object> func)
     {
-
         if (Thread.CurrentThread == Kernel.RenderThread) return func.Invoke();
 
-
         var task = new TaskCompletionSource<object>();
-        lock (RenderThreadActions) RenderThreadActions.Add(new ThreadBoundActionStruct(func, task));
-
+        lock (RenderThreadActions)
+        {
+            RenderThreadActions.Add(new ThreadBoundActionStruct(func, task));
+            AnyRenderThreadActions = true;
+        }
 
         return await task.Task;
     }

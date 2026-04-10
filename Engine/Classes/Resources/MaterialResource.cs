@@ -32,7 +32,7 @@ public partial class MaterialResource :
 
 
 
-    public readonly Dictionary<string, BackendResourceSetReference> MaterialResourceSets = new();
+    public readonly RefCountCollections.RefCountedDictionary<string, BackendResourceSetReference> MaterialResourceSets = new();
 
 
     public readonly Rendering.NamedShaderReference ShaderRef;
@@ -56,12 +56,11 @@ public partial class MaterialResource :
         Textures = textures;
         Parameters = parameters;
 
-        Textures?.AddUser();
     }
 
     protected override void OnFree()
     {
-        Textures?.RemoveUser();
+        Textures?.Free();
 
         base.OnFree();
     }

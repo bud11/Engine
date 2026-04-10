@@ -158,7 +158,7 @@ public static partial class Entry
 
 
     private static RenderingBackend.BackendBufferReference.IVertexBuffer TriangleVertPos;
-    private static Dictionary<string, RenderingBackend.VertexAttributeDefinitionBufferPair> TriangleAttributes;
+    private static RefCountCollections.RefCountedDictionary<string, RenderingBackend.VertexAttributeDefinitionBufferPair> TriangleAttributes;
 
 
 
@@ -235,7 +235,7 @@ public static partial class Entry
 
 
         Rendering.Draw(
-            Attributes: TriangleAttributes.VertexAttributeDictToUnmanaged(),   //<-- this converts the collection into a weak-referencing, ummanaged copy.
+            Attributes: TriangleAttributes.VertexAttributesToUnmanaged(),   //<-- this converts the collection into a weak-referencing, ummanaged copy.
             ResourceSets: default,            
             Shader: ShaderRef.Shader,         //<-- our shader
 

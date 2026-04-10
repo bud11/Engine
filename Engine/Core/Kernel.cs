@@ -24,8 +24,7 @@ public static class Kernel
 
 
 
-    private static readonly object KernelLock = new();
-    private static KernelStates KernelState = KernelStates.Init;
+    private static volatile KernelStates KernelState = KernelStates.Init;
 
     private enum KernelStates
     {
@@ -36,22 +35,11 @@ public static class Kernel
     }
 
 
-    public static void WindowNotifyEngineClosing()
-    {
-        lock (KernelLock)
-            KernelState = KernelStates.CloseRequested;
-    }
+    public static void WindowNotifyEngineClosing() => KernelState = KernelStates.CloseRequested;
 
-    public static bool IsClosing()
-    {
-        lock (KernelLock)
-            return KernelState == KernelStates.Closing;
-    }
-    public static bool IsCloseRequested()
-    {
-        lock (KernelLock)
-            return KernelState == KernelStates.CloseRequested;
-    }
+
+    public static bool IsClosing() => KernelState == KernelStates.Closing;
+    public static bool IsCloseRequested() => KernelState == KernelStates.CloseRequested;
 
 
 
@@ -98,11 +86,8 @@ public static class Kernel
 
                 while (true)
                 {
-                    lock (KernelLock)
-                    {
-                        if (KernelState != KernelStates.Init)   //<-- waits for backend creation to be done
-                            break;
-                    }
+                    if (KernelState != KernelStates.Init)   //<-- waits for backend creation to be done
+                        break;
                 }
 
 
@@ -121,6 +106,7 @@ public static class Kernel
                 }
 
 
+                EngineDebug.Init();
 
                 ImGUIController.Init();
 #endif
@@ -135,6 +121,10 @@ public static class Kernel
                 {
 
                     Window.WindowPoll();
+
+#if DEBUG
+                    EngineDebug.Loop();
+#endif
 
                     Logic.LogicThreadLoop();
 
@@ -163,8 +153,7 @@ public static class Kernel
 
 
 
-                        lock (KernelLock)
-                            KernelState = KernelStates.Closing;
+                        KernelState = KernelStates.Closing;
 
 
                         return;
@@ -194,8 +183,7 @@ public static class Kernel
                 //BACKEND
                 RenderingBackend.CreateBackend(settings.RenderingBackend, window);
 
-                lock (KernelLock)
-                    KernelState = KernelStates.Running;
+                KernelState = KernelStates.Running;
 
 
                 while (true)

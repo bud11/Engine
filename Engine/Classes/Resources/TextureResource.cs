@@ -26,10 +26,10 @@ using Engine.Stripped;
 [FileExtensionAssociation(".gif")]
 [FileExtensionAssociation(".hdr")]
 [FileExtensionAssociation(".exr")]
-public class TextureResource : GameResource, GameResource.ILoads,
+public class TextureResource : GameResource, GameResource.ILoads
 
 #if DEBUG
-    GameResource.IConverts
+    , GameResource.IConverts
 #endif
 {
 

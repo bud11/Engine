@@ -2,10 +2,10 @@
 using Engine.GameObjects;
 using Engine.GameResources;
 using System.Numerics;
-using ImGuiNET;
 using static Engine.Core.EngineMath;
 using static Engine.Core.References;
-using System.Diagnostics;
+using System.Drawing;
+
 
 
 
@@ -188,52 +188,8 @@ public static partial class Entry
         );
 
 
-        
 
-
-
-        ShaderCompilation.RegisterShader(
-
-            shaderName: "screenQuad",
-
-            resourceSetNames: ["TextureResources"],
-
-            vertexSource:
-            """
-
-            in vec2 Position;
-
-            out vec2 FragPosition;
-
-            void main()
-            {
-                FragPosition = Position;
-                gl_Position = vec4(Position, 0.0, 1.0);
-            }
-
-            """,
-
-            fragmentSource:
-            """
-
-            layout(set = 0) uniform sampler2D Texture;
-
-
-            in vec2 FragPosition;
-            out vec4 FinalColor;
-
-
-            void main()
-            {
-                FinalColor = textureLod(Texture, -FragPosition * 0.5 + 0.5, 0);
-            }
-
-            """,
-
-            languageHandler: ShaderCompilation.GLSL
-        );
-
-
+        Rendering.InitQuadDrawDefaultShader();
 
 
     }
@@ -264,12 +220,8 @@ public static partial class Entry
     private static RenderingBackend.BackendBufferReference.IDataBuffer GlobalUniformBuffer;
 
 
-    //screen quad for drawing to screen
+    private static RenderingBackend.BackendTextureAndSamplerReferencesPair Screen;
 
-    private static RenderingBackend.BackendBufferReference.IVertexBuffer ScreenQuadVertPos;
-    private static Dictionary<string, RenderingBackend.VertexAttributeDefinitionBufferPair> ScreenQuadAttributes;
-    private static Dictionary<string, RenderingBackend.BackendResourceSetReference> ScreenQuadResourceSetCollection;
-    private static Rendering.NamedShaderReference ScreenQuadShaderRef;
 
 
     //objects
@@ -305,11 +257,12 @@ public static partial class Entry
 
         Task.Run(async () =>
         {
+
+
             var sceneResource = await Loading.LoadResource<SceneResource>("Assets/Scene");
 
             unsafe
             {
-
 
                 // Certain objects and resources may not have enough information when loaded rather than manually created.
                 // In this case, models and materials need to be configured to interface with defined shaders.
@@ -334,7 +287,11 @@ public static partial class Entry
                         var modelBuffer = modelresources.SetResource("ModelUBO", RenderingBackend.BackendBufferReference.CreateDataBufferFromMetadata(modelresources.Metadata.Buffers["ModelUBO"].Metadata, extraAccessFlags: RenderingBackend.ReadWriteFlags.CPUWrite));
 
                         mod.OnPreDraw.Add(
-                            () => modelBuffer.WriteFromOffsetOf("ModelMatrix", mod.GlobalTransform)
+                            () =>
+                            {
+                                if (mod.IsGlobalTransformDirtyForDraw())
+                                    modelBuffer.WriteFromOffsetOf("ModelMatrix", mod.GlobalTransform, true);
+                            }
                             );
 
 
@@ -364,14 +321,6 @@ public static partial class Entry
 
 
 
-
-
-
-
-
-
-
-
         // -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 
         // And then the camera and the framebuffer presentation setup.
@@ -388,52 +337,13 @@ public static partial class Entry
 
 
 
-        //The final screen quad isn't an object in the scene and doesn't need to be treated like one.
-
-
-        ScreenQuadVertPos = (RenderingBackend.BackendBufferReference.IVertexBuffer) RenderingBackend.BackendBufferReference.Create<float>([-1, -1, 1, -1, 1, 1, -1, -1, -1, 1, 1, 1], RenderingBackend.BufferUsageFlags.Vertex, default);
-
-
-        ScreenQuadAttributes =
-            new()
-            {
-                { "Position", new RenderingBackend.VertexAttributeDefinitionBufferPair(
-                ScreenQuadVertPos,
-                new(
-                    RenderingBackend.VertexAttributeBufferComponentFormat.Float,
-                    sizeof(float),
-                    0,
-                    RenderingBackend.VertexAttributeScope.PerVertex
-                    )
-                    )
-                }
-            };
-
-
-
-
-        ScreenQuadShaderRef = new Rendering.NamedShaderReference("screenQuad");
-
-
-        var screenQuadResourceSet = RenderingBackend.BackendResourceSetReference.CreateFromMetadata(ScreenQuadShaderRef.Shader, "TextureResources");
-
-        ScreenQuadResourceSetCollection = new () { ["TextureResources"] = screenQuadResourceSet };
-
-
-
-
-
-        //Textures (and texture + sampler pairs) are immutable, so if the resolution changes, the old texture becomes invalid, and the set needs to be updated.
 
         Camera.OnResolutionChanged.Add(() =>
         {
+            Screen = new RenderingBackend.BackendTextureAndSamplerReferencesPair(
 
-            var cameraTexture = new RenderingBackend.BackendTextureAndSamplerReferencesPair(
-
-                                        //the color buffer from the camera that we want to display on screen
                                         Camera.FrameBuffer.ColorAttachments[0],
 
-                                        //..plus the sampler, to describe how to present it.
                                         RenderingBackend.BackendSamplerReference.Get(
 
                                             new RenderingBackend.SamplerDetails(
@@ -447,7 +357,6 @@ public static partial class Entry
 
 
 
-            screenQuadResourceSet.SetResource("Texture", cameraTexture);
         });
 
 
@@ -477,7 +386,7 @@ public static partial class Entry
 
 
 
-            var euler = Camera.GlobalTransform.GetEuler() + (new Vector3(mouseMove.Y, mouseMove.X, 0) * 0.05f * Logic.Delta);
+            var euler = Camera.GlobalTransform.GetEuler() + (new Vector3(mouseMove.Y, mouseMove.X, 0) * 0.001f * Logic.Delta);
 
             var rotation =
                 Matrix4x4.CreateRotationX(euler.X) *
@@ -516,53 +425,35 @@ public static partial class Entry
     {
 
 
-
         // -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 
-        // First up is logic.
-        // All we need to do in this case is call each object's loop, but you can do whatever you want in whatever order you want.
-
-        for (int i = 0; i < GameObject.AllGameObjects.Count; i++)
-            GameObject.AllGameObjects[i].Loop();
+        lock (GameObject.AllGameObjects)
+            for (int i = 0; i < GameObject.AllGameObjects.Count; i++)
+                GameObject.AllGameObjects[i].Loop();
 
 
         CameraMove();
 
 
-
         // -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 
-        // After that is rendering.
+
+
+        GlobalUniformBuffer.WriteFromOffsetOf("ProjectionMatrix", Camera.GetProjectionMatrix(), false);
+        GlobalUniformBuffer.WriteFromOffsetOf("ViewMatrix", Camera.GetViewMatrix(), false);
 
 
 
-        GlobalUniformBuffer.WriteFromOffsetOf("ProjectionMatrix", Camera.GetProjectionMatrix());
-        GlobalUniformBuffer.WriteFromOffsetOf("ViewMatrix", Camera.GetViewMatrix());
-
-
-
-
-
-        // -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
-
-        // Next up is rendering with the camera.
-        // Cameras have a flexible programmable pipeline system, but all we need to do here is draw everything, so this is a simple one stage pipeline with basic material handling.
-
-
-        Camera.Resolution = RenderingBackend.CurrentSwapchainDetails.Size;  //<-- Enforcing the camera's resolution is the same as the window's
+        Camera.Resolution = RenderingBackend.CurrentSwapchainDetails.Size;
 
         Rendering.SetScissor(default, Camera.Resolution);
-
-
-
-
 
 
 #if DEBUG
 
         // ===== ( In a rendering scenario with many variables, it can sometimes be worth enabling some or all of the flags offered by EngineDebug ) =====
 
-        EngineDebug.FreeableConstructorStackTraceStorage = 
+        EngineDebug.FreeableConstructorStackTraceStorage =
         EngineDebug.ThrowIfVertexBufferMissing =
         EngineDebug.ThrowIfResourceSetMissing =
         EngineDebug.ThrowIfResourceMissing =
@@ -571,15 +462,13 @@ public static partial class Entry
 #endif
 
 
-
-
         Camera.Render(
             [
+
                 new Camera.CameraSubpassDefinition
                 (
-                    //All we're doing here is saying that this stage in the pipeline should clear the color and depth buffers and then write into them.
                     frameBufferPipelineStageReq: new RenderingBackend.FrameBufferPipelineStage()
-                                                .SpecifyColorAttachments(rangeStart: 0, rangeEnd: 1, access: RenderingBackend.FrameBufferPipelineAttachmentAccessFlags.Write, clear: true)
+                                                .SpecifyColorAttachments(rangeStart: 0, rangeEnd: 1, access: RenderingBackend.FrameBufferPipelineAttachmentAccessFlags.None, clear: true)
                                                 .SpecifyDepth(access: RenderingBackend.FrameBufferPipelineAttachmentAccessFlags.Write, clear: true),
 
 
@@ -587,23 +476,66 @@ public static partial class Entry
 
                     objectWhiteList: DrawObject.AllDrawableObjects,
 
-                    materialResolver: &ResolveMaterial     //<-- a pointer to a static method, which interprets certain material details, per pass, on demand, into near-final draw call details
+                    materialResolver: &DepthResolve
+
+                ),
+
+
+
+                new Camera.CameraSubpassDefinition
+                (
+                    frameBufferPipelineStageReq: new RenderingBackend.FrameBufferPipelineStage()
+                                                .SpecifyColorAttachments(rangeStart: 0, rangeEnd: 1, access: RenderingBackend.FrameBufferPipelineAttachmentAccessFlags.Write, clear: false)
+                                                .SpecifyDepth(access: RenderingBackend.FrameBufferPipelineAttachmentAccessFlags.Read, clear: false),
+
+
+                    ordering: Camera.CameraDrawSortMode.NearToFar,
+
+                    objectWhiteList: DrawObject.AllDrawableObjects,
+
+                    materialResolver: &ColorResolve,
+
+                    drawCallIssuer: &DrawCallIssueColor
+
                 ),
             ]
         );
 
 
 
-        // This is a very simple and literal resolve, but you could for example differ behavior based on the material's high level parameters or the pass this is being used for.
 
-        static MaterialResource.MaterialResolution ResolveMaterial(MaterialResource mat)
+        static void DrawCallIssueColor(ReadOnlySpan<(DrawObject obj, float distance)> objs)
+        {
+
+            for (int i = 0; i < objs.Length; i++)
+            {
+                var obj = objs[i].obj;
+
+                obj.Draw(&ColorResolve);
+
+                //EngineDebug.DrawAABB(obj.GetOrRecalculateCachedGlobalAABB(), Color.Blue, Camera.GetViewMatrix(), Camera.GetProjectionMatrix());
+            }
+        }
+
+
+
+
+
+        static MaterialResource.MaterialResolution DepthResolve(MaterialResource mat)
             => new MaterialResource.MaterialResolution(mat.ShaderRef,
-                                                       new RenderingBackend.DrawPipelineDetails.RasterizationDetails(),
-                                                       new RenderingBackend.DrawPipelineDetails.BlendState(),
-                                                       new RenderingBackend.DrawPipelineDetails.DepthStencilState(),
-                                                       mat.MaterialResourceSets.DictToUnmanagedKV());
+                                                       new RenderingBackend.DrawPipelineDetails.RasterizationDetails() { CullMode = RenderingBackend.CullMode.Disabled },
+                                                       new RenderingBackend.DrawPipelineDetails.BlendState() { Enable = false },
+                                                       new RenderingBackend.DrawPipelineDetails.DepthStencilState() { DepthFunction = RenderingBackend.DepthOrStencilFunction.LessOrEqual, DepthWrite = true },
+                                                       mat.MaterialResourceSets.AsUnmanaged());
 
 
+
+        static MaterialResource.MaterialResolution ColorResolve(MaterialResource mat)
+            => new MaterialResource.MaterialResolution(mat.ShaderRef,
+                                                       new RenderingBackend.DrawPipelineDetails.RasterizationDetails() { CullMode = RenderingBackend.CullMode.Back },
+                                                       new RenderingBackend.DrawPipelineDetails.BlendState() { Enable = true },
+                                                       new RenderingBackend.DrawPipelineDetails.DepthStencilState() { DepthFunction = RenderingBackend.DepthOrStencilFunction.Equal, DepthWrite = false },
+                                                       mat.MaterialResourceSets.AsUnmanaged());
 
 
 
@@ -635,24 +567,9 @@ public static partial class Entry
 
         Rendering.StartDrawToScreen();
 
-
         Rendering.SetScissor(default, RenderingBackend.CurrentSwapchainDetails.Size);
 
-
-        Rendering.Draw(
-            Attributes: ScreenQuadAttributes.VertexAttributeDictToUnmanaged(),
-            ResourceSets: ScreenQuadResourceSetCollection.DictToUnmanagedKV(),           
-            Shader: ScreenQuadShaderRef.Shader,
-
-            //the rasterization, blending and depth stencil structs already have sane defaults that we can use here.
-            Rasterization: new(),
-            Blending: new(),
-            DepthStencil: default,
-
-            IndexBuffer: null,      //no index buffer needed either here
-            IndexingDetails: new(0,6,0,1)
-        );
-
+        Rendering.DrawQuad(Vector2.One, -Vector2.One, Screen);
 
         Rendering.EndDrawToScreen();
 

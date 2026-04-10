@@ -56,7 +56,20 @@ public partial class GameObject : Freeable
 
 
 
-    public GameObject Parent { get; private set; }
+    private GameObject _parent;
+    public GameObject Parent
+    {
+        get => _parent;
+        set 
+        {
+            if (_parent != value)
+            {
+                _parent = value;
+                GlobalTransformDirty = true;
+            }
+        }
+    }
+
 
 
     private List<GameObject> Children = new();
@@ -118,14 +131,14 @@ public partial class GameObject : Freeable
             {
                 var parentTransform = p.Transform;
 
-                global = global * parentTransform;
+                global *= parentTransform;
 
                 if (p.TopLevel) break;
                 p = p.Parent;
             }
 
-            GlobalTransformDirty = false;
             GlobalTransformCached = global;
+            GlobalTransformDirty = false;
 
             return global;
         }
@@ -144,8 +157,8 @@ public partial class GameObject : Freeable
         get => _transform;
         set
         {
-            GlobalTransformChanged();
             _transform = value;
+            GlobalTransformChanged();            
         }
     }
 
@@ -321,8 +334,11 @@ public partial class GameObject : Freeable
 
     protected override void OnFree()
     {
-        AllGameObjects.Remove(this);
-        NamedGameObjects.Remove(Name);
+        lock (AllGameObjects)
+            AllGameObjects.Remove(this);
+
+        lock (NamedGameObjects)
+            NamedGameObjects.Remove(Name);
 
 
         Parent?.RemoveChild(this);
@@ -486,10 +502,12 @@ public partial class GameObject : Freeable
     /// </summary>
     public virtual void Init()
     {
-        AllGameObjects.Add(this);
+        lock (AllGameObjects)
+            AllGameObjects.Add(this);
 
         if (Name != null)
-            NamedGameObjects.TryAdd(Name, this);
+            lock (NamedGameObjects)
+                NamedGameObjects.TryAdd(Name, this);
     }
 
 

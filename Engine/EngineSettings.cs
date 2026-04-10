@@ -75,12 +75,12 @@ public static partial class EngineSettings
         /// <summary>
         /// <inheritdoc cref="EngineSettings.LogicRateTarget"/>
         /// </summary>
-        public readonly ushort LogicRateTarget = 60;
+        public readonly ushort LogicRateTarget = 0;
 
         /// <summary>
         /// <inheritdoc cref="EngineSettings.RenderRateTarget"/>
         /// </summary>
-        public readonly ushort RenderRateTarget = 60;
+        public readonly ushort RenderRateTarget = 0;
     }
 
 

@@ -15,25 +15,37 @@
 	</PropertyGroup>
 
 
-	
-	
-	<PropertyGroup Condition = " '$(PublishDir)' != '' OR '$(_IsPublishing)' == 'true'">
-		<DefineConstants>$(DefineConstants);IS_PUBLISH</DefineConstants>
-		<IsPublish>true</IsPublish>
-	</PropertyGroup>
-
-
-
-
 	<PropertyGroup>
 		<DefineConstants>$(DefineConstants);IncludeVulkanBackend</DefineConstants>
 	</PropertyGroup>
+	
+	
+	
+	
+	<!-- (publishing detection may need to vary, hence separate properties) -->
+	
+	<PropertyGroup Condition=" '$(_IsPublishing)' == 'true' ">
+		<IsPublish>true</IsPublish>
+	</PropertyGroup>
+
+	<PropertyGroup Condition=" '$(DeployOnBuild)' == 'true' ">
+		<IsPrePublish>true</IsPrePublish>
+	</PropertyGroup>
+
+	
+	
+	
+	
+	<Target Name="DebugProps" BeforeTargets="Build">
+		<Message Text="================== DEFINED CONSTANTS; $(DefineConstants) ==================" Importance="High" />
+	</Target>
 
 
+
 	
 	
-	
-	
+
+
 
 
 
@@ -201,7 +213,7 @@
 	</PropertyGroup>
 	
 	<!-- final NativeAOT publish release -->
-	<PropertyGroup Condition="'$(PublishAot)' == 'true'">
+	<PropertyGroup Condition="'$(IsPublish)' == 'true'">
 		<ZStdCompressionQuality>22</ZStdCompressionQuality>
 	</PropertyGroup>
 
@@ -222,12 +234,21 @@
 		<DefineConstants>$(DefineConstants);ENGINE_BUILD_PASS</DefineConstants>		
 	</PropertyGroup>
 
-	<PropertyGroup Condition="'$(EngineBuildPass)' == 'true' AND '$(IsPublish)' == 'true'">
-		<DefineConstants>$(DefineConstants);IS_PUBLISH</DefineConstants>
+
+
+
+	<PropertyGroup>
+		<ExecutablePath>$(MSBuildProjectDirectory)\bin\Release\$(TargetFramework)\$(RuntimeIdentifier)</ExecutablePath>
+	</PropertyGroup>
+
+	<PropertyGroup Condition="'$(IsPublish)' == 'true'">
+		<ExecutablePath>$(ExecutablePath)\publish</ExecutablePath>
 	</PropertyGroup>
 
 
-	<Target Name="RunEngineBuild" BeforeTargets="CoreCompile" Condition="$(DefineConstants.Contains('RELEASE')) AND '$(EngineBuildPass)' != 'true' AND '$(DesignTimeBuild)' != 'true'">
+
+	
+	<Target Name="RunEngineBuild" BeforeTargets="CoreCompile" Condition="$(DefineConstants.Contains('RELEASE')) AND '$(EngineBuildPass)' != 'true' AND '$(DesignTimeBuild)' != 'true' AND '$(IsPrePublish)' != 'true'">
 
 
 		<!-- build in debug engine build pass mode -->
@@ -236,15 +257,15 @@
 
 		<!-- execute debug -->
 		<Exec
-		  Command="&quot;$(ProjectDir)bin\Debug\$(TargetFramework)\$(RuntimeIdentifier)\$(AssemblyName).exe&quot; $(ZStdCompressionQuality)"
-		  WorkingDirectory="$(ProjectDir)bin\Debug\$(TargetFramework)\$(RuntimeIdentifier)"
+		  Command="&quot;$(MSBuildProjectDirectory)\bin\Debug\$(TargetFramework)\$(RuntimeIdentifier)\$(AssemblyName).exe&quot; &quot;$(ExecutablePath)&quot; $(ZStdCompressionQuality)"
+		  WorkingDirectory="$(MSBuildProjectDirectory)\bin\Debug\$(TargetFramework)\$(RuntimeIdentifier)"
 		  IgnoreExitCode="false"
 		  ConsoleToMSBuild="true" />
 
 
 		<!-- delete dep graph created by debug and restore fresh for release so debug deps dont leak into release -->
-		<Delete Files="$(ProjectDir)obj\project.assets.json" />
-		<Delete Files="$(ProjectDir)obj\project.assets.lock.json" />
+		<Delete Files="$(MSBuildProjectDirectory)\obj\project.assets.json" />
+		<Delete Files="$(MSBuildProjectDirectory)\obj\project.assets.lock.json" />
 
 		<Exec Command='dotnet restore &quot;$(ProjectPath)&quot; /p:Configuration=$(Configuration) ' />
 

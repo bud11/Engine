@@ -1,11 +1,16 @@
 ﻿
 namespace Engine.Core;
 
-using Engine.Stripped;
 using SDL3;
 using System.Runtime.InteropServices;
 using System.Text;
 using static Engine.Core.EngineMath;
+
+
+
+#if DEBUG
+using Engine.Stripped;
+#endif
 
 public static class Window
 {
@@ -96,7 +101,7 @@ public static class Window
 
 
                 case SDL.EventType.MouseWheel:
-                    MouseScrollWheelDelta = ev.Wheel.Y;
+                    MouseScrollWheelDelta = ev.Wheel.Y / Logic.Delta;
 
                     break;
 
@@ -235,7 +240,7 @@ public static class Window
 
             SDL.SyncWindow(SDLWindowHandle);
 
-            RenderThread.PushRenderThreadAction(() => { RenderingBackend.ConfigureSwapchain(Size, UseHDR); return null; }).Wait();
+            RenderThread.PushDeferredIdleRenderThreadAction(() => { RenderingBackend.ConfigureSwapchain(Size, UseHDR); return null; }).Wait();
 
             windowValid = true;
 

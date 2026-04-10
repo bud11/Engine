@@ -65,7 +65,6 @@ public static partial class RenderingBackend
 
 
 
-    [Flags]
     public enum ColorWriteMask : byte
     {
         None = 0,
@@ -286,7 +285,6 @@ public static partial class RenderingBackend
     /// <summary>
     /// Flags which indicate the binding capabilities of a buffer.
     /// </summary>
-    [Flags]
     public enum BufferUsageFlags : byte
     {
         Vertex = 1 << 0,
@@ -299,7 +297,6 @@ public static partial class RenderingBackend
     /// <summary>
     /// Flags which indicate capacity of access and mutability for a gpu resource.
     /// </summary>
-    [Flags]
     public enum ReadWriteFlags : byte
     {
         GPURead = 1 << 0,

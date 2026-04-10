@@ -36,7 +36,7 @@ public class ModelResource : GameResource, GameResource.ILoads
     public readonly BackendBufferReference.IIndexBuffer IndexBuffer;
 
 
-    public readonly Dictionary<string, VertexAttributeDefinitionBufferPair> Buffers;
+    public readonly RefCountCollections.RefCountedDictionary<string, VertexAttributeDefinitionBufferPair> Buffers;
 
 
 
@@ -116,10 +116,6 @@ public class ModelResource : GameResource, GameResource.ILoads
 
 
 
-            // Alignment helpers
-            static int AlignUp(int value, int alignment)
-                => (value + alignment - 1) & ~(alignment - 1);
-
 
 
             static int GetAlignment(VertexAttributeBufferComponentFormat fmt) => fmt switch
@@ -147,7 +143,7 @@ public class ModelResource : GameResource, GameResource.ILoads
                 int align = GetAlignment(def.ComponentFormat);
                 maxAlignment = Math.Max(maxAlignment, align);
 
-                runningOffset = AlignUp(runningOffset, align);
+                runningOffset = runningOffset.Align(align);
                 offsets[i] = runningOffset;
 
                 sizes[i] = def.Stride; // bytes per vertex
@@ -157,7 +153,7 @@ public class ModelResource : GameResource, GameResource.ILoads
 
 
 
-            int vertexStride = AlignUp(runningOffset, maxAlignment);
+            int vertexStride = runningOffset.Align(maxAlignment);
 
             // Allocate interleaved buffer
             byte[] interleaved = new byte[vertexCount * vertexStride];
@@ -298,7 +294,7 @@ public class ModelResource : GameResource, GameResource.ILoads
         string key = null) : base(key)
     {
 
-        Buffers = buffers.ToDictionary();
+        Buffers = new(buffers);
 
         SubMeshes = submeshes;
         BaseAABB = baseAABB;

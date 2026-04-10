@@ -1,7 +1,6 @@
 ﻿
 namespace Engine.Core;
 
-using Engine.Stripped;
 using System;
 using System.Buffers;
 using System.Collections;
@@ -16,6 +15,9 @@ using System.Text;
 using static Engine.Core.References;
 
 
+#if DEBUG
+using Engine.Stripped;
+#endif
 
 
 /// <summary>
@@ -139,14 +141,66 @@ public static class MiscExtensions
 {
 
 
-
-    public static bool HasFlags<T>(this T self, ReadOnlySpan<T> vals) where T : Enum
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static bool EnumHasValue<T>(this T self, in T value) where T : struct, Enum
     {
-        for (int i = 0; i < vals.Length; i++)
-            if (!self.HasFlag(vals[i])) return false;
+        ulong a = EnumToUInt64(self);
+        ulong b = EnumToUInt64(value);
+        return (a & b) != 0;
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static bool EnumHasValues<T>(this T self, ReadOnlySpan<T> values) where T : struct, Enum
+    {
+        for (int i = 0; i < values.Length; i++)
+            if (!EnumHasValue(self, in values[i])) return false;
 
         return true;
     }
+
+
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static ulong EnumToUInt64<T>(T value) where T : struct, Enum
+    {
+        TypeCode typeCode = Type.GetTypeCode(Enum.GetUnderlyingType(typeof(T)));
+        return typeCode switch
+        {
+            TypeCode.Byte => Unsafe.As<T, byte>(ref value),
+            TypeCode.SByte => (ulong)Unsafe.As<T, sbyte>(ref value),
+            TypeCode.Int16 => (ulong)Unsafe.As<T, short>(ref value),
+            TypeCode.UInt16 => Unsafe.As<T, ushort>(ref value),
+            TypeCode.Int32 => (ulong)Unsafe.As<T, int>(ref value),
+            TypeCode.UInt32 => Unsafe.As<T, uint>(ref value),
+            TypeCode.Int64 => (ulong)Unsafe.As<T, long>(ref value),
+            TypeCode.UInt64 => Unsafe.As<T, ulong>(ref value),
+            _ => throw new InvalidOperationException()
+        };
+    }
+
+
+
+    /// <summary>
+    /// Aligns <paramref name="value"/> to <paramref name="alignment"/>, where <paramref name="alignment"/> must be a power of 2.
+    /// </summary>
+    /// <typeparam name="T"></typeparam>
+    /// <param name="value"></param>
+    /// <param name="alignment"></param>
+    /// <returns></returns>
+    /// <exception cref="ArgumentException"></exception>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static T Align<T>(this T value, T alignment)
+        where T : IBinaryInteger<T>
+    {
+#if DEBUG
+        if (!T.IsPow2(alignment))
+            throw new ArgumentException("Alignment must be a power of two");
+#endif
+
+        return (value + (alignment - T.One)) & ~(alignment - T.One);
+    }
+
+
 
 
 
@@ -176,7 +230,7 @@ public static class MiscExtensions
 
 
 /// <summary>
-/// A small unmanaged dictionary-style collection that can be stack allocated. Optimized for being frequently copied and permutated. See <see cref="SizeLimit"/>.
+/// A small unmanaged dictionary-style collection that can be stack allocated. Optimized for being frequently copied and mutated. See <see cref="SizeLimit"/>.
 /// </summary>
 public unsafe struct UnmanagedKeyValueCollection<TKey, TValue> : IEnumerable<KeyValuePair<TKey, TValue>> where TKey : unmanaged where TValue : unmanaged
 {
@@ -257,7 +311,7 @@ public unsafe struct UnmanagedKeyValueCollection<TKey, TValue> : IEnumerable<Key
 
 
 
-    public void Set(in TKey key, in TValue value)
+    public void Set(in TKey key, in TValue value, bool addNew = true)
     {
         for (int i = 0; i < Count; i++)
         {
@@ -268,6 +322,8 @@ public unsafe struct UnmanagedKeyValueCollection<TKey, TValue> : IEnumerable<Key
                 return;
             }
         }
+
+        if (!addNew) return;
 
 #if DEBUG
         if (Count >= SizeLimit)
@@ -663,130 +719,160 @@ public static class ArrayPools
 }
 
 
+
+
+
+
+
+
+
+
 /// <summary>
-/// A generic temporary unmanaged arena heap allocator. Grows as needed. Content is invalidated on calls to <see cref="Reset"/> or <see cref="Shrink"/>.
+/// A generic temporary unmanaged arena heap allocator. Grows in blocks. Content is invalidated on calls to <see cref="Reset"/> or <see cref="Shrink"/>.
 /// </summary>
-public unsafe class DynamicUnmanagedHAllocator
+public unsafe class DynamicUnmanagedHeapAllocator
 {
-    private unsafe struct Block
+    public unsafe readonly struct Block(byte* ptr, int size, int offset)
     {
-        public byte* Ptr;
-        public int Size;
-        public int Offset;
+        public readonly byte* Ptr = ptr;
+        public readonly int Size = size;
+        public readonly int Offset = offset;
     }
 
-
-    private Block _current;
-    private readonly List<Block> _oldBlocks = new();
-
+    private readonly List<Block> _blocks = new();
     private readonly int _unitSize;
     private readonly object _lock = new();
 
-    public DynamicUnmanagedHAllocator(int unitSize = 64 * 1024)
+
+    public DynamicUnmanagedHeapAllocator(int minUnitSize = 512_000)
     {
-#if DEBUG
-        if (unitSize <= 0)
-            throw new ArgumentException(nameof(unitSize));
-#endif
+        if (minUnitSize <= 0) throw new ArgumentException(nameof(minUnitSize));
+        _unitSize = minUnitSize;
 
-        _unitSize = unitSize;
-
-        _current = new Block
-        {
-            Ptr = (byte*)Marshal.AllocHGlobal(unitSize),
-            Size = unitSize,
-            Offset = 0
-        };
+        _blocks.Add(new Block
+        (
+            (byte*)Marshal.AllocHGlobal(minUnitSize),
+            minUnitSize,
+            0
+        ));
     }
 
-    public byte* Alloc(int bytes, int alignment = 16)
+
+
+    public byte* Alloc(int bytes)
     {
-#if DEBUG
-        if (bytes <= 0)
-            throw new ArgumentException(nameof(bytes));
-        if ((alignment & (alignment - 1)) != 0)
-            throw new ArgumentException("Alignment must be power of two");
-#endif
+        if (bytes <= 0) throw new ArgumentException(nameof(bytes));
 
         lock (_lock)
         {
-            int alignedOffset = (_current.Offset + (alignment - 1)) & ~(alignment - 1);
+            int lastIndex = _blocks.Count - 1;
+            var current = _blocks[lastIndex]; 
 
-            if (alignedOffset + bytes > _current.Size)
+            int alignedOffset = current.Offset.Align(16);
+
+
+            if (alignedOffset + bytes > current.Size)
             {
-                int units = (bytes + _unitSize - 1) / _unitSize;
-                int newSize = units * _unitSize;
-
-                _oldBlocks.Add(_current);
-
-                _current = new Block
-                {
-                    Ptr = (byte*)Marshal.AllocHGlobal(newSize),
-                    Size = newSize,
-                    Offset = 0
-                };
-
-
+                int newSize = Math.Max(bytes, _unitSize);
+                _blocks.Add(new Block
+                (
+                    (byte*)Marshal.AllocHGlobal(newSize),
+                    newSize,
+                    0
+                ));
+                lastIndex = _blocks.Count - 1;
                 alignedOffset = 0;
+                current = _blocks[lastIndex];
             }
 
-            byte* ptr = _current.Ptr + alignedOffset;
-            _current.Offset = alignedOffset + bytes;
+            byte* ptr = current.Ptr + alignedOffset;
+
+
+            _blocks[lastIndex] = new Block
+            (
+                current.Ptr,
+                current.Size,
+                alignedOffset + bytes
+            );
+
             return ptr;
         }
     }
 
-    /// <summary>
-    /// Resets allocation state and frees all old blocks.
-    /// The current block is retained.
-    /// </summary>
+
+
     public void Reset()
     {
         lock (_lock)
         {
-            foreach (var b in _oldBlocks)
-                Marshal.FreeHGlobal((nint)b.Ptr);
+            for (int i = 1; i < _blocks.Count; i++)
+                Marshal.FreeHGlobal((nint)_blocks[i].Ptr);
 
-            _oldBlocks.Clear();
-            _current.Offset = 0;
+
+            _blocks.RemoveRange(1, _blocks.Count - 1);
+            _blocks[0] = new Block
+            (
+                _blocks[0].Ptr,
+                _blocks[0].Size,
+                0
+            );
         }
     }
 
-    /// <summary>
-    /// Resets the allocator and shrinks back to a single unit-sized block.
-    /// </summary>
+
+
     public void Shrink()
     {
         lock (_lock)
         {
             Reset();
 
-            if (_current.Size == _unitSize)
-                return;
+            var first = _blocks[0];
+            if (first.Size == _unitSize) return;
 
-            Marshal.FreeHGlobal((nint)_current.Ptr);
 
-            _current = new Block
-            {
-                Ptr = (byte*)Marshal.AllocHGlobal(_unitSize),
-                Size = _unitSize,
-                Offset = 0
-            };
+            Marshal.FreeHGlobal((nint)first.Ptr);
+            first = new Block
+            (
+                (byte*)Marshal.AllocHGlobal(_unitSize),
+                _unitSize,
+                0
+            );
         }
     }
 
-    /// <summary>
-    /// Frees all memory owned by the allocator.
-    /// The allocator must not be used after calling this.
-    /// </summary>
+
     public void Free()
     {
         lock (_lock)
         {
-            Reset();
-            Marshal.FreeHGlobal((nint)_current.Ptr);
-            _current = default;
+            foreach (var b in _blocks)
+                Marshal.FreeHGlobal((nint)b.Ptr);
+            _blocks.Clear();
         }
+    }
+
+
+
+    /// <summary>
+    /// Returns a span of the current blocks.
+    /// </summary>
+    /// <returns></returns>
+    public ReadOnlySpan<Block> GetCurrentBlocks()
+    {
+        lock (_lock)
+            return CollectionsMarshal.AsSpan(_blocks);
+    }
+
+
+    /// <summary>
+    /// Returns true if this contains anything.
+    /// </summary>
+    /// <returns></returns>
+    public bool HasContent()
+    {
+        lock (_lock)
+            return _blocks[0].Offset != 0;
     }
 }
 
@@ -832,7 +918,7 @@ public unsafe sealed class DeferredCommandBuffer
     private unsafe struct CommandHeader
     {
         public void* ExecuteFn;
-        public ushort Size;
+        public uint Size;
 
 #if DEBUG
         public int DebugIndex;
@@ -842,11 +928,7 @@ public unsafe sealed class DeferredCommandBuffer
 
 
 
-
-    private const int BufferSize = 1_000_000;
-    private readonly byte[] _buffer = new byte[BufferSize];
-    private int _offset;
-
+    private readonly DynamicUnmanagedHeapAllocator allocator = new DynamicUnmanagedHeapAllocator(); 
 
 
 
@@ -864,18 +946,13 @@ public unsafe sealed class DeferredCommandBuffer
             CommandHeader header = new CommandHeader
             {
                 ExecuteFn = fn,
-                Size = (ushort)sizeof(CommandHeader)
+                Size = (uint)sizeof(CommandHeader).Align(16)
             };
 
 
-            fixed (byte* dst = &_buffer[_offset])
-            {
-                Unsafe.WriteUnaligned(dst, header);
-
-                PushTrace(dst);
-            }
-
-            _offset += header.Size;
+            var dst = allocator.Alloc((int)header.Size);
+            Unsafe.WriteUnaligned(dst, header);
+            PushTrace(dst);
         }
 
     }
@@ -889,30 +966,28 @@ public unsafe sealed class DeferredCommandBuffer
         {
             CommandHeader header = new CommandHeader
             {
-                ExecuteFn = (void*)(delegate*<void*, void>)&Invoke,
-                Size = (ushort)(
+                ExecuteFn = (delegate*<void*, void>)&Invoke,
+                Size = (uint)(
                     sizeof(CommandHeader) +
                     sizeof(void*) +   
-                    sizeof(TData))
+                    sizeof(TData)).Align(16)
             };
 
 
-            fixed (byte* dst = &_buffer[_offset])
-            {
-                byte* ptr = dst;
 
-                Unsafe.WriteUnaligned(ptr, header);
-                ptr += sizeof(CommandHeader);
+            var dst = allocator.Alloc((int)header.Size);
 
-                *(void**)ptr = (void*)fn;
-                ptr += sizeof(void*);
+            byte* ptr = dst;
 
-                Unsafe.WriteUnaligned(ptr, data);
+            Unsafe.WriteUnaligned(ptr, header);
+            ptr += sizeof(CommandHeader);
 
-                PushTrace(dst);
-            }
+            *(void**)ptr = fn;
+            ptr += sizeof(void*);
 
-            _offset += header.Size;
+            Unsafe.WriteUnaligned(ptr, data);
+
+            PushTrace(dst);
         }
 
 
@@ -936,19 +1011,17 @@ public unsafe sealed class DeferredCommandBuffer
         {
             CommandHeader header = new CommandHeader
             {
-                ExecuteFn = (void*)(delegate*<void*, void>)&Execute<T>,
-                Size = (ushort)(sizeof(CommandHeader) + sizeof(T))
+                ExecuteFn = (delegate*<void*, void>)&Execute<T>,
+                Size = (uint)(sizeof(CommandHeader) + sizeof(T)).Align(16)
             };
+            
 
-            fixed (byte* dst = &_buffer[_offset])
-            {
-                Unsafe.WriteUnaligned(dst, header);
-                Unsafe.WriteUnaligned(dst + sizeof(CommandHeader), cmd);
+            var dst = allocator.Alloc((int)header.Size);
 
-                PushTrace(dst);
-            }
+            Unsafe.WriteUnaligned(dst, header);
+            Unsafe.WriteUnaligned(dst + sizeof(CommandHeader), cmd);
 
-            _offset += header.Size;
+            PushTrace(dst);
         }
 
         static void Execute<TCmd>(void* ptr)
@@ -964,9 +1037,14 @@ public unsafe sealed class DeferredCommandBuffer
 
 
 
+
+
+
     [Conditional("DEBUG")]
     private unsafe void PushTrace(byte* dst)
     {
+#if DEBUG
+
         int debugidx = -1;
 
         if (EngineDebug.DeferredCommandStackTraceStorage)
@@ -976,7 +1054,7 @@ public unsafe sealed class DeferredCommandBuffer
         }
 
         ((CommandHeader*)dst)->DebugIndex = debugidx;
-
+#endif
     }
 
 
@@ -989,7 +1067,7 @@ public unsafe sealed class DeferredCommandBuffer
     public bool ContainsCommands()
     {
         lock (this)
-            return _offset != 0;
+            return allocator.HasContent();
     }
 
 
@@ -1010,12 +1088,14 @@ public unsafe sealed class DeferredCommandBuffer
 
             if (!ContainsCommands()) return;
 
+            var blocks = allocator.GetCurrentBlocks();
 
 
-            fixed (byte* start = _buffer)
+            for (int b = 0; b < blocks.Length; b++)
             {
-                byte* ptr = start;
-                byte* end = start + _offset;
+                var block = blocks[b];
+                byte* ptr = block.Ptr;
+                byte* end = block.Ptr + block.Offset;
 
                 while (ptr < end)
                 {
@@ -1039,10 +1119,10 @@ public unsafe sealed class DeferredCommandBuffer
                     }
 #endif
 
-
                     ptr += header->Size;
                 }
             }
+
 
             Reset();
         }
@@ -1050,8 +1130,11 @@ public unsafe sealed class DeferredCommandBuffer
     }
 
 
+    [Conditional("DEBUG")]
     private void Throw(CommandHeader* header, Exception ex)
     {
+#if DEBUG
+
         if (header->DebugIndex != -1)
         {
             var originTrace = _debugOrigins[header->DebugIndex];
@@ -1063,6 +1146,8 @@ public unsafe sealed class DeferredCommandBuffer
         }
 
         throw ex;
+
+#endif
     }
 
 
@@ -1077,7 +1162,7 @@ public unsafe sealed class DeferredCommandBuffer
     {
         lock (this)
         {
-            _offset = 0;
+            allocator.Reset();
 #if DEBUG
             _debugOrigins.Clear();
 #endif

@@ -223,6 +223,7 @@ public static class Logic
 
     public static float Delta { get; private set; }
 
+
     public static float TimeActive { get; private set; }
     public static ulong TimeActiveMsec { get; private set; }
 
@@ -251,6 +252,8 @@ public static class Logic
 
     public static void LogicThreadLoop()
     {
+
+        Rendering.ResetQuadDrawResources();
 
 
         lock (StartOfFrameActions)
@@ -302,9 +305,14 @@ public static class Logic
         RenderThread.WaitForFlushing();
 
 
+#if DEBUG
+        EngineDebug.LogicThreadProcessingTime = (float)LogicStopWatch.Elapsed.TotalSeconds;
+#endif
 
         //wait for framerate lock
-        while (LogicStopWatch.Elapsed.TotalSeconds < (1d / EngineSettings.LogicRateTarget)) ;
+
+        if (EngineSettings.LogicRateTarget != 0)
+            while (LogicStopWatch.Elapsed.TotalSeconds < (1d / EngineSettings.LogicRateTarget)) ;
 
 
 
