@@ -15,6 +15,7 @@ using static Engine.Core.References;
 
 #if DEBUG
 using System.Text.Json;
+using static Engine.Core.IO;
 #endif
 
 
@@ -32,13 +33,13 @@ public partial class MaterialResource :
 
 
 
-    public readonly RefCountCollections.RefCountedDictionary<string, BackendResourceSetReference> MaterialResourceSets = new();
+    public readonly Dictionary<string, BackendResourceSetReference> MaterialResourceSets = new();
 
 
     public readonly Rendering.NamedShaderReference ShaderRef;
 
 
-    public readonly RefCountCollections.RefCountedDictionary<string, BackendTextureAndSamplerReferencesPair> Textures;
+    public readonly Dictionary<string, BackendTextureAndSamplerReferencesPair> Textures;
     public readonly Dictionary<string, object> Parameters;
 
 
@@ -46,7 +47,7 @@ public partial class MaterialResource :
     public MaterialResource(Rendering.NamedShaderReference shaderRef,
 
                             Dictionary<string, object> parameters,
-                            RefCountCollections.RefCountedDictionary<string, BackendTextureAndSamplerReferencesPair> textures,
+                            Dictionary<string, BackendTextureAndSamplerReferencesPair> textures,
 
                             string key = null) : base(key)
     
@@ -56,13 +57,6 @@ public partial class MaterialResource :
         Textures = textures;
         Parameters = parameters;
 
-    }
-
-    protected override void OnFree()
-    {
-        Textures?.Free();
-
-        base.OnFree();
     }
 
 
@@ -86,7 +80,7 @@ public partial class MaterialResource :
 
 
 
-    public static async Task<GameResource> Load(Loading.AssetByteStream stream, string key)
+    public static async Task<GameResource> Load(AssetByteStream stream, string key)
     {
 
         var reader = ValueReader.FromStream(stream);
@@ -100,7 +94,7 @@ public partial class MaterialResource :
 
         // --- load textures ---
 
-        Loading.ExitAssetLoadSemaphore();
+        ExitResourceLoadThrottleSemaphore();
 
 
         var textureCount = reader.ReadUnmanaged<byte>();
@@ -109,19 +103,19 @@ public partial class MaterialResource :
         var texturetasks = new Dictionary<string, (Task<TextureResource>, SamplerDetails)>(textureCount);
 
         for (ulong i = 0; i < textureCount; i++)
-            texturetasks[reader.ReadString()] = (Loading.LoadResource<TextureResource>(reader.ReadString()), reader.ReadUnmanaged<SamplerDetails>());
+            texturetasks[reader.ReadString()] = (LoadResource<TextureResource>(reader.ReadString()), reader.ReadUnmanaged<SamplerDetails>());
 
 
 
         // --- collect textures ---
 
-        var finaltextures = new RefCountCollections.RefCountedDictionary<string, BackendTextureAndSamplerReferencesPair>(textureCount);
+        var finaltextures = new Dictionary<string, BackendTextureAndSamplerReferencesPair>(textureCount);
 
         foreach (var tex in texturetasks)
             finaltextures[tex.Key] = new BackendTextureAndSamplerReferencesPair((await tex.Value.Item1).BackendReference, BackendSamplerReference.Get(tex.Value.Item2));
 
 
-        await Loading.EnterAssetLoadSemaphore();
+        await EnterResourceLoadThrottleSemaphore();
 
 
 
@@ -172,7 +166,7 @@ public partial class MaterialResource :
 
     public static async Task<bool> Validate(byte[] validationBlock, string key) => true;
 
-    public static async Task<IConverts.FinalAssetBytes> ConvertToFinalAssetBytes(Loading.Bytes bytes, string key)
+    public static async Task<IConverts.FinalAssetBytes> ConvertToFinalAssetBytes(Bytes bytes, string key)
     {
 
 

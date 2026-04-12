@@ -20,47 +20,31 @@ using Engine.Stripped;
 #endif
 
 
-/// <summary>
-/// A base for anything manually reference counted, inherited from <see cref="Freeable"/>. <br />
-/// On construction, <see cref="UserCount"/> will be 0.
-/// </summary>
-public abstract class RefCounted : Freeable
-{
-    public uint UserCount { get; private set; }
 
 
-    public void AddUser()
-    {
-        lock (this)
-        {
-            UserCount++;
-        }
-    }
 
-
-    public void RemoveUser()
-    {
-        lock (this)
-        {
-            if (Valid)
-            {
-                UserCount--;
-                if (UserCount <= 0) Free();
-            }
-        }
-    }
-
-}
 
 /// <summary>
 /// A base for any object with a lifetime.
-/// <br /> <b><see cref="Free"/>, or <see cref="IDisposable.Dispose"/>, should always be called to destroy a <see cref="Freeable"/>.</b>
 /// </summary>
 public abstract class Freeable : IDisposable
 {
 
+
+    /// <summary>
+    /// A reference to this. Used by <see cref="References.GetWeakRef{T}(T, bool)"/>.
+    /// </summary>
+    public readonly WeakObjRef SelfRef;
+
+    public Freeable()
+    {
+        SelfRef = this.GetWeakRef(false);
+    }
+
     public bool Valid { get; private set; } = true;
     
+
+
 
     public void Free()
     {
@@ -68,77 +52,63 @@ public abstract class Freeable : IDisposable
         {
             if (Valid)
             {
+                GC.SuppressFinalize(this);
+
                 Valid = false;
                 OnFreeEvent.Invoke();
                 OnFree();
-
-
-                // debug finalizer can catch memory leaks
-#if !DEBUG
-                GC.SuppressFinalize(this);
-#endif
-
             }
         }
     }
 
 
-    protected abstract void OnFree();
-
-
-
-#pragma warning disable CA1816  // Dispose methods should call SuppressFinalize
+#pragma warning disable CA1816 
 
     public void Dispose() => Free();
 
 #pragma warning restore CA1816 
 
 
+    ~Freeable() => Dispose();
 
 
+
+    protected abstract void OnFree();
 
     public readonly ThreadSafeEventAction OnFreeEvent = new();
-
-
-
-
-
-    /// <summary>
-    /// A reference to this. Used by <see cref="References.GetRef{T}(T, bool)"/>.
-    /// </summary>
-    public readonly WeakObjRef SelfRef;
-
-    public Freeable()
-    {
-        SelfRef = this.GetRef(false);
-
-#if DEBUG
-        if (EngineDebug.FreeableConstructorStackTraceStorage) 
-            ConstructorStackTrace = new();
-#endif
-    }
-
-
-
-#if DEBUG
-
-    private readonly StackTrace ConstructorStackTrace;
-
-    ~Freeable()
-    {
-        if (Valid) 
-            throw new Exception($"Memory leak: this {nameof(Freeable)} was not freed, but is now being garbage collected. \n --- CREATION STACKTRACE --- \n {ConstructorStackTrace.ToClickableSrcLinesString()}");
-    }
-
-#endif
 
 
 }
 
 
 
+
+
+
+/// <summary>
+/// A disposable wrapper over <see cref="byte[]"/> (simply sets own reference to <paramref name="byteArray"/> to null upon disposal to allow GC).
+/// </summary>
+public sealed class Bytes(byte[] byteArray) : IDisposable
+{
+    public byte[] ByteArray = byteArray;
+    public void Dispose() => ByteArray = null;
+}
+
+
+
+
+
+
+
+
 public static class MiscExtensions
 {
+
+
+
+
+
+
 
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -180,6 +150,9 @@ public static class MiscExtensions
 
 
 
+
+
+
     /// <summary>
     /// Aligns <paramref name="value"/> to <paramref name="alignment"/>, where <paramref name="alignment"/> must be a power of 2.
     /// </summary>
@@ -204,17 +177,19 @@ public static class MiscExtensions
 
 
 
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static Vector4 ToVector4(this Color Col)
-    {
-        return new Vector4(Col.R, Col.G, Col.B, Col.A)/255f;
-    }
+
+
+
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static Color ToColor(this Vector4 Col)
-    {
-        return Color.FromArgb((int)(Col.W * 255), (int)(Col.X * 255), (int)(Col.Y * 255), (int)(Col.Z * 255));
-    }
+    public static Vector4 ToVector4(this Color Col)
+        => new Vector4(Col.R, Col.G, Col.B, Col.A)/255f;
+
+
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static Color ToColor(this Vector4 Col) 
+        => Color.FromArgb((int)(Col.W * 255), (int)(Col.X * 255), (int)(Col.Y * 255), (int)(Col.Z * 255));
 
 
 }
@@ -404,7 +379,7 @@ public unsafe struct UnmanagedKeyValueCollection<TKey, TValue> : IEnumerable<Key
     /// </summary>
     /// <param name="b"></param>
     /// <returns></returns>
-    public readonly UnmanagedKeyValueCollection<TKey, TValue> Combine(in UnmanagedKeyValueCollection<TKey, TValue> b)
+    public readonly UnmanagedKeyValueCollection<TKey, TValue> Combine(UnmanagedKeyValueCollection<TKey, TValue> b)
     {
         if (Count == 0 && b.Count == 0) return default;
         if (Count == 0) return b;
@@ -415,8 +390,8 @@ public unsafe struct UnmanagedKeyValueCollection<TKey, TValue> : IEnumerable<Key
 
         for (int i = 0; i < b.Count; i++)
         {
-            var key = b.KeyValuePairs[i].Key;
-            result[key] = b[key];
+            ref var kv = ref b.KeyValuePairs[i];
+            result.Set(kv.Key, kv.Value);
         }
 
         return result;

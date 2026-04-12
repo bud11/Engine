@@ -1,6 +1,7 @@
 ﻿
 
 
+using System.Diagnostics;
 using System.Numerics;
 
 
@@ -20,8 +21,26 @@ public static class EngineMath
     {
         public static readonly AABB MaxValue = new AABB(Vector3.Zero, new Vector3(float.MaxValue));
 
+
+
+
         public Vector3 Min;
         public Vector3 Max;
+
+
+
+        [Conditional("DEBUG")]
+        public void Validate()
+        {
+            if (float.IsNaN(Min.X) || float.IsNaN(Min.Y) || float.IsNaN(Min.Z) ||
+                float.IsNaN(Max.X) || float.IsNaN(Max.Y) || float.IsNaN(Max.Z))
+                throw new Exception($"AABB contains NaN | Min={Min} Max={Max}");
+
+            if (Min.X > Max.X || Min.Y > Max.Y || Min.Z > Max.Z)
+                throw new Exception($"AABB Min > Max | Min={Min} Max={Max}");
+        }
+
+
 
 
         private AABB(Vector3 min, Vector3 max)
@@ -84,11 +103,32 @@ public static class EngineMath
 
 
 
-        public static AABB operator *(AABB left, Matrix4x4 transform) 
-            => new AABB(transform.Transform(left.Min), transform.Transform(left.Max));
+        public static AABB operator *(AABB a, Matrix4x4 m)
+        {
+            Vector3 min = new(float.MaxValue);
+            Vector3 max = new(float.MinValue);
 
+            Span<Vector3> corners =
+            [
+                new(a.Min.X, a.Min.Y, a.Min.Z),
+                new(a.Min.X, a.Min.Y, a.Max.Z),
+                new(a.Min.X, a.Max.Y, a.Min.Z),
+                new(a.Min.X, a.Max.Y, a.Max.Z),
+                new(a.Max.X, a.Min.Y, a.Min.Z),
+                new(a.Max.X, a.Min.Y, a.Max.Z),
+                new(a.Max.X, a.Max.Y, a.Min.Z),
+                new(a.Max.X, a.Max.Y, a.Max.Z),
+            ];
 
+            foreach (var c in corners)
+            {
+                var t = m.Transform(c);
+                min = Vector3.Min(min, t);
+                max = Vector3.Max(max, t);
+            }
 
+            return new AABB(min, max);
+        }
 
 
 

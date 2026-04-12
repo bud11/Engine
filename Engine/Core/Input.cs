@@ -609,6 +609,7 @@ public static class Input
         public Vector2 GetWindowRelativeMousePosition() => new(MouseX, MouseY);
 
 
+
         public float GetMouseScrollDelta() => Window.MouseScrollWheelDelta;
         public Vector2 GetMousePositionDelta() => new Vector2(MouseDeltaX, MouseDeltaY) / Logic.Delta;
 

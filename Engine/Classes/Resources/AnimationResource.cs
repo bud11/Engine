@@ -16,6 +16,7 @@ using static Engine.Core.Parsing;
 
 #if DEBUG
 using System.Text.Json;
+using static Engine.Core.IO;
 #endif
 
 
@@ -59,7 +60,7 @@ public class AnimationResource : GameResource, GameResource.ILoads
 
     public static async Task<bool> Validate(byte[] validationBlock, string key) => true;
 
-    public static async Task<IConverts.FinalAssetBytes> ConvertToFinalAssetBytes(Loading.Bytes bytes, string key)
+    public static async Task<IConverts.FinalAssetBytes> ConvertToFinalAssetBytes(Bytes bytes, string key)
     {
 
         var dict = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(bytes.ByteArray, Parsing.JsonAssetLoadingOptions);
@@ -136,7 +137,7 @@ public class AnimationResource : GameResource, GameResource.ILoads
 
 
 
-    public static async Task<GameResource> Load(Loading.AssetByteStream stream, string key)
+    public static async Task<GameResource> Load(AssetByteStream stream, string key)
     {
 
         var read = ValueReader.FromStream(stream);

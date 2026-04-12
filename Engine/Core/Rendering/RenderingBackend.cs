@@ -79,7 +79,7 @@ public static partial class RenderingBackend
     /// <summary>
     /// Represents a real gpu-backed resource.
     /// </summary>
-    public abstract class BackendReference : RefCounted
+    public abstract class BackendReference : Freeable
     {
         /// <summary>
         /// A rendering-backend-specific object. Usually contains something like a handle and possibly some internal state. Can be null.
@@ -94,18 +94,18 @@ public static partial class RenderingBackend
             BackendRef = backendRef;
 
             lock (AllBackendReferences)
-                AllBackendReferences.Add(this);
+                AllBackendReferences.Add(this.GetWeakRef());
         }
 
         protected override void OnFree()
         {
             lock (AllBackendReferences)
-                AllBackendReferences.Remove(this);
+                AllBackendReferences.Remove(this.GetWeakRef());
         }
 
     }
 
-    private static readonly HashSet<BackendReference> AllBackendReferences = new();
+    private static readonly HashSet<WeakObjRef<BackendReference>> AllBackendReferences = new();
 
 
 
@@ -236,15 +236,8 @@ public static partial class RenderingBackend
 
 
 
-    public class VertexAttributeDefinitionBufferPair : RefCounted
+    public class VertexAttributeDefinitionBufferPair
     {
-
-
-        protected override void OnFree() 
-            => ((BackendBufferReference)Buf).RemoveUser();
-
-
-
         private BackendBufferReference.IVertexBuffer Buf;
         private WeakObjRef<BackendBufferReference.IVertexBuffer> BufRef;
 
@@ -254,7 +247,7 @@ public static partial class RenderingBackend
             set
             {
                 Buf = value;
-                BufRef = Buf.GetRef();
+                BufRef = Buf.GetWeakRef();
             }
         }
 
@@ -263,8 +256,6 @@ public static partial class RenderingBackend
 
         public VertexAttributeDefinitionBufferPair(BackendBufferReference.IVertexBuffer buffer, VertexAttributeDefinition definition)
         {
-            ((BackendBufferReference)buffer).AddUser();
-
             Buffer = buffer;
             Definition = definition;
         }
@@ -276,24 +267,25 @@ public static partial class RenderingBackend
     }
 
 
-    public static UnmanagedKeyValueCollection<WeakObjRef<string>, VertexAttributeDefinitionBufferPair.Struct> VertexAttributesToUnmanaged(this RefCountCollections.RefCountedDictionary<string, VertexAttributeDefinitionBufferPair> dict)
+
+
+    public static UnmanagedKeyValueCollection<WeakObjRef<string>, VertexAttributeDefinitionBufferPair.Struct> VertexAttributesToUnmanaged(this Dictionary<string, VertexAttributeDefinitionBufferPair> dict)
     {
-        ref var basecol = ref dict.AsUnmanaged();
+        var basecol = dict.ToUnmanagedKV();
 
         var attrs = new UnmanagedKeyValueCollection<WeakObjRef<string>, VertexAttributeDefinitionBufferPair.Struct>();
 
+        ref var kvs = ref basecol.KeyValuePairs;
+
         for (int i = 0; i < basecol.Count; i++)
         {
-            ref var get = ref basecol.KeyValuePairs[i];
+            ref var get = ref kvs[i];
             attrs.KeyValuePairs[attrs.Count++] = new(get.Key, get.Value.Dereference().GetStruct());
         }
 
 
         return attrs;
     }
-
-
-
 
 
 
@@ -434,7 +426,12 @@ public static partial class RenderingBackend
 
         protected override void OnFree()
         {
-            Backend.DestroyBuffer(this);
+            _ = PushDeferredIdleRenderThreadAction(() =>
+            {
+                Backend.DestroyBuffer(this);
+                Kernel.ReleaseVram(Size);
+                return null;
+            });
 
             base.OnFree();
         }
@@ -548,6 +545,10 @@ public static partial class RenderingBackend
 
 
             object backendRef = null;
+
+
+            Kernel.TryAllocateVram(size);
+
 
             if (!initialContent.IsEmpty)
                 fixed (void* p = initialContent)
@@ -717,7 +718,7 @@ public static partial class RenderingBackend
 
             Unsafe.CopyBlockUnaligned(alloc, (byte*)write.Content, write.Length);
 
-            var cmddata = (new WriteRange(write.Offset, write.Length, alloc), this.GetRef());
+            var cmddata = (new WriteRange(write.Offset, write.Length, alloc), this.GetWeakRef());
 
 
             if (nessecary)
@@ -766,9 +767,9 @@ public static partial class RenderingBackend
         public readonly ShaderMetadata.ShaderResourceSetMetadata Metadata;
 
 
-        private readonly RefCountCollections.RefCountedArray<RefCounted> Contents;
+        private readonly IBackendResourceReference[] Contents;
 
-        public ReadOnlySpan<RefCounted> GetContents() => Contents.AsSpan();
+        public ReadOnlySpan<IBackendResourceReference> GetContents() => Contents.AsSpan();
 
         public uint ResourceCount => (uint)Metadata.Declaration.Length;
 
@@ -779,7 +780,7 @@ public static partial class RenderingBackend
         private BackendResourceSetReference(ShaderMetadata.ShaderResourceSetMetadata metadata, object backendResource) : base(backendResource)
         {
             Metadata = metadata;
-            Contents = new ((int)ResourceCount);
+            Contents = new IBackendResourceReference[ResourceCount];
         }
 
 
@@ -850,7 +851,7 @@ public static partial class RenderingBackend
 
 
 
-            var final = (RefCounted)(dummy ? null : resource);
+            var final = dummy ? null : resource;
 
             bool changed = false;
             lock (this)
@@ -865,8 +866,12 @@ public static partial class RenderingBackend
 
             if (changed)
             {
+
                 var write = new ResourceSetResourceBind(binding, resource, range);
-                PushDeferredNessecaryPreRenderThreadCommand((this.GetRef(), write), &Execute);
+
+                write.ResourceHandle.ValidateNotNull();
+
+                PushDeferredNessecaryPreRenderThreadCommand((this.GetWeakRef(), write), &Execute);
 
 
                 static void Execute((WeakObjRef<BackendResourceSetReference> Target, ResourceSetResourceBind Bind)* ptr)
@@ -961,12 +966,16 @@ public static partial class RenderingBackend
         public readonly TextureFormats TextureFormat;
         public readonly uint MipCount;
 
-        private BackendTextureReference(object backendRef, Vector3<uint> dimensions, TextureTypes type, TextureFormats textureFormat, uint mipCount) : base(backendRef)
+        public readonly uint FullSizeInMemory;
+
+
+        private BackendTextureReference(object backendRef, Vector3<uint> dimensions, TextureTypes type, TextureFormats textureFormat, uint mipCount, uint fullSizeInMemory) : base(backendRef)
         {
             Dimensions = dimensions;
             TextureType = type;
             TextureFormat = textureFormat;
             MipCount = mipCount;
+            FullSizeInMemory = fullSizeInMemory;
         }
 
 
@@ -1015,7 +1024,23 @@ public static partial class RenderingBackend
 
 
 
-            return new BackendTextureReference(Backend.CreateTexture(dimensions, type, format, FramebufferAttachmentCompatible, Mips), dimensions, type, format, Mips == null ? 1 : (uint)Mips.Length);
+            uint mipReq = 0;
+
+            if (Mips != null)
+            {
+                for (int i = 0; i < Mips.Length; i++)
+                    mipReq += (uint)Mips[i].Length;
+            }
+            else 
+                mipReq = GetTextureSizeBytes(dimensions, format);
+
+
+
+            Kernel.TryAllocateVram(mipReq);
+
+
+            return new BackendTextureReference(Backend.CreateTexture(dimensions, type, format, FramebufferAttachmentCompatible, Mips), dimensions, type, format, Mips == null ? 1 : (uint)Mips.Length, mipReq);
+
 
 
 
@@ -1069,7 +1094,13 @@ public static partial class RenderingBackend
 
         protected override void OnFree()
         {
-            PushDeferredIdleRenderThreadAction(() => { Backend.DestroyTexture(this); return null; });
+            _ = PushDeferredIdleRenderThreadAction(() =>
+            {
+                Backend.DestroyTexture(this);
+                Kernel.ReleaseVram(FullSizeInMemory);
+                return null;
+            });
+
 
             base.OnFree();
         }
@@ -1091,7 +1122,7 @@ public static partial class RenderingBackend
 
         protected override void OnFree()
         {
-            PushDeferredIdleRenderThreadAction(() => { Backend.DestroyTextureSampler(this); return null; });
+            _ = PushDeferredIdleRenderThreadAction(() => { Backend.DestroyTextureSampler(this); return null; });
             base.OnFree();
         }
 
@@ -1133,7 +1164,7 @@ public static partial class RenderingBackend
 
 
 
-    public class BackendTextureAndSamplerReferencesPair : RefCounted, IBackendResourceReference
+    public class BackendTextureAndSamplerReferencesPair : IBackendResourceReference
     {
         public readonly BackendTextureReference Texture;
         public readonly BackendSamplerReference Sampler;
@@ -1142,31 +1173,15 @@ public static partial class RenderingBackend
         {
             Texture = texture;
             Sampler = sampler;
-
-            texture.AddUser();
-            sampler.AddUser();
         }
 
-        protected override void OnFree()
-        {
-            Texture.RemoveUser();
-            Sampler.RemoveUser();
-
-        }
     }
 
 
 
-    public class BackendTextureAndSamplerReferencesPairsArray(BackendTextureAndSamplerReferencesPair[] array) : RefCounted, IBackendResourceReference
+    public class BackendTextureAndSamplerReferencesPairsArray(BackendTextureAndSamplerReferencesPair[] array) : IBackendResourceReference
     {
         public readonly ImmutableArray<BackendTextureAndSamplerReferencesPair> Array = array.ToImmutableArray();
-
-        protected override void OnFree()
-        {
-            for (int i = 0; i < Array.Length; i++) 
-                Array[i].RemoveUser();
-
-        }
     }
 
 
@@ -1175,8 +1190,8 @@ public static partial class RenderingBackend
 
 
 
-    private static RefCountCollections.RefCountedDictionary<string, BackendShaderReference> Shaders = new();
-    private static RefCountCollections.RefCountedDictionary<string, BackendComputeShaderReference> ComputeShaders = new();
+    private static Dictionary<string, BackendShaderReference> Shaders = new();
+    private static Dictionary<string, BackendComputeShaderReference> ComputeShaders = new();
 
 
 
@@ -1214,7 +1229,10 @@ public static partial class RenderingBackend
             var shader = new BackendShaderReference(src.Metadata, Backend.CreateShader(src));
 
             lock (Shaders)
+            {
+                if (Shaders.TryGetValue(name, out var get)) get.Free();
                 Shaders[name] = shader;
+            }
 
             return shader;
         }
@@ -1273,8 +1291,12 @@ public static partial class RenderingBackend
         {
             var shader = new BackendComputeShaderReference(src.Metadata, Backend.CreateComputeShader(src));
 
-            lock (ComputeShaders)
+
+            lock (Shaders)
+            {
+                if (ComputeShaders.TryGetValue(name, out var get)) get.Free();
                 ComputeShaders[name] = shader;
+            }
 
             return shader;
         }
@@ -1306,13 +1328,15 @@ public static partial class RenderingBackend
 
         var ResourceSetBinds = new BackendResourceSetReference[ResourceSets.Count];
 
-        foreach (var resKV in ResourceSets)
-        {
-            if (!DummyResourceSets.TryGetValue(resKV.Value.Metadata, out BackendResourceSetReference set))
-                DummyResourceSets[resKV.Value.Metadata] = set = BackendResourceSetReference.CreateFromMetadata(resKV.Value.Metadata);
 
-            ResourceSetBinds[resKV.Value.Binding] = set;
-        }
+        lock (DummyResourceSets)
+            foreach (var resKV in ResourceSets)
+            {
+                if (!DummyResourceSets.TryGetValue(resKV.Value.Metadata, out BackendResourceSetReference set))
+                    DummyResourceSets[resKV.Value.Metadata] = set = BackendResourceSetReference.CreateFromMetadata(resKV.Value.Metadata);
+
+                ResourceSetBinds[resKV.Value.Binding] = set;
+            }
 
 
         return ImmutableArray.ToImmutableArray(ResourceSetBinds);
@@ -1679,9 +1703,9 @@ public static partial class RenderingBackend
 
     public enum FrameBufferPipelineAttachmentAccessFlags : byte
     {
-        None = 1 << 0,
-        Read = 1 << 1,
-        Write = 1 << 2,
+        None = 0,
+        Read = 1 << 0,
+        Write = 1 << 1,
     }
 
 
@@ -1923,7 +1947,7 @@ public static partial class RenderingBackend
         public ResourceSetResourceBind(uint binding, IBackendResourceReference resource, uint range = 0)
         {
             Binding = binding;
-            ResourceHandle = resource.GetRef();
+            ResourceHandle = resource.GetWeakRef();
             Range = range;
         }
     }
@@ -2048,11 +2072,8 @@ public static partial class RenderingBackend
         
         CheckOutsideOfRendering();
 
-        lock (AllBackendReferences)
-        {
-            foreach (var res in AllBackendReferences)
-                res.Free();
-        }
+        lock(AllBackendReferences)
+            AllBackendReferences.Clear();
 
         Backend.Destroy();
     }

@@ -32,17 +32,16 @@ public abstract partial class AABBObject : GameObject
 
     protected override void GlobalTransformChanged()
     {
-        CachedAABBIsDirty = true;
-
         base.GlobalTransformChanged();
+
+        CachedAABBIsDirty = true;
     }
+
 
 
 
     public AABB GetOrRecalculateCachedGlobalAABB()
     {
-        return AABB.FromCenterExtent(Vector3.Zero, Vector3.One) * GlobalTransform;
-
 
         if (!IsEnableCameraCullingInTree()) return AABB.MaxValue;
 
@@ -50,7 +49,6 @@ public abstract partial class AABBObject : GameObject
         if (CachedAABBIsDirty)
         {
             CachedCurrentGlobalSpaceAABB = BaseAABB * GlobalTransform;
-
             CachedAABBIsDirty = false;
         }
 

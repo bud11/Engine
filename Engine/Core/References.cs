@@ -106,19 +106,49 @@ public static class References
         /// Resolves the underlying instance. Returns null if it no longer exists.
         /// </summary>
         /// <returns></returns>
-        public object? Dereference()
+        public object? Dereference() => Dereference(out var _);
+
+
+        public enum Status
         {
-            if (ID == 0) return null;
+            NullDefault,
+            Alive,
+            Dead
+        }
+
+
+        public object? Dereference(out Status status)
+        {
+            if (ID == 0)
+            {
+                status = Status.NullDefault;
+                return null;
+            }
+
+
 
             var slot = Volatile.Read(ref ReferenceTable[ID]);
-            
-            if (slot == null 
-                || slot.Gen != Gen 
-                || !slot.Obj.IsAllocated) return null;
+
+            status = Status.Dead;
+
+            if (slot == null
+                || slot.Gen != Gen
+                || !slot.Obj.IsAllocated)
+            {
+                status = Status.Dead;
+                return null;
+            }
 
 
-            return slot.Obj.Target;
+
+            var target = slot.Obj.Target;
+
+            if (target == null) return null;
+
+            status = Status.Alive;
+            return target;
         }
+
 
 
 
@@ -158,10 +188,20 @@ public static class References
 #if DEBUG
         public override string ToString()
         {
-            var deref = Dereference();
-            return $"ObjRef: {(deref == null ? "null" : deref.ToString())}";
+            var deref = Dereference(out var status);
+            return $"ObjRef: {(deref == null ? status.ToString() : deref.ToString())}";
         }
 #endif
+
+        [Conditional("DEBUG")]
+        [DebuggerHidden]
+        [StackTraceHidden]
+        public readonly void ValidateNotNull()
+        {
+            if (Dereference() == null)
+                throw new Exception("This reference is null");
+        }
+
     }
 
 
@@ -191,6 +231,9 @@ public static class References
         /// </summary>
         /// <returns></returns>
         public T Dereference() => (T)Ref.Dereference();
+
+        public T Dereference(out WeakObjRef.Status status) => (T)Ref.Dereference(out status);
+
 
 
         /// <summary>
@@ -237,11 +280,18 @@ public static class References
 #if DEBUG
         public override string ToString()
         {
-            var deref = Dereference();
-            return $"ObjRef<{typeof(T).Name}>: {(deref == null ? "null" : deref.ToString())}";
+            var deref = Dereference(out var status);
+            return $"ObjRef<{typeof(T).Name}>: {(deref == null ? status.ToString() : deref.ToString())}";
         }
-
 #endif
+
+        [Conditional("DEBUG")]
+        [DebuggerHidden]
+        [StackTraceHidden]
+        public readonly void ValidateNotNull() => Ref.ValidateNotNull();
+
+
+
     }
 
 
@@ -328,11 +378,11 @@ public static class References
 
 
     /// <summary>
-    /// Fetches or creates a stable weak reference for an object, meaning it gets automatically cleaned up once the object is garbage collected, and does NOT count as a reference that prevents said garbage collection.
+    /// Fetches or creates a stable weak reference for an <see cref="object"/>, meaning it gets automatically cleaned up once the object is garbage collected, and does NOT count as a reference that prevents said garbage collection.
     /// <br/> Each object can only ever have one <see cref="WeakObjRef"/>/<see cref="WeakObjRef{T}"/> at a time, assuming <paramref name="checkForExisting"/> is true. 
     /// <br/> <paramref name="checkForExisting"/> should never be false unless you absolutely know the object does not have a ref allocated and you have very good reason to prevent the check.
     /// </summary>
-    public static WeakObjRef<T> GetRef<T>(this T obj, bool checkForExisting = true) where T : class
+    public static WeakObjRef<T> GetWeakRef<T>(this T obj, bool checkForExisting = true) where T : class
     {
 
         if (obj == null) 
@@ -415,7 +465,7 @@ public static class References
 
             // refslot is immutable to prevent volatile read errors later
 
-            var gen = (slotRef == null) ? 0 : slotRef.Gen;
+            var gen = (slotRef == null) ? 0 : slotRef.Gen+1;
 
             slotRef = new RefSlot(gen, GCHandle.Alloc(obj, GCHandleType.Weak));
 
@@ -437,6 +487,57 @@ public static class References
 
     }
 
-    
+
+
+
+
+
+
+
+
+
+
+
+
+    public static UnmanagedKeyValueCollection<WeakObjRef<TKey>, WeakObjRef<TValue>> ToUnmanagedKV<TKey, TValue>(this Dictionary<TKey, TValue> dict) where TKey : class where TValue : class
+    {
+        var ret = new UnmanagedKeyValueCollection<WeakObjRef<TKey>, WeakObjRef<TValue>>();
+
+        ref var kvs = ref ret.KeyValuePairs;
+
+        foreach (var kv in dict)
+            kvs[ret.Count++] = new(kv.Key.GetWeakRef(), kv.Value.GetWeakRef());
+
+        return ret;
+    }
+
+    public static UnmanagedKeyValueCollection<WeakObjRef<TKey>, TValue> ToUnmanagedK<TKey, TValue>(this Dictionary<TKey, TValue> dict) where TKey : class where TValue : unmanaged
+    {
+        var ret = new UnmanagedKeyValueCollection<WeakObjRef<TKey>, TValue>();
+
+        ref var kvs = ref ret.KeyValuePairs;
+
+        foreach (var kv in dict)
+            kvs[ret.Count++] = new(kv.Key.GetWeakRef(), kv.Value);
+
+        return ret;
+    }
+
+    public static UnmanagedKeyValueCollection<TKey, WeakObjRef<TValue>> ToUnmanagedV<TKey, TValue>(this Dictionary<TKey, TValue> dict) where TKey : unmanaged where TValue : class
+    {
+        var ret = new UnmanagedKeyValueCollection<TKey, WeakObjRef<TValue>>();
+
+        ref var kvs = ref ret.KeyValuePairs;
+
+        foreach (var kv in dict)
+            kvs[ret.Count++] = new(kv.Key, kv.Value.GetWeakRef());
+
+        return ret;
+    }
+
+
+
+
+
 
 }

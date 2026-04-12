@@ -3,7 +3,7 @@ namespace Engine.Core;
 
 
 using System;
-
+using static Engine.Core.EngineMath;
 
 public static partial class RenderingBackend
 {
@@ -208,6 +208,42 @@ public static partial class RenderingBackend
         /// </summary>
         DepthStencil,
     }
+
+
+
+    public static uint GetTextureSizeBytes(Vector3<uint> dims, TextureFormats format)
+    {
+        uint width = dims.X;
+        uint height = dims.Y;
+        uint depth = dims.Z == 0 ? 1u : dims.Z;
+
+        return format switch
+        {
+            TextureFormats.R8_UNORM => width * height * depth * 1,
+            TextureFormats.RG8_UNORM => width * height * depth * 2,
+            TextureFormats.RGB8_UNORM => width * height * depth * 4,
+            TextureFormats.RGBA8_UNORM => width * height * depth * 4,
+            TextureFormats.R16_SFLOAT => width * height * depth * 2,
+            TextureFormats.RG16_SFLOAT => width * height * depth * 4,
+            TextureFormats.RGB16_SFLOAT => width * height * depth * 8,
+            TextureFormats.RGBA16_SFLOAT => width * height * depth * 8,
+            TextureFormats.R8_BC4_UNORM => GetBCSize(width, height, depth, 8),
+            TextureFormats.RG8_BC5_UNORM => GetBCSize(width, height, depth, 16),
+            TextureFormats.RGBA8_BC7_UNORM => GetBCSize(width, height, depth, 16),
+            TextureFormats.RGB16_BC6H_SFLOAT => GetBCSize(width, height, depth, 16),
+            TextureFormats.DepthStencil => width * height * depth * 4,
+            _ => throw new ArgumentOutOfRangeException(nameof(format), format, null),
+        };
+
+        static uint GetBCSize(uint width, uint height, uint depth, uint bytesPerBlock)
+        {
+            uint blockWidth = (width  + 3) / 4;
+            uint blockHeight = (height + 3) / 4;
+
+            return blockWidth * blockHeight * depth * bytesPerBlock;
+        }
+    }
+
 
 
 

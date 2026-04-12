@@ -5,7 +5,7 @@ namespace Engine.Core;
 
 
 using Engine.GameResources;
-using static Engine.Core.Loading;
+using static Engine.Core.IO;
 
 
 
@@ -19,14 +19,14 @@ using static Engine.Core.Loading;
 /// <br/> <inheritdoc cref="IConverts"/>
 /// </summary>
 /// 
-public abstract partial class GameResource : RefCounted
+public abstract partial class GameResource : Freeable
 {
 
 
     /// <summary>
     /// Contains all valid resource instances, no matter how or where they were created.
     /// </summary>
-    public static readonly HashSet<GameResource> AllResources = new();
+    public static readonly HashSet<References.WeakObjRef<GameResource>> AllResources = new();
 
 
 
@@ -35,7 +35,7 @@ public abstract partial class GameResource : RefCounted
         Key = key;
 
         lock (AllResources)
-            AllResources.Add(this);
+            AllResources.Add(this.GetWeakRef());
     }
 
 
@@ -114,35 +114,23 @@ public abstract partial class GameResource : RefCounted
     public readonly string Key;
 
 
-
-
-
-
-    private bool NotifyLoadedCalled = false;
-
-
-    public void Register()
-    {
-        lock (this)
-        {
-            if (!NotifyLoadedCalled)
-            {
-                NotifyLoadedCalled = true;
-
-                if (Key != null) Loading.SetResourceLoaded(this);
-            }
-        }
-    }
-
-
-
     protected override void OnFree()
     {
-        if (Key != null) Loading.SetResourceUnloaded(this);
-
         lock (AllResources)
-            AllResources.Remove(this);
+            AllResources.Remove(this.GetWeakRef());
+
+
+
+        LoadedResourcesSemaphore.Wait();
+
+        LoadedResources.Remove(Key);
+
+        LoadedResourcesSemaphore.Release();
     }
+
+
+
+
 
 
 

@@ -287,8 +287,8 @@ public static unsafe partial class Entry
     //screen quad for drawing to screen
 
     private static RenderingBackend.BackendBufferReference.IVertexBuffer ScreenQuadVertPos;
-    private static RefCountCollections.RefCountedDictionary<string, RenderingBackend.VertexAttributeDefinitionBufferPair> ScreenQuadAttributes;
-    private static RefCountCollections.RefCountedDictionary<string, RenderingBackend.BackendResourceSetReference> ScreenQuadResourceSetCollection;
+    private static Dictionary<string, RenderingBackend.VertexAttributeDefinitionBufferPair> ScreenQuadAttributes;
+    private static Dictionary<string, RenderingBackend.BackendResourceSetReference> ScreenQuadResourceSetCollection;
     private static Rendering.NamedShaderReference ScreenQuadShaderRef;
 
 
@@ -308,11 +308,6 @@ public static unsafe partial class Entry
     /// </summary>
     public static partial void Init()
     {
-
-
-#if DEBUG
-        EngineDebug.FreeableConstructorStackTraceStorage = true;
-#endif
 
 
 
@@ -589,7 +584,7 @@ public static unsafe partial class Entry
                                                        new RenderingBackend.DrawPipelineDetails.RasterizationDetails(),
                                                        new RenderingBackend.DrawPipelineDetails.BlendState(),
                                                        new RenderingBackend.DrawPipelineDetails.DepthStencilState(),
-                                                       mat.MaterialResourceSets.AsUnmanaged());
+                                                       mat.MaterialResourceSets.ToUnmanagedKV());
 
 
 
@@ -614,7 +609,7 @@ public static unsafe partial class Entry
 
         Rendering.Draw(
             Attributes: ScreenQuadAttributes.VertexAttributesToUnmanaged(),
-            ResourceSets: ScreenQuadResourceSetCollection.AsUnmanaged(),           
+            ResourceSets: ScreenQuadResourceSetCollection.ToUnmanagedKV(),           
             Shader: ScreenQuadShaderRef.Shader,
 
             //the rasterization, blending and depth stencil structs already have sane defaults that we can use here.

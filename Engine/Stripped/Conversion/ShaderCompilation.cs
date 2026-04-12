@@ -1727,12 +1727,28 @@ public static partial class ShaderCompilation
                     }
 
 
-
                     // ------------------------------ IN / OUT ------------------------------
 
-                    if (IsWordAt(src, i, "in") || IsWordAt(src, i, "out"))
+                    if (IsWordAt(src, i, "in") || IsWordAt(src, i, "out") ||
+                        IsQualifier(PeekWord(src, i)))
                     {
-                        string keyword = ReadWord(src, ref i);
+                        List<string> qualifiers = new();
+
+                        // ---------------- collect qualifiers ----------------
+                        while (true)
+                        {
+                            string w = PeekWord(src, i);
+
+                            if (IsQualifier(w))
+                            {
+                                qualifiers.Add(ReadWord(src, ref i));
+                                SkipWhitespace(src, ref i);
+                                continue;
+                            }
+                            break;
+                        }
+
+                        string keyword = ReadWord(src, ref i); // in/out
 
                         SkipWhitespace(src, ref i);
                         string type = ReadWord(src, ref i);
@@ -1742,7 +1758,12 @@ public static partial class ShaderCompilation
 
                         int loc = keyword == "out" ? outLoc++ : inLoc++;
 
-                        sb.Append($"layout(location={loc}) {keyword} {type} {name};");
+                        // rebuild qualifier prefix
+                        string qualPrefix = qualifiers.Count > 0
+                            ? string.Join(" ", qualifiers) + " "
+                            : "";
+
+                        sb.Append($"layout(location={loc}) {qualPrefix}{keyword} {type} {name};");
 
                         i++; // skip ;
                         continue;
@@ -1765,6 +1786,23 @@ public static partial class ShaderCompilation
 
 
 
+
+            static bool IsQualifier(string w)
+            {
+                return w is "flat" or "smooth" or "noperspective" or "centroid" or "sample";
+            }
+
+
+            static string PeekWord(string s, int i)
+            {
+                SkipWhitespace(s, ref i);
+
+                int start = i;
+                while (i < s.Length && (char.IsLetterOrDigit(s[i]) || s[i] == '_'))
+                    i++;
+
+                return s.Substring(start, i - start);
+            }
 
 
             int GetBinding(int set, string name)

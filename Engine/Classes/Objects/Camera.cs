@@ -30,7 +30,6 @@ public partial class Camera : GameObject
             if (_size != value)
             {
                 _size = value;
-                DisposeBuffers();
                 Setup();
 
                 OnResolutionChanged.Invoke();
@@ -108,11 +107,6 @@ public partial class Camera : GameObject
         }
 
 
-        public void DisposeBuffer()
-        {
-            if (TexturePlusSampler != null) TexturePlusSampler.Free();
-        }
-
 
         public void Evaluate(Camera owner)
         {
@@ -171,10 +165,7 @@ public partial class Camera : GameObject
     public void DestroyPostProcessBuffer(string Name)
     {
         if (PostProcessBuffers != null && PostProcessBuffers.TryGetValue(Name, out var pp))
-        {
-            pp.DisposeBuffer();
             PostProcessBuffers.Remove(Name);
-        }
     }
 
 
@@ -294,9 +285,9 @@ public partial class Camera : GameObject
 
         IList<DrawObject> objectWhiteList,
 
-        delegate*<MaterialResource, MaterialResource.MaterialResolution> materialResolver = null,
+        delegate*<MaterialResource, MaterialResource.MaterialResolution> materialResolver,
 
-        delegate*<ReadOnlySpan<(DrawObject obj, float distance)>, void> drawCallIssuer = null
+        delegate*<ReadOnlySpan<(DrawObject obj, float distance)>, delegate*<MaterialResource, MaterialResource.MaterialResolution>, Camera, void> drawCallIssuer = null
 
     )
     {
@@ -304,11 +295,11 @@ public partial class Camera : GameObject
 
         public readonly CameraDrawSortMode Ordering = ordering;
 
-        public readonly WeakObjRef<IList<DrawObject>> ObjectWhiteList = objectWhiteList.GetRef();
+        public readonly WeakObjRef<IList<DrawObject>> ObjectWhiteList = objectWhiteList.GetWeakRef();
 
         public readonly delegate*<MaterialResource, MaterialResource.MaterialResolution> MaterialResolver = materialResolver;
 
-        public readonly delegate*<ReadOnlySpan<(DrawObject obj, float distance)>, void> DrawCallIssuer = drawCallIssuer;
+        public readonly delegate*<ReadOnlySpan<(DrawObject obj, float distance)>, delegate*<MaterialResource, MaterialResource.MaterialResolution>, Camera, void> DrawCallIssuer = drawCallIssuer;
     }
 
 
@@ -330,7 +321,7 @@ public partial class Camera : GameObject
     /// Renders objects according to a defined programmable render pipeline.
     /// </summary>
     /// <param name="subpasses"></param>
-    public unsafe void Render(ReadOnlySpan<CameraSubpassDefinition> subpasses, MaterialResource? forceOneMaterial = null)
+    public unsafe void Render(ReadOnlySpan<CameraSubpassDefinition> subpasses)
     {
 
         
@@ -404,7 +395,7 @@ public partial class Camera : GameObject
                     {
                         var o = whitelist[i];
 
-                        //if (o.IsVisibleInTree() && IsAABBInFrustum(o.GetOrRecalculateCachedGlobalAABB(), frustumPlanes))
+                        if (o.IsVisibleInTree() && IsAABBInFrustum(o.GetOrRecalculateCachedGlobalAABB(), frustumPlanes))
                             objs[idx++] = (o, subpass.Ordering != CameraDrawSortMode.Unordered ? o.GlobalPosition.DistanceToSquared(GlobalPosition) : 0);
                     }
 
@@ -439,7 +430,7 @@ public partial class Camera : GameObject
 
 
 
-                if (subpass.DrawCallIssuer != null) subpass.DrawCallIssuer(objs);
+                if (subpass.DrawCallIssuer != null) subpass.DrawCallIssuer(objs, subpass.MaterialResolver, this);
 
                 else
                 {
@@ -573,29 +564,4 @@ public partial class Camera : GameObject
     }
 
 
-
-    protected override void OnFree()
-    {
-        DisposeBuffers();
-
-        if (PostProcessBuffers != null)
-        {
-            foreach (var k in PostProcessBuffers)
-                k.Value.DisposeBuffer();
-        }
-
-        base.OnFree();
-    }
-
-
-    public void DisposeBuffers()
-    {
-        for (int i = 0; i < ColorBufferTextures?.Length; i++)
-            ColorBufferTextures[i].Free();
-
-        DepthStencilBufferTexture?.Free();
-
-        FrameBuffer?.Free();
-
-    }
 }

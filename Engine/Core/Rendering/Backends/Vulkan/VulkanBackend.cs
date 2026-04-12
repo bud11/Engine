@@ -1791,7 +1791,7 @@ public static partial class RenderingBackend
             var currentLayout = ImageLayout.Undefined;
 
 
-            Silk.NET.Vulkan.Buffer stagingBuffer = default;
+            Buffer stagingBuffer = default;
             DeviceMemory stagingMemory = default;
 
 
@@ -1810,16 +1810,17 @@ public static partial class RenderingBackend
 
                 int mipCount = texturemips.Length;
 
-                // Calculate total size of the staging buffer
+
                 ulong totalSize = 0;
                 for (int mip = 0; mip < mipCount; mip++)
-                {
                     totalSize += (ulong)texturemips[mip].Length * LayerCount;
-                }
+
 
                 CreateStagingBuffer(totalSize, out stagingBuffer, out stagingMemory);
 
-                // Copy mip data into staging buffer sequentially per layer
+
+
+
                 void* mapped;
                 VK.MapMemory(device, stagingMemory, 0, totalSize, 0, &mapped);
                 byte* dst = (byte*)mapped;
@@ -1840,7 +1841,10 @@ public static partial class RenderingBackend
                 }
                 VK.UnmapMemory(device, stagingMemory);
 
-                // Prepare copy regions
+
+
+
+
                 Span<BufferImageCopy> regions = stackalloc BufferImageCopy[mipCount * (int)LayerCount];
                 offset = 0;
 
@@ -1879,12 +1883,10 @@ public static partial class RenderingBackend
                     }
                 }
 
-                // Copy all mips and layers to the image
-                fixed (BufferImageCopy* regionsPtr = regions)
-                {
-                    VK.CmdCopyBufferToImage(cmd, stagingBuffer, image, ImageLayout.TransferDstOptimal, (uint)regions.Length, regionsPtr);
-                }
 
+
+                fixed (BufferImageCopy* regionsPtr = regions)
+                    VK.CmdCopyBufferToImage(cmd, stagingBuffer, image, ImageLayout.TransferDstOptimal, (uint)regions.Length, regionsPtr);
             }
 
 
@@ -1901,23 +1903,12 @@ public static partial class RenderingBackend
                     format == TextureFormats.DepthStencil ? ImageAspectFlags.DepthBit | ImageAspectFlags.StencilBit : ImageAspectFlags.ColorBit,
                     1);
 
-
-                //var newlayout = format == TextureFormats.DepthStencil ? ImageLayout.DepthStencilAttachmentOptimal : ImageLayout.ColorAttachmentOptimal;
-                var newlayout = ImageLayout.ShaderReadOnlyOptimal;
-                TransitionImageLayoutInternal(cmd, image, vkFormat, currentLayout, newlayout, 0, mipLevels, LayerCount);
-                currentLayout = newlayout;
             }
 
-            else
-            {
-                TransitionImageLayoutInternal(cmd, image, vkFormat, currentLayout, ImageLayout.ShaderReadOnlyOptimal, 0, mipLevels, LayerCount);
-                currentLayout = ImageLayout.ShaderReadOnlyOptimal;
-            }
+            TransitionImageLayoutInternal(cmd, image, vkFormat, currentLayout, ImageLayout.ShaderReadOnlyOptimal, 0, mipLevels, LayerCount);
+            currentLayout = ImageLayout.ShaderReadOnlyOptimal;
 
 
-
-
-            if (currentLayout == ImageLayout.Undefined) throw new Exception();
 
 
             EndSingleTimeCommandBuffer(cmd);

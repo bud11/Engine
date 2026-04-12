@@ -45,14 +45,17 @@ public static partial class EngineSettings
 
 
     /// <summary>
-    /// Initial settings to start the engine with. Encompasses all adjustable settings. Some settings can be set later during runtime via <see cref="EngineSettings"/> and <see cref="Window"/>.
+    /// Initial settings to start the engine with. Encompasses all adjustable settings in addition to settings that require being set on startup and/or as process environment variables.
+    /// <br/> Adjustable settings can be set at runtime via <see cref="EngineSettings"/> and <see cref="Window"/>.
     /// </summary>
     public readonly struct EngineInitSettings()
     {
 
-        //backend(s)
+        //backend/system
 
         public readonly RenderingBackend.RenderingBackendEnum RenderingBackend;
+        public readonly ulong VRAMMemoryLimit = 0;
+
 
 
         //window
@@ -68,6 +71,9 @@ public static partial class EngineSettings
 
 
         public readonly string WindowTitle = "Window";
+
+
+
 
 
         //other

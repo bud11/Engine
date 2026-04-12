@@ -32,7 +32,7 @@ public partial class ModelInstance : DrawObject
 
 
     [Indexable]
-    public RefCountCollections.RefCountedArray<MaterialResource> Materials;
+    public MaterialResource[] Materials;
 
 
 
@@ -40,19 +40,19 @@ public partial class ModelInstance : DrawObject
     /// <summary>
     /// Resource sets to be used globally for every model instance.
     /// </summary>
-    public static readonly RefCountCollections.RefCountedDictionary<string, BackendResourceSetReference> GlobalModelInstanceResourceSets = new();
+    public static readonly Dictionary<string, BackendResourceSetReference> GlobalModelInstanceResourceSets = new();
 
 
     /// <summary>
     /// Resource sets to be used at the individual model instance level.
     /// </summary>
-    public readonly RefCountCollections.RefCountedDictionary<string, BackendResourceSetReference> ModelInstanceResourceSets = new();
+    public readonly Dictionary<string, BackendResourceSetReference> ModelInstanceResourceSets = new();
 
 
     /// <summary>
     /// Vertex attributes to be used at the individual model instance level.
     /// </summary>
-    public readonly RefCountCollections.RefCountedDictionary<string, VertexAttributeDefinitionBufferPair> ModelInstanceVertexAttributeBuffers = new();
+    public readonly Dictionary<string, VertexAttributeDefinitionBufferPair> ModelInstanceVertexAttributeBuffers = new();
 
 
 
@@ -71,10 +71,6 @@ public partial class ModelInstance : DrawObject
     {
         lock (AllDrawableObjects)
             AllDrawableObjects.Remove(this);
-
-        Model.RemoveUser();
-
-        Materials.Free();
 
         base.OnFree();
     }
@@ -125,7 +121,7 @@ public partial class ModelInstance : DrawObject
         if (resolve.ShaderRef == null) return;
 
         Rendering.Draw(Model.Buffers.VertexAttributesToUnmanaged().Combine(ModelInstanceVertexAttributeBuffers.VertexAttributesToUnmanaged()),
-                        GlobalModelInstanceResourceSets.AsUnmanaged().Combine(ModelInstanceResourceSets.AsUnmanaged()).Combine(in resolve.MaterialResourceSets),
+                        GlobalModelInstanceResourceSets.ToUnmanagedKV().Combine(ModelInstanceResourceSets.ToUnmanagedKV()).Combine(resolve.MaterialResourceSets),
                         resolve.ShaderRef.Shader,
                         resolve.RasterizationDetails,
                         resolve.BlendState,

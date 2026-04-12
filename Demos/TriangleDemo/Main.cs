@@ -158,7 +158,7 @@ public static partial class Entry
 
 
     private static RenderingBackend.BackendBufferReference.IVertexBuffer TriangleVertPos;
-    private static RefCountCollections.RefCountedDictionary<string, RenderingBackend.VertexAttributeDefinitionBufferPair> TriangleAttributes;
+    private static Dictionary<string, RenderingBackend.VertexAttributeDefinitionBufferPair> TriangleAttributes;
 
 
 

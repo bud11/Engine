@@ -14,13 +14,13 @@ using static Engine.Core.Parsing;
 using System.Text;
 using Engine.GameObjects;
 using System.Numerics;
-using static Engine.Core.Loading;
 
 
 #if DEBUG
 using System.Reflection;
 using System.Text.Json;
 using System.Buffers;
+using static Engine.Core.IO;
 #endif
 
 
@@ -463,7 +463,7 @@ public partial class SceneResource : GameResource, GameResource.ILoads
         }
 
 
-        ExitAssetLoadSemaphore();
+        ExitResourceLoadThrottleSemaphore();
 
         await Parallel.ForAsync<uint>(0, resourceCount, async (rIndex, cancellation) =>
         {
@@ -488,15 +488,9 @@ public partial class SceneResource : GameResource, GameResource.ILoads
 
             }
 
-
-            res.Register();
-
-            SceneResources[rIndex].AddUser();  //this scene
-
-
         });
 
-        await EnterAssetLoadSemaphore();
+        await EnterResourceLoadThrottleSemaphore();
 
 
 
@@ -755,15 +749,4 @@ public partial class SceneResource : GameResource, GameResource.ILoads
 
     }
 
-
-
-
-
-    protected override void OnFree()
-    {
-        for (int i1 = 0; i1 < SceneResources.Length; i1++)
-            SceneResources[i1].RemoveUser();
-
-        base.OnFree();
-    }
 }

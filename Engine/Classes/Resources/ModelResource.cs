@@ -15,6 +15,7 @@ using static Engine.Core.References;
 
 #if DEBUG
 using System.Text.Json;
+using static Engine.Core.IO;
 #endif
 
 
@@ -36,7 +37,7 @@ public class ModelResource : GameResource, GameResource.ILoads
     public readonly BackendBufferReference.IIndexBuffer IndexBuffer;
 
 
-    public readonly RefCountCollections.RefCountedDictionary<string, VertexAttributeDefinitionBufferPair> Buffers;
+    public readonly Dictionary<string, VertexAttributeDefinitionBufferPair> Buffers;
 
 
 
@@ -217,7 +218,7 @@ public class ModelResource : GameResource, GameResource.ILoads
 
 
     
-    public static async Task<GameResource> Load(Loading.AssetByteStream stream, string key)
+    public static async Task<GameResource> Load(AssetByteStream stream, string key)
     {
 
         var reader = ValueReader.FromStream(stream);
@@ -351,7 +352,7 @@ public class ModelResource : GameResource, GameResource.ILoads
 
     public static async Task<bool> Validate(byte[] validationBlock, string key) => true;
 
-    public static async Task<IConverts.FinalAssetBytes> ConvertToFinalAssetBytes(Loading.Bytes bytes, string key)
+    public static async Task<IConverts.FinalAssetBytes> ConvertToFinalAssetBytes(Bytes bytes, string key)
     {
         var dict = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(bytes.ByteArray, JsonAssetLoadingOptions);
 
@@ -459,7 +460,7 @@ public class ModelResource : GameResource, GameResource.ILoads
 
 
         // AABB
-        write.WriteUnmanaged(dict.TryGetValue("LocalAABB", out var aabb) ? aabb.Deserialize<AABB>(Parsing.JsonAssetLoadingOptions) : AABB.MaxValue);
+        write.WriteUnmanaged(dict.TryGetValue("AABB", out var aabb) ? aabb.Deserialize<AABB>(JsonAssetLoadingOptions) : AABB.MaxValue);
 
 
 

@@ -270,7 +270,7 @@ public static class TextureConversion
 
 
 
-    public static async Task<TextureData> ConvertTextureToRuntimeFormat(Loading.Bytes src, string extension, TextureHeaderData ImageHeader, TextureLoadOptions options, EncoderBackend encoderBackend = EncoderBackend.Compressonator)
+    public static async Task<TextureData> ConvertTextureToRuntimeFormat(Bytes src, string extension, TextureHeaderData ImageHeader, TextureLoadOptions options, EncoderBackend encoderBackend = EncoderBackend.Compressonator)
     {
 
         var stopwatch = new Stopwatch();

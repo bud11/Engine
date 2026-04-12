@@ -13,6 +13,7 @@ using Engine.Core;
 
 #if DEBUG
 using Engine.Stripped;
+using static Engine.Core.IO;
 #endif
 
 
@@ -38,7 +39,6 @@ public class TextureResource : GameResource, GameResource.ILoads
     public TextureResource(BackendTextureReference tex, string key) : base(key)
     {
         BackendReference = tex;
-        tex.AddUser();
     }
 
 
@@ -66,7 +66,7 @@ public class TextureResource : GameResource, GameResource.ILoads
 
 
 
-    static async Task<IConverts.FinalAssetBytes> IConverts.ConvertToFinalAssetBytes(Loading.Bytes bytes, string key) 
+    static async Task<IConverts.FinalAssetBytes> IConverts.ConvertToFinalAssetBytes(Bytes bytes, string key) 
     {
         var ext = Path.GetExtension(key);
 
@@ -108,7 +108,7 @@ public class TextureResource : GameResource, GameResource.ILoads
 
 
     
-    public static async Task<GameResource> Load(Loading.AssetByteStream stream, string key)
+    public static async Task<GameResource> Load(AssetByteStream stream, string key)
     {
 
         var reader = Parsing.ValueReader.FromStream(stream);

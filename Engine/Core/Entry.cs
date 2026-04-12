@@ -21,7 +21,7 @@ public static partial class Entry
 
 #if DEBUG
     /// <summary>
-    /// Runs immediately on launch before anything else. Used to obtain launch settings. Also see <seealso cref="Init"/> and <see cref="Engine.Core.EngineSettings"/>.
+    /// Runs instantly on launch to obtain launch settings. Also see <seealso cref="Init"/> and <see cref="Engine.Core.EngineSettings"/>.
     /// </summary>
     private readonly struct _EngineInitSummary;
 #endif

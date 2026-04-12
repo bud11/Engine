@@ -5,6 +5,8 @@ using System.Numerics;
 using static Engine.Core.EngineMath;
 using static Engine.Core.References;
 using System.Drawing;
+using System.Runtime;
+
 
 
 
@@ -121,9 +123,10 @@ public static partial class Entry
             };
 
 
-
+            
             in vec3 Position;
-            in vec2 Normal;
+            in vec3 Normal;
+            in vec3 Tangent;
             in vec2 UVMap;
 
             out vec3 FragNormal;
@@ -131,29 +134,13 @@ public static partial class Entry
 
 
             
-            //    --------------------------- The blender addon exports octahedrally-encoded byte-vec2 normals ---------------------------
-            
-            vec3 OctDecode(vec2 e)
-            {
-                // Convert from [0,1] range if your octahedral encode mapped to [0,1]
-                vec2 f = e * 2.0 - 1.0;
-            
-                vec3 v = vec3(f.x, f.y, 1.0 - abs(f.x) - abs(f.y));
-                float t = clamp(-v.z, 0.0, 1.0);
-                v.x += v.x >= 0.0 ? -t : t;
-                v.y += v.y >= 0.0 ? -t : t;
-            
-                return normalize(v);
-            }
-            
-
 
             void main()
             {
                 gl_Position = ProjectionMatrix * ViewMatrix * ModelMatrix * vec4(Position, 1.0);   
         
                 mat3 normalMatrix = transpose(inverse(mat3(ModelMatrix)));
-                FragNormal = normalize(normalMatrix * OctDecode(Normal));
+                FragNormal = normalize(normalMatrix * normalize(Normal));
 
                 FragUV = UVMap;
             }
@@ -177,7 +164,8 @@ public static partial class Entry
             {
                 // Example lighting
                 float NdotL = clamp(dot(FragNormal, normalize(vec3(1.0, 1.0, -1.0))), 0.2, 1.0);
-                FinalColor = vec4(vec3(1.0) * NdotL * texture(AlbedoTexture, FragUV).rgb, 1.0);
+                FinalColor = vec4(vec3(1.0) * NdotL, 1.0) * texture(AlbedoTexture, FragUV);
+
             }
 
             """,
@@ -259,7 +247,7 @@ public static partial class Entry
         {
 
 
-            var sceneResource = await Loading.LoadResource<SceneResource>("Assets/Scene");
+            var sceneResource = await GameResource.LoadResource<SceneResource>("Assets/Scene");
 
             unsafe
             {
@@ -449,11 +437,11 @@ public static partial class Entry
         Rendering.SetScissor(default, Camera.Resolution);
 
 
+
 #if DEBUG
 
         // ===== ( In a rendering scenario with many variables, it can sometimes be worth enabling some or all of the flags offered by EngineDebug ) =====
 
-        EngineDebug.FreeableConstructorStackTraceStorage =
         EngineDebug.ThrowIfVertexBufferMissing =
         EngineDebug.ThrowIfResourceSetMissing =
         EngineDebug.ThrowIfResourceMissing =
@@ -462,25 +450,54 @@ public static partial class Entry
 #endif
 
 
+
+
+        // -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+        // This time, the drawing pipeline is more advanced, with multiple stages.
+
+
+
         Camera.Render(
             [
+
+                
+                // ------------ DEPTH PRE-PASS ------------
 
                 new Camera.CameraSubpassDefinition
                 (
                     frameBufferPipelineStageReq: new RenderingBackend.FrameBufferPipelineStage()
-                                                .SpecifyColorAttachments(rangeStart: 0, rangeEnd: 1, access: RenderingBackend.FrameBufferPipelineAttachmentAccessFlags.None, clear: true)
+                                                .SpecifyColorAttachments(rangeStart: 0, rangeEnd: 1, access: RenderingBackend.FrameBufferPipelineAttachmentAccessFlags.None, clear: false)
                                                 .SpecifyDepth(access: RenderingBackend.FrameBufferPipelineAttachmentAccessFlags.Write, clear: true),
 
-
                     ordering: Camera.CameraDrawSortMode.NearToFar,
-
                     objectWhiteList: DrawObject.AllDrawableObjects,
 
                     materialResolver: &DepthResolve
 
                 ),
 
+                
+                // ------------ FORWARD COLOR PASS ------------
 
+                new Camera.CameraSubpassDefinition
+                (
+                    frameBufferPipelineStageReq: new RenderingBackend.FrameBufferPipelineStage()
+                                                .SpecifyColorAttachments(rangeStart: 0, rangeEnd: 1, access: RenderingBackend.FrameBufferPipelineAttachmentAccessFlags.Write, clear: true)
+                                                .SpecifyDepth(access: RenderingBackend.FrameBufferPipelineAttachmentAccessFlags.Read, clear: false),
+
+                    ordering: Camera.CameraDrawSortMode.NearToFar,
+                    objectWhiteList: DrawObject.AllDrawableObjects,
+
+                    materialResolver: &ColorResolve
+
+                ),
+
+
+
+#if DEBUG
+
+                // ------------ DEBUG VIS ------------ 
 
                 new Camera.CameraSubpassDefinition
                 (
@@ -488,37 +505,21 @@ public static partial class Entry
                                                 .SpecifyColorAttachments(rangeStart: 0, rangeEnd: 1, access: RenderingBackend.FrameBufferPipelineAttachmentAccessFlags.Write, clear: false)
                                                 .SpecifyDepth(access: RenderingBackend.FrameBufferPipelineAttachmentAccessFlags.Read, clear: false),
 
-
                     ordering: Camera.CameraDrawSortMode.NearToFar,
-
                     objectWhiteList: DrawObject.AllDrawableObjects,
 
-                    materialResolver: &ColorResolve,
 
-                    drawCallIssuer: &DrawCallIssueColor
+                    // EngineDebug can be used to draw things like bounding boxes and simple shapes.
+                    // This is a simple loop, that, instead of drawing actual objects, draws their bounds if enabled.
 
+                    drawCallIssuer: &EngineDebug.DebugVisualizationDrawMethod,  
+
+                    materialResolver: default   
                 ),
+#endif
+
             ]
         );
-
-
-
-
-        static void DrawCallIssueColor(ReadOnlySpan<(DrawObject obj, float distance)> objs)
-        {
-
-            for (int i = 0; i < objs.Length; i++)
-            {
-                var obj = objs[i].obj;
-
-                obj.Draw(&ColorResolve);
-
-                //EngineDebug.DrawAABB(obj.GetOrRecalculateCachedGlobalAABB(), Color.Blue, Camera.GetViewMatrix(), Camera.GetProjectionMatrix());
-            }
-        }
-
-
-
 
 
         static MaterialResource.MaterialResolution DepthResolve(MaterialResource mat)
@@ -526,16 +527,16 @@ public static partial class Entry
                                                        new RenderingBackend.DrawPipelineDetails.RasterizationDetails() { CullMode = RenderingBackend.CullMode.Disabled },
                                                        new RenderingBackend.DrawPipelineDetails.BlendState() { Enable = false },
                                                        new RenderingBackend.DrawPipelineDetails.DepthStencilState() { DepthFunction = RenderingBackend.DepthOrStencilFunction.LessOrEqual, DepthWrite = true },
-                                                       mat.MaterialResourceSets.AsUnmanaged());
+                                                       mat.MaterialResourceSets.ToUnmanagedKV());
 
 
 
         static MaterialResource.MaterialResolution ColorResolve(MaterialResource mat)
             => new MaterialResource.MaterialResolution(mat.ShaderRef,
-                                                       new RenderingBackend.DrawPipelineDetails.RasterizationDetails() { CullMode = RenderingBackend.CullMode.Back },
+                                                       new RenderingBackend.DrawPipelineDetails.RasterizationDetails() { CullMode = RenderingBackend.CullMode.Disabled },
                                                        new RenderingBackend.DrawPipelineDetails.BlendState() { Enable = true },
                                                        new RenderingBackend.DrawPipelineDetails.DepthStencilState() { DepthFunction = RenderingBackend.DepthOrStencilFunction.Equal, DepthWrite = false },
-                                                       mat.MaterialResourceSets.AsUnmanaged());
+                                                       mat.MaterialResourceSets.ToUnmanagedKV());
 
 
 
@@ -580,13 +581,14 @@ public static partial class Entry
 
         // ===== ( We can also disable these debug flags after we're done. These only affect the current thread, so they can be safely used to create logical debugging ranges. ) =====
 
-        EngineDebug.FreeableConstructorStackTraceStorage =
         EngineDebug.ThrowIfVertexBufferMissing = 
         EngineDebug.ThrowIfResourceSetMissing =
         EngineDebug.ThrowIfResourceMissing = 
         EngineDebug.DeferredCommandStackTraceStorage = false;
 
 #endif
+
+
 
 
     }

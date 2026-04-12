@@ -54,5 +54,4 @@ Manually drawn NDC triangle:
 Code-generated cube scene, camera and basic scene rendering pipeline:
 <img width="1282" height="752" alt="cube" src="https://github.com/user-attachments/assets/146a1909-15ca-4b09-998c-f6e44d822c65" />
 Intel sponza scene imported via blender addon:
-<img width="2477" height="1256" alt="initialsponza" src="https://github.com/user-attachments/assets/70a8f001-b15d-4918-93b8-ea11fb0920ad" />
-
+<img width="2067" height="1047" alt="initialsponza2" src="https://github.com/user-attachments/assets/2fd26cf7-4ebe-40e7-aaf0-d78db3e2581a" />

@@ -15,7 +15,6 @@ using System.Reflection;
 using System.Runtime.InteropServices;
 using System.Text;
 using ZstdSharp;
-using static Engine.Core.Loading;
 using static Engine.Core.RenderingBackend;
 
 
@@ -43,13 +42,9 @@ public static class EngineBuildProcess
 
         var compressionQuality = int.Parse(args[1]);
 
+        IO.CleanAssetCache();
 
-
-
-
-        CleanAssetCache();
-
-        ScanResourceAssociations();
+        GameResource.ScanResourceAssociations();
 
 
 
@@ -81,13 +76,14 @@ public static class EngineBuildProcess
         List<string> AssetArchiveNames = new();
 
 
-        if (Directory.Exists(AssetRootDirectoryPath))
+
+        if (Directory.Exists(Core.IO.AssetRootDirectoryPath))
         {
 
             List<Task> archiveCompletionTasks = new();
 
 
-            foreach (var archiveAbsolutePath in Directory.GetDirectories(AssetRootDirectoryPath))
+            foreach (var archiveAbsolutePath in Directory.GetDirectories(Core.IO.AssetRootDirectoryPath))
             {
 
 
@@ -101,7 +97,7 @@ public static class EngineBuildProcess
                 archiveCompletionTasks.Add(Task.Run(async () =>
                 {
 
-                    if (DirectoryExistsCaseSensitive(archiveAbsolutePath))
+                    if (Core.IO.DirectoryExistsCaseSensitive(archiveAbsolutePath))
                     {
 
 
@@ -134,10 +130,11 @@ public static class EngineBuildProcess
                             compressionTasks.Add(
                                 Task.Run(async () =>
                                 {
-                                    var relativePath = Path.GetRelativePath(AssetRootDirectoryPath, assetAbsolutePath);
+                                    var relativePath = Path.GetRelativePath(Core.IO.AssetRootDirectoryPath, assetAbsolutePath);
 
 
-                                    bool found = GameResourceFileAssociations.TryGetValue(Path.GetExtension(assetAbsolutePath), out var AssetFoundType);
+
+                                    bool found = GameResource.GameResourceFileAssociations.TryGetValue(Path.GetExtension(assetAbsolutePath), out var AssetFoundType);
 
                                     if (found && AssetFoundType == null)
                                     {
@@ -162,7 +159,7 @@ public static class EngineBuildProcess
 
 
                                         Print($"File detected as {AssetFoundType.FullName}: {relativePath}");
-                                        rawBytes = await (await GetFinalAssetBytes(AssetFoundType, relativePath)).GetArray();
+                                        rawBytes = await (await GameResource.GetFinalAssetBytes(AssetFoundType, relativePath)).GetArray();
                                         Print($"File processed successfully: {relativePath}");
                                     }
                                     else
@@ -741,7 +738,7 @@ public static partial class Loading
     private static void WriteGeneratedFile(string outputpath, string text)
     {
 
-        if (FileExistsCaseSensitive(outputpath))
+        if (Core.IO.FileExistsCaseSensitive(outputpath))
         {
             var f = new FileInfo(outputpath);
             if (f.IsReadOnly)

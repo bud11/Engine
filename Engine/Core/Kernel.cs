@@ -1,19 +1,25 @@
 ﻿
 namespace Engine.Core;
 
+using Engine.Attributes;
+
 
 
 #if DEBUG
 using Engine.Stripped;
+using System.Buffers.Text;
+using System.Diagnostics;
 #endif
 
 using System.Runtime.CompilerServices;
-
+using System.Runtime.InteropServices;
 using static RenderThread;
 
+using static Engine.Core.IO;
 
 
-public static class Kernel
+
+public static partial class Kernel
 {
 
 
@@ -45,8 +51,23 @@ public static class Kernel
 
 
 
-    //this being a field rather than local is required otherwise release build optimization breaks
+    // this being a field rather than local is required otherwise release build optimization breaks
     private static volatile nint window = IntPtr.Zero;
+
+
+
+
+#if RELEASE
+
+    [BinarySerializableType(typeof(EngineSettings.EngineInitSettings))]
+    public partial class InitParser : Parsing.BinarySerializerDeserializerBase;
+
+    private static readonly InitParser initParse = new();
+
+    private const string ConfigEnvName = "_EngineConfig";
+
+#endif
+
 
 
 
@@ -54,21 +75,26 @@ public static class Kernel
     {
 
 
-        RuntimeHelpers.RunClassConstructor(typeof(EngineSettings).TypeHandle);
-
-
 #if DEBUG
-        Loading.CleanAssetCache();
+        IO.CleanAssetCache();
 #endif
 
 
 
+        // ------------------------------------------------------------------------------------------------
+
+        // Init
 
         var settings = Entry.EngineInit();
+
 
         EngineSettings.LogicRateTarget = settings.LogicRateTarget;
         EngineSettings.RenderRateTarget = settings.RenderRateTarget;
         EngineSettings.HDR = settings.UseHDR;
+
+        VRamLimit = settings.VRAMMemoryLimit;
+
+        // ------------------------------------------------------------------------------------------------
 
 
 
@@ -92,10 +118,10 @@ public static class Kernel
 
 
 
-                Loading.ScanForAssetArchives();
+                GameResource.ScanForAssetArchives();
 
 #if DEBUG
-                Loading.ScanResourceAssociations();
+                GameResource.ScanResourceAssociations();
 
 
                 
@@ -132,18 +158,6 @@ public static class Kernel
 
                     if (IsCloseRequested())
                     {
-
-
-                        HashSet<GameResource> s;
-
-                        lock (GameResource.AllResources)
-                        {
-                            s = [.. GameResource.AllResources];
-                            GameResource.AllResources.Clear();
-                        }
-
-                        foreach (var r in s)
-                            r.Free();
 
 
 #if DEBUG
@@ -209,6 +223,70 @@ public static class Kernel
     }
 
 
+
+
+
+
+    private static ulong VRamLimit, VRamCurrent;
+
+    private static readonly object VramLock = new();
+
+
+
+
+#if DEBUG
+
+    public static ulong GetVRamCurrent() => VRamCurrent;
+    public static ulong GetVRamLimit() => VRamLimit;
+
+
+#endif
+
+
+    /// <summary>
+    /// Notifies the engine that gpu memory is being allocated.
+    /// <br/> If there isn't enough space according to <see cref="VRamLimit"/>, an aggressive garbage collection and finalizer run will occur to try to indirectly free object-associated gpu memory.
+    /// <br/> If that couldn't clear out enough space, an <see cref="OutOfMemoryException"/> will be thrown.
+    /// </summary>
+    /// <param name="amount"></param>
+    /// <exception cref="OutOfMemoryException"></exception>
+    public static void TryAllocateVram(ulong amount)
+    {
+        lock (VramLock)
+        {
+            if (VRamLimit != 0)
+            {
+                int i = 5;
+
+                while (VRamCurrent + amount > VRamLimit)
+                {
+                    if (i > 0)
+                    {
+                        GC.Collect(2, GCCollectionMode.Forced, true, true);
+                        GC.WaitForPendingFinalizers();
+                    }
+                    else
+                    {
+                        throw new OutOfMemoryException(nameof(VRamLimit));
+                    }
+
+                    i--;
+                }
+            }
+
+            VRamCurrent += amount;
+        }
+    }
+
+    /// <summary>
+    /// Notifies the engine that gpu memory is being released.
+    /// </summary>
+    /// <param name="amount"></param>
+    public static void ReleaseVram(ulong amount)
+    {
+        lock (VramLock)
+            VRamCurrent -= amount;
+    }
 
 
 }
