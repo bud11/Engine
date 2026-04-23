@@ -44,7 +44,7 @@ public static class TextureConversion
     /// Texture header data.
     /// </summary>
     [StructLayout(LayoutKind.Sequential, Pack = 1)]
-    public readonly record struct TextureHeaderData(Vector3<uint> Dimensions, TextureFormats Format, TextureTypes Type);
+    public readonly record struct TextureHeaderData(Vector3<uint> Size, TextureFormats Format, TextureTypes Type);
 
 
     /// <summary>
@@ -52,7 +52,7 @@ public static class TextureConversion
     /// </summary>
     public struct TextureData
     {
-        public Vector3<uint> Dimensions;
+        public Vector3<uint> Size;
         public byte[][] Mips;
         public TextureFormats InternalImageDataFormat;
         public TextureTypes TextureType;
@@ -298,13 +298,13 @@ public static class TextureConversion
 
         var backend = GetTextureBackend(extension);
 
-        int width = (int)ImageHeader.Dimensions.X;
-        int height = (int)ImageHeader.Dimensions.Y;
+        int width = (int)ImageHeader.Size.X;
+        int height = (int)ImageHeader.Size.Y;
         int pixelCount = width * height;
 
 
 
-        ArrayPools.ArrayFromPool<Half> finalBuffer = default;
+        ArrayFromPool<Half> finalBuffer = default;
 
 
 
@@ -327,10 +327,10 @@ public static class TextureConversion
 
                     int srcComp = (int)tex.Comp;
 
-                    finalBuffer = ArrayPools.RentArrayFromPool<Half>(pixelCount * TargetChannelCount);
+                    finalBuffer = ArrayFromPool<Half>.Rent(pixelCount * TargetChannelCount);
 
                     fixed (float* srcPtr = tex.Data)
-                    fixed (Half* dstBase = finalBuffer.Ref)
+                    fixed (Half* dstBase = finalBuffer.Array)
                     {
                         float* firstPixel = stackalloc float[TargetChannelCount];
                         for (int c = 0; c < TargetChannelCount; c++)
@@ -384,11 +384,11 @@ public static class TextureConversion
 
                     int srcComp = (int)tex.Comp;
 
-                    finalBuffer = ArrayPools.RentArrayFromPool<Half>(pixelCount * TargetChannelCount);
+                    finalBuffer = ArrayFromPool<Half>.Rent(pixelCount * TargetChannelCount);
 
 
                     fixed (byte* srcPtr = tex.Data)
-                    fixed (Half* dstBase = finalBuffer.Ref)
+                    fixed (Half* dstBase = finalBuffer.Array)
                     {
                         float* firstPixel = stackalloc float[TargetChannelCount];
                         for (int c = 0; c < TargetChannelCount; c++)
@@ -491,7 +491,7 @@ public static class TextureConversion
 
 
 
-                finalBuffer = ArrayPools.RentArrayFromPool<Half>(pixelCount * TargetChannelCount);
+                finalBuffer = ArrayFromPool<Half>.Rent(pixelCount * TargetChannelCount);
 
                 Half* rPtr = rIndex >= 0 ? (Half*)exrimage.images[rIndex] : null;
                 Half* gPtr = gIndex >= 0 ? (Half*)exrimage.images[gIndex] : null;
@@ -526,7 +526,7 @@ public static class TextureConversion
 
 
 
-                fixed (Half* dstBase = finalBuffer.Ref)
+                fixed (Half* dstBase = finalBuffer.Array)
                 {
                     for (int c = 0; c < TargetChannelCount; c++)
                     {
@@ -593,7 +593,7 @@ public static class TextureConversion
             for (int c = 0; c < TargetChannelCount; c++)
                 constColor[c] = finalBuffer[c * pixelCount];
 
-            constColor.CopyTo(finalBuffer.Ref);
+            constColor.CopyTo(finalBuffer.Array);
         }
 
 
@@ -603,7 +603,7 @@ public static class TextureConversion
         string texpathtemp = Path.Combine(Path.GetTempPath(), $"{Guid.NewGuid()}.exr");
         string texpathtempOut = Path.Combine(Path.GetTempPath(), $"{Guid.NewGuid()}.ktx");
 
-        await File.WriteAllBytesAsync(texpathtemp, GetInMemoryExr(width, height, TargetChannelCount, finalBuffer.Ref));
+        await File.WriteAllBytesAsync(texpathtemp, GetInMemoryExr(width, height, TargetChannelCount, finalBuffer.Array));
 
         finalBuffer.Return();
         finalBuffer = default;
@@ -772,7 +772,7 @@ public static class TextureConversion
                 InternalImageDataFormat = options.ConvertTo,
                 TextureType = ImageHeader.Type,
 
-                Dimensions = new Vector3<uint>((uint)width,(uint)height,1)
+                Size = new Vector3<uint>((uint)width,(uint)height,1)
             };
         }
 
@@ -885,7 +885,7 @@ public static class TextureConversion
                 {
                     nameBytes.Clear();
 
-                    var strBytes = System.Text.Encoding.ASCII.GetBytes(names[c]);
+                    var strBytes = Encoding.ASCII.GetBytes(names[c]);
                     strBytes.CopyTo(nameBytes);
 
                     // Copy into fixed buffer

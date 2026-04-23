@@ -5,7 +5,6 @@ namespace Engine.GameObjects;
 using Engine.Attributes;
 using Engine.Core;
 using Engine.GameResources;
-using System.Drawing;
 using static Engine.Core.EngineMath;
 using static Engine.Core.References;
 using static Engine.Core.RenderingBackend;
@@ -62,15 +61,15 @@ public partial class ModelInstance : DrawObject
     {
         base.Init();
 
-        lock (AllDrawableObjects)
-            AllDrawableObjects.Add(this);
+        lock (AllDrawObjects)
+            AllDrawObjects.Add(this);
     }
 
 
     protected override void OnFree()
     {
-        lock (AllDrawableObjects)
-            AllDrawableObjects.Remove(this);
+        lock (AllDrawObjects)
+            AllDrawObjects.Remove(this);
 
         base.OnFree();
     }
@@ -81,8 +80,10 @@ public partial class ModelInstance : DrawObject
     /// Draws the full model using all of its materials.
     /// </summary>
     /// <param name="resolver"></param>
-    public unsafe override void Draw(delegate*<MaterialResource, MaterialResource.MaterialResolution> resolver)
+    public unsafe override void Draw(DrawState state)
     {
+        base.Draw(state);
+
 
         for (var i = 0; i < Model.SubMeshes.Length; i++)
         {
@@ -91,7 +92,7 @@ public partial class ModelInstance : DrawObject
             var sm = Model.SubMeshes[i];
 
             if (mat != null)
-                Draw(mat, resolver, sm.Start, sm.End);
+                Draw(mat, state, sm.Start, sm.End);
         }
     }
 
@@ -102,9 +103,9 @@ public partial class ModelInstance : DrawObject
     /// </summary>
     /// <param name="material"></param>
     /// <param name="resolver"></param>
-    public virtual unsafe void DrawWithOneMaterial(MaterialResource material, delegate*<MaterialResource, MaterialResource.MaterialResolution> resolver)
+    public virtual unsafe void DrawWithOneMaterial(MaterialResource material, DrawState state)
     {
-        Draw(material, resolver, 0, Model.SubMeshes[^1].End);
+        Draw(material, state, 0, Model.SubMeshes[^1].End);
     }
 
 
@@ -115,19 +116,20 @@ public partial class ModelInstance : DrawObject
     /// <param name="resolver"></param>
     /// <param name="Start"></param>
     /// <param name="End"></param>
-    public virtual unsafe void Draw(MaterialResource material, delegate*<MaterialResource, MaterialResource.MaterialResolution> resolver, uint Start, uint End)
+    public virtual unsafe void Draw(MaterialResource material, DrawState state, uint Start, uint End)
     {
-        var resolve = resolver(material);
-        if (resolve.ShaderRef == null) return;
+        var resolve = material.ResolveMaterial(state.MaterialResolver);
+
+        if (resolve.Shader == null) return;
 
         Rendering.Draw(Model.Buffers.VertexAttributesToUnmanaged().Combine(ModelInstanceVertexAttributeBuffers.VertexAttributesToUnmanaged()),
-                        GlobalModelInstanceResourceSets.ToUnmanagedKV().Combine(ModelInstanceResourceSets.ToUnmanagedKV()).Combine(resolve.MaterialResourceSets),
-                        resolve.ShaderRef.Shader,
+                        GlobalModelInstanceResourceSets.ToUnmanagedKV().Combine(ModelInstanceResourceSets.ToUnmanagedKV()).Combine(resolve.ResourceSets.ToUnmanagedKV().Combine(state.TransientResourceSets)),
+                        resolve.Shader,
                         resolve.RasterizationDetails,
                         resolve.BlendState,
                         resolve.DepthStencilState,
                         Model.IndexBuffer,
-                        new IndexingDetails(Start, End, 0, 1));
+                        new IndexingDetails(Start, End, 0, 1, Model.IndexBufferFormat));
 
     }
 

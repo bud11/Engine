@@ -3,6 +3,7 @@ namespace Engine.Core;
 
 using Engine.GameResources;
 using System.Numerics;
+using System.Runtime.InteropServices;
 using static Engine.Core.EngineMath;
 using static Engine.GameResources.ModelResource;
 
@@ -15,7 +16,7 @@ public static class MeshGeneration
 {
 
 
-    private static unsafe ModelResource CreateModel(float[] pos, Half[] normals, Half[] uvs, uint[] indices, AABB aabb, string positionBufferName, string normalBufferName, string UVBufferName)
+    private static unsafe ModelResource CreateModel(float[] pos, Half[] normals, Half[] uvs, ushort[] indices, AABB aabb, string positionBufferName, string normalBufferName, string UVBufferName)
     {
 
         var buffers = new Dictionary<string, VertexAttributeDefinitionPlusData>()
@@ -57,7 +58,8 @@ public static class MeshGeneration
 
             [ new SubmeshRange(0, (uint)indices.Length) ],
 
-            indices,
+            MemoryMarshal.AsBytes<ushort>(indices).ToArray(),
+            RenderingBackend.IndexBufferFormat.UShort,
             false,
 
             aabb,
@@ -90,31 +92,25 @@ public static class MeshGeneration
         float[] pos = new float[24 * 3];
         Half[] normals = new Half[24 * 3];
         Half[] uvs = new Half[24 * 2];
-        uint[] indices = new uint[6 * 2 * 3];
+        ushort[] indices = new ushort[6 * 2 * 3];
 
         Vector3[] faceNormals =
         {
-            new( 0,  0,  1), // +Z front
-            new( 0,  0, -1), // -Z back
-            new(-1,  0,  0), // -X left
-            new( 1,  0,  0), // +X right
-            new( 0,  1,  0), // +Y top
-            new( 0, -1,  0), // -Y bottom
+            new( 0,  0,  1),
+            new( 0,  0, -1),
+            new(-1,  0,  0),
+            new( 1,  0,  0), 
+            new( 0,  1,  0),
+            new( 0, -1,  0),
         };
 
         Vector3[,] faceVertices =
         {
-            // +Z (front)
             { new(-x,-y, z), new( x,-y, z), new( x, y, z), new(-x, y, z) },
-            // -Z (back)
             { new( x,-y,-z), new(-x,-y,-z), new(-x, y,-z), new( x, y,-z) },
-            // -X (left)
             { new(-x,-y,-z), new(-x,-y, z), new(-x, y, z), new(-x, y,-z) },
-            // +X (right)
             { new( x,-y, z), new( x,-y,-z), new( x, y,-z), new( x, y, z) },
-            // +Y (top) — flipped
             { new(-x, y, z), new( x, y, z), new( x, y,-z), new(-x, y,-z) },
-            // -Y (bottom) — flipped
             { new(-x,-y, z), new(-x,-y,-z), new( x,-y,-z), new( x,-y, z) }
         };
 
@@ -144,13 +140,13 @@ public static class MeshGeneration
 
             uint baseIndex = (uint)(f * 4);
 
-            indices[ii++] = baseIndex + 0;
-            indices[ii++] = baseIndex + 2;
-            indices[ii++] = baseIndex + 1;
+            indices[ii++] = (byte)(baseIndex + 0);
+            indices[ii++] = (byte)(baseIndex + 2);
+            indices[ii++] = (byte)(baseIndex + 1);
 
-            indices[ii++] = baseIndex + 0;
-            indices[ii++] = baseIndex + 3;
-            indices[ii++] = baseIndex + 2;
+            indices[ii++] = (byte)(baseIndex + 0);
+            indices[ii++] = (byte)(baseIndex + 3);
+            indices[ii++] = (byte)(baseIndex + 2);
         }
 
         return CreateModel(
@@ -184,7 +180,7 @@ public static class MeshGeneration
         float[] pos = new float[vertCount * 3];
         Half[] normals = new Half[vertCount * 3];
         Half[] uvs = new Half[vertCount * 2];
-        uint[] indices = new uint[triCount * 3];
+        ushort[] indices = new ushort[triCount * 3];
 
         int vi = 0;
         for (int r = 0; r <= rings; r++)
@@ -219,21 +215,23 @@ public static class MeshGeneration
         {
             for (int s = 0; s < segments; s++)
             {
-                uint first = (uint)(r * (segments + 1) + s);
-                uint second = first + (uint)(segments + 1);
+                ushort first = (ushort)(r * (segments + 1) + s);
+                ushort second = (ushort)(first + (ushort)(segments + 1));
 
                 indices[ii++] = first;
                 indices[ii++] = second;
-                indices[ii++] = first + 1;
+                indices[ii++] = (ushort)(first + 1);
 
                 indices[ii++] = second;
-                indices[ii++] = second + 1;
-                indices[ii++] = first + 1;
+                indices[ii++] = (ushort)(second + 1);
+                indices[ii++] = (ushort)(first + 1);
             }
         }
 
         return CreateModel(pos, normals, uvs, indices, AABB.FromMinMax(new Vector3(-radius), new Vector3(radius)), positionBufferName, normalBufferName, UVBufferName);
     }
+
+
 
 
     /// <summary>
@@ -257,7 +255,7 @@ public static class MeshGeneration
         float[] pos = new float[vertCount*3];
         Half[] normals = new Half[vertCount*3];
         Half[] uvs = new Half[vertCount*2];
-        uint[] indices = new uint[triCount*3];
+        ushort[] indices = new ushort[triCount*3];
 
         int vi = 0;
         int ii = 0;
@@ -296,13 +294,13 @@ public static class MeshGeneration
                 uint baseIdx = (uint)(y*(segments+1) + s);
                 uint nextBase = baseIdx + (uint)(segments+1);
 
-                indices[ii++] = baseIdx;
-                indices[ii++] = nextBase;
-                indices[ii++] = baseIdx+1;
+                indices[ii++] = (ushort)baseIdx;
+                indices[ii++] = (ushort)nextBase;
+                indices[ii++] = (ushort)(baseIdx+1);
 
-                indices[ii++] = nextBase;
-                indices[ii++] = nextBase+1;
-                indices[ii++] = baseIdx+1;
+                indices[ii++] = (ushort)nextBase;
+                indices[ii++] = (ushort)(nextBase+1);
+                indices[ii++] = (ushort)(baseIdx+1);
             }
         }
 
@@ -315,7 +313,7 @@ public static class MeshGeneration
         return CreateModel(pos, normals, uvs, indices, AABB.FromMinMax(new Vector3(-radius, -totalHeight / 2, -radius), new Vector3(radius, totalHeight / 2, radius)), positionBufferName, normalBufferName, UVBufferName);
     }
 
-    private static void AddHemisphere(float[] pos, Half[] normals, Half[] uvs, uint[] indices, ref int vi, ref int ii, float radius, float yOffset, int rings, int segments, bool top)
+    private static void AddHemisphere(float[] pos, Half[] normals, Half[] uvs, ushort[] indices, ref int vi, ref int ii, float radius, float yOffset, int rings, int segments, bool top)
     {
         int startIdx = vi;
         for (int r = 0; r <= rings; r++)
@@ -351,28 +349,28 @@ public static class MeshGeneration
         {
             for (int s = 0; s < segments; s++)
             {
-                uint first = (uint)(startIdx + r*(segments+1) + s);
-                uint second = first + (uint)(segments+1);
+                ushort first = (ushort)(startIdx + r*(segments+1) + s);
+                ushort second = (ushort)(first + (ushort)(segments+1));
 
                 if(top)
                 {
                     indices[ii++] = first;
                     indices[ii++] = second;
-                    indices[ii++] = first+1;
+                    indices[ii++] = (ushort)(first+1);
 
                     indices[ii++] = second;
-                    indices[ii++] = second+1;
-                    indices[ii++] = first+1;
+                    indices[ii++] = (ushort)(second+1);
+                    indices[ii++] = (ushort)(first+1);
                 }
                 else
                 {
                     indices[ii++] = first;
-                    indices[ii++] = first+1;
+                    indices[ii++] = (ushort)(first + 1);
                     indices[ii++] = second;
 
                     indices[ii++] = second;
-                    indices[ii++] = first+1;
-                    indices[ii++] = second+1;
+                    indices[ii++] = (ushort)(first + 1);
+                    indices[ii++] = (ushort)(second + 1);
                 }
             }
         }

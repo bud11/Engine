@@ -3,6 +3,7 @@ namespace Engine.Core;
 
 
 using System;
+using System.Diagnostics;
 using static Engine.Core.EngineMath;
 
 public static partial class RenderingBackend
@@ -114,6 +115,9 @@ public static partial class RenderingBackend
 
 
 
+
+
+
     public enum TextureTypes : byte
     {
         Texture2D,
@@ -122,12 +126,18 @@ public static partial class RenderingBackend
     }
 
 
+
     public enum TextureSamplerTypes : byte
     {
         /// <summary>
         /// For sampling standard 2D textures.
         /// </summary>
         Sampler2D,
+
+        /// <summary>
+        /// For sampling multi-sampled 2D textures.
+        /// </summary>
+        Sampler2DMS,
 
         /// <summary>
         /// For sampling 2D depth textures using a third depth comparison argument.
@@ -144,6 +154,11 @@ public static partial class RenderingBackend
         /// </summary>
         Sampler3D
     }
+
+
+
+
+
 
 
 
@@ -204,14 +219,21 @@ public static partial class RenderingBackend
 
 
         /// <summary>
-        /// Depth + stencil buffer texture. D24 S8.
+        /// Depth + stencil buffer texture.
         /// </summary>
-        DepthStencil,
+        Depth24_Stencil8,
+
+        /// <summary>
+        /// Depth buffer texture.
+        /// </summary>
+        Depth32
     }
 
 
 
-    public static uint GetTextureSizeBytes(Vector3<uint> dims, TextureFormats format)
+
+
+    public static uint GetTextureSizeBytes(Vector3<uint> dims, TextureFormats format, byte mips)
     {
         uint width = dims.X;
         uint height = dims.Y;
@@ -231,8 +253,11 @@ public static partial class RenderingBackend
             TextureFormats.RG8_BC5_UNORM => GetBCSize(width, height, depth, 16),
             TextureFormats.RGBA8_BC7_UNORM => GetBCSize(width, height, depth, 16),
             TextureFormats.RGB16_BC6H_SFLOAT => GetBCSize(width, height, depth, 16),
-            TextureFormats.DepthStencil => width * height * depth * 4,
-            _ => throw new ArgumentOutOfRangeException(nameof(format), format, null),
+
+            TextureFormats.Depth24_Stencil8 => width * height * depth * 4,
+            TextureFormats.Depth32 => width * height * depth * 4,
+
+            _ => throw new NotSupportedException(),
         };
 
         static uint GetBCSize(uint width, uint height, uint depth, uint bytesPerBlock)
@@ -245,21 +270,36 @@ public static partial class RenderingBackend
     }
 
 
+    public static bool IsTextureFormatDepth(TextureFormats format) => format == TextureFormats.Depth32 || format == TextureFormats.Depth24_Stencil8;
+
+
+
+
 
 
 
 
     /// <summary>
-    /// MSAA sample counts.
+    /// MSAA sample counts. 
     /// </summary>
-    public enum FramebufferSampleCount : byte
+    public enum MultiSampleCount : byte
     {
-        Sample1,
-        Sample2,
-        Sample4,
-        Sample8,
-        Sample16
+        Sample2 = 2,
+        Sample4 = 4,
+        Sample8 = 8,
+        Sample16 = 16
     }
+
+
+    [StackTraceHidden]
+    [DebuggerHidden]
+    [Conditional("DEBUG")]
+    public static void Validate(this MultiSampleCount msaaCount)
+    {
+        if (((byte)msaaCount) < (byte)MultiSampleCount.Sample2 || ((byte)msaaCount) > (byte)MultiSampleCount.Sample16) 
+            throw new InvalidOperationException("Invalid MSAA count");
+    }
+
 
 
 
@@ -278,39 +318,123 @@ public static partial class RenderingBackend
 
 
 
+
+
+
     /// <summary>
     /// The format of one single component/element as supplied in the buffer data.
     /// </summary>
     public enum VertexAttributeBufferComponentFormat : byte
     {
-        Byte,
+        UByteNormalized,
+        UByte,
+
+        SByteNormalized,
+        SByte,
+
+        UShortNormalized,
+        UShort,
+
+        ShortNormalized,
+        Short,
+
+        UInt,
+        Int,
+
         Half,
-        Float
+        Float,
+
+        Double
     }
+
+    public static byte GetVertexAttributeBufferComponentFormatSize(VertexAttributeBufferComponentFormat format)
+        => format switch
+        {
+            VertexAttributeBufferComponentFormat.UByteNormalized => 1,
+            VertexAttributeBufferComponentFormat.UByte => 1,
+            VertexAttributeBufferComponentFormat.SByteNormalized => 1,
+            VertexAttributeBufferComponentFormat.SByte => 1,
+
+            VertexAttributeBufferComponentFormat.UShortNormalized => 2,
+            VertexAttributeBufferComponentFormat.UShort => 2,
+            VertexAttributeBufferComponentFormat.ShortNormalized => 2,
+            VertexAttributeBufferComponentFormat.Short => 2,
+
+            VertexAttributeBufferComponentFormat.Half => 2,
+            VertexAttributeBufferComponentFormat.Float => 4,
+
+            VertexAttributeBufferComponentFormat.UInt => 4,
+            VertexAttributeBufferComponentFormat.Int => 4,
+            VertexAttributeBufferComponentFormat.Double => 8,
+
+            _ => throw new NotImplementedException(),
+        };
+
+
+
 
 
     /// <summary>
-    /// The final attribute format that the shader recieves (or outputs).
+    /// The final attribute format that the shader receives (or outputs).
     /// </summary>
     public enum ShaderAttributeBufferFinalFormat : byte
     {
         Float,
+        Int,
         UInt,
 
         Vec2,
         Vec3,
         Vec4,
 
+        IVec2,
+        IVec3,
+        IVec4,
+
         UVec2,
         UVec3,
         UVec4,
 
+        BVec2,
+        BVec3,
+        BVec4,
+
+        Mat2,
         Mat3,
         Mat4,
+
+        Mat2x3,
+        Mat2x4,
+
+        Mat3x2,
+        Mat3x4,
+
+        Mat4x2,
+        Mat4x3
     }
 
 
-    public enum VertexAttributeScope
+
+    /// <summary>
+    /// The format of indices within an index buffer.
+    /// </summary>
+    public enum IndexBufferFormat : byte
+    {
+        UByte,
+        UShort,
+        UInt
+    }
+
+
+
+
+
+
+
+
+
+
+    public enum VertexAttributeScope : byte
     {
         PerVertex,
         PerInstance
@@ -331,7 +455,7 @@ public static partial class RenderingBackend
 
 
     /// <summary>
-    /// Flags which indicate capacity of access and mutability for a gpu resource.
+    /// Flags which indicate capacity for transfer access and mutability for a gpu resource.
     /// </summary>
     public enum ReadWriteFlags : byte
     {

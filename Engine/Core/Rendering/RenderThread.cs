@@ -22,6 +22,14 @@ public static class RenderThread
 
 
 
+
+#if DEBUG
+    public static volatile uint DrawCalls = 0;
+#endif
+
+
+
+
     public static float Delta { get; private set; }
 
     private static readonly Stopwatch RenderStopWatch = new();
@@ -78,7 +86,7 @@ public static class RenderThread
                 PushState = CommandPushState.Frame;
                 SwapBuffers();
 
-                ResetNessecaryBuffers();
+                ResetnecessaryBuffers();
             }
 
             ResetDiscardableBuffers();
@@ -94,7 +102,7 @@ public static class RenderThread
                 PushState = CommandPushState.Flush;
                 SwapBuffers();
 
-                ResetNessecaryBuffers();
+                ResetnecessaryBuffers();
             }
 
             ResetDiscardableBuffers();
@@ -129,10 +137,10 @@ public static class RenderThread
         RenderContentAllocatorB.Reset();
     }
 
-    private static void ResetNessecaryBuffers()
+    private static void ResetnecessaryBuffers()
     {
-        NessecaryPreRenderingCommandBufferB.Reset();
-        NessecaryRenderContentAllocatorB.Reset();
+        necessaryPreRenderingCommandBufferB.Reset();
+        necessaryRenderContentAllocatorB.Reset();
     }
 
 
@@ -143,8 +151,8 @@ public static class RenderThread
 
         (RenderContentAllocatorB, RenderContentAllocatorA) = (RenderContentAllocatorA, RenderContentAllocatorB);
 
-        (NessecaryPreRenderingCommandBufferB, NessecaryPreRenderingCommandBufferA) = (NessecaryPreRenderingCommandBufferA, NessecaryPreRenderingCommandBufferB);
-        (NessecaryRenderContentAllocatorB, NessecaryRenderContentAllocatorA) = (NessecaryRenderContentAllocatorA, NessecaryRenderContentAllocatorB);
+        (necessaryPreRenderingCommandBufferB, necessaryPreRenderingCommandBufferA) = (necessaryPreRenderingCommandBufferA, necessaryPreRenderingCommandBufferB);
+        (necessaryRenderContentAllocatorB, necessaryRenderContentAllocatorA) = (necessaryRenderContentAllocatorA, necessaryRenderContentAllocatorB);
     }
 
 
@@ -213,7 +221,7 @@ public static class RenderThread
         }
 
 
-        NessecaryPreRenderingCommandBufferA.Execute();
+        necessaryPreRenderingCommandBufferA.Execute();
 
 
         PreRenderingCommandBufferA.Execute();
@@ -227,7 +235,9 @@ public static class RenderThread
         }
 
 
-
+#if DEBUG
+        DrawCalls = 0;
+#endif
 
 
         RenderingBackend.StartFrameRendering(); 
@@ -239,12 +249,11 @@ public static class RenderThread
 #if DEBUG
         Stripped.EngineDebug.RenderThreadProcessingTime = (float)RenderStopWatch.Elapsed.TotalSeconds;
 #endif
-
-        RenderingBackend.EndFrameRendering();
-
+        var renderTime = RenderingBackend.EndFrameRendering(); 
 #if DEBUG
-        Stripped.EngineDebug.RenderThreadRenderingTime = (float)RenderStopWatch.Elapsed.TotalSeconds - Stripped.EngineDebug.RenderThreadProcessingTime;
+        Stripped.EngineDebug.RenderThreadRenderingTime = renderTime - Stripped.EngineDebug.RenderThreadProcessingTime;
 #endif
+
 
 
         RenderContentAllocatorA.Reset();
@@ -339,7 +348,7 @@ public static class RenderThread
     /// <summary>
     /// Allocates temporary unmanaged heap memory that will be valid until the end of the next successfully rendered frame.
     /// </summary>
-    public static unsafe byte* AllocateNessecaryRenderTemporaryUnmanaged(int bytes) => NessecaryRenderContentAllocatorB.Alloc(bytes);
+    public static unsafe byte* AllocatenecessaryRenderTemporaryUnmanaged(int bytes) => necessaryRenderContentAllocatorB.Alloc(bytes);
 
 
 
@@ -350,10 +359,10 @@ public static class RenderThread
     private static DeferredCommandBuffer RenderingCommandBufferA = new(), RenderingCommandBufferB = new();
     private static DeferredCommandBuffer PreRenderingCommandBufferA = new(), PreRenderingCommandBufferB = new();
 
-    private static DeferredCommandBuffer NessecaryPreRenderingCommandBufferA = new(), NessecaryPreRenderingCommandBufferB = new();
+    private static DeferredCommandBuffer necessaryPreRenderingCommandBufferA = new(), necessaryPreRenderingCommandBufferB = new();
 
 
-    private static DynamicUnmanagedHeapAllocator NessecaryRenderContentAllocatorA = new(), NessecaryRenderContentAllocatorB = new();
+    private static DynamicUnmanagedHeapAllocator necessaryRenderContentAllocatorA = new(), necessaryRenderContentAllocatorB = new();
 
 
 
@@ -420,15 +429,15 @@ public static class RenderThread
     /// </summary>
     /// <typeparam name="T"></typeparam>
     /// <param name="cmd"></param>
-    public static void PushDeferredNessecaryPreRenderThreadCommand<T>(in T cmd) where T : unmanaged, IDeferredCommand<T>
-        => NessecaryPreRenderingCommandBufferB.PushCommand(cmd);
+    public static void PushDeferrednecessaryPreRenderThreadCommand<T>(in T cmd) where T : unmanaged, IDeferredCommand<T>
+        => necessaryPreRenderingCommandBufferB.PushCommand(cmd);
 
     /// <summary>
     /// Pushes an static method pointer to be executed just before the upcoming frame's rendering on the render thread. Guaranteed to run before the next frame. Thread safe.
     /// </summary>
     /// <param name="ptr"></param>
-    public static unsafe void PushDeferredNessecaryPreRenderThreadCommand(delegate*<void> ptr)
-        => NessecaryPreRenderingCommandBufferB.PushCommand(ptr);
+    public static unsafe void PushDeferrednecessaryPreRenderThreadCommand(delegate*<void> ptr)
+        => necessaryPreRenderingCommandBufferB.PushCommand(ptr);
 
 
 
@@ -438,8 +447,8 @@ public static class RenderThread
     /// <typeparam name="TData"></typeparam>
     /// <param name="data"></param>
     /// <param name="ptr"></param>
-    public static unsafe void PushDeferredNessecaryPreRenderThreadCommand<TData>(TData data, delegate*<TData*, void> ptr) where TData : unmanaged
-        => NessecaryPreRenderingCommandBufferB.PushCommand(data, ptr);
+    public static unsafe void PushDeferrednecessaryPreRenderThreadCommand<TData>(TData data, delegate*<TData*, void> ptr) where TData : unmanaged
+        => necessaryPreRenderingCommandBufferB.PushCommand(data, ptr);
 
 
 

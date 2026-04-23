@@ -48,29 +48,29 @@ public static partial class EngineSettings
     /// Initial settings to start the engine with. Encompasses all adjustable settings in addition to settings that require being set on startup and/or as process environment variables.
     /// <br/> Adjustable settings can be set at runtime via <see cref="EngineSettings"/> and <see cref="Window"/>.
     /// </summary>
-    public readonly struct EngineInitSettings()
+    public struct EngineInitSettings()
     {
 
         //backend/system
 
-        public readonly RenderingBackend.RenderingBackendEnum RenderingBackend;
-        public readonly ulong VRAMMemoryLimit = 0;
+        public RenderingBackend.RenderingBackendEnum RenderingBackend;
+        public ulong VRAMMemoryLimit = 0;
 
 
 
         //window
 
-        public readonly Vector2<uint> InitialWindowSize = new(1280,720);
-        public readonly Vector2<uint> InitialWindowPosition = new(64);
+        public Vector2<uint> InitialWindowSize = new(1280,720);
+        public Vector2<uint> InitialWindowPosition = new(64);
 
-        public readonly bool InitialWindowFullscreen = false;
-        public readonly bool InitialWindowResizeable = true;
-        public readonly bool InitialWindowAlwaysOnTop = false;
-        public readonly bool UseHDR = true;
-        public readonly byte VSync = 1;
+        public bool InitialWindowFullscreen = false;
+        public bool InitialWindowResizeable = true;
+        public bool InitialWindowAlwaysOnTop = false;
+        public bool InitialHDR = true;
+        public byte InitialVSync = 0;
 
 
-        public readonly string WindowTitle = "Window";
+        public string InitialWindowTitle = "Window";
 
 
 
@@ -79,14 +79,14 @@ public static partial class EngineSettings
         //other
 
         /// <summary>
-        /// <inheritdoc cref="EngineSettings.LogicRateTarget"/>
+        /// <inheritdoc cref="LogicRateTarget"/>
         /// </summary>
-        public readonly ushort LogicRateTarget = 0;
+        public ushort InitialLogicRateTarget = 0;
 
         /// <summary>
-        /// <inheritdoc cref="EngineSettings.RenderRateTarget"/>
+        /// <inheritdoc cref="RenderRateTarget"/>
         /// </summary>
-        public readonly ushort RenderRateTarget = 0;
+        public ushort InitialRenderRateTarget = 0;
     }
 
 

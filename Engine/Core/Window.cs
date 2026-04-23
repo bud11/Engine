@@ -33,7 +33,7 @@ public static class Window
         SDL.WindowFlags flags = RenderingBackend.GetSDLWindowFlagsForBackend(settings.RenderingBackend);
         if (settings.InitialWindowResizeable) flags |= SDL.WindowFlags.Resizable;
 
-        SDLWindowHandle = SDL.CreateWindow(settings.WindowTitle, (int)settings.InitialWindowSize.X, (int)settings.InitialWindowSize.Y, flags);
+        SDLWindowHandle = SDL.CreateWindow(settings.InitialWindowTitle, (int)settings.InitialWindowSize.X, (int)settings.InitialWindowSize.Y, flags);
         if (SDLWindowHandle == IntPtr.Zero) 
             throw new Exception($"Failed to create SDL3 window - {SDL.GetError()}");
 
@@ -45,7 +45,7 @@ public static class Window
 
 
         SDL.SetWindowPosition(SDLWindowHandle, (int)GivenInitSettings.InitialWindowPosition.X, (int)GivenInitSettings.InitialWindowPosition.Y);
-        SDL.SetWindowSurfaceVSync(SDLWindowHandle, GivenInitSettings.VSync);
+        SDL.SetWindowSurfaceVSync(SDLWindowHandle, GivenInitSettings.InitialVSync);
         SDL.SetWindowFullscreen(SDLWindowHandle, GivenInitSettings.InitialWindowFullscreen);
         SDL.SetWindowAlwaysOnTop(SDLWindowHandle, GivenInitSettings.InitialWindowAlwaysOnTop);
 

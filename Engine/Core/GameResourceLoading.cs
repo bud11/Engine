@@ -7,8 +7,6 @@ namespace Engine.Core;
 
 
 
-using Attributes;
-using Engine.GameResources;
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
@@ -17,13 +15,16 @@ using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using ZstdSharp;
+using static Engine.Core.IO;
+
+
+using static Engine.Core.References;
+
 
 #if DEBUG
 using System.IO.Hashing;
 using System.Reflection;
 using Engine.Stripped;
-using System.Runtime.CompilerServices;
-using static Engine.Core.IO;
 #endif
 
 
@@ -60,61 +61,6 @@ public partial class GameResource
 
 
 
-
-
-
-
-
-    /// <summary>
-    /// (Re)scans for (registered, not arbitrary) asset archives>. Only affects release builds.
-    /// </summary>
-    
-    public static unsafe void ScanForAssetArchives()
-    {
-#if RELEASE && !ENGINE_BUILD_PASS
-
-        AssetLookupDirect.Clear();
-        FolderLookupDirect.Clear();
-
-
-        //find archives, load headers
-
-        foreach (string archiveName in AssetArchiveNames)
-        {
-            var archivePath = Path.Combine(Directory.GetCurrentDirectory(), archiveName);
-
-            using (var filestream = new FileStream(archivePath, FileMode.Open, FileAccess.Read))
-            {
-                var read = Parsing.ValueReader.FromStream(filestream);
-
-                var assetCount = read.ReadUnmanaged<uint>();
-                for (uint i = 0; i < assetCount; i++)
-                {
-                    var assetOffset = read.ReadUnmanaged<ulong>();
-                    var assetLength = read.ReadUnmanaged<ulong>();
-                    var assetPath = read.ReadString();
-                    Type assetType = GameResource.GetGameResourceTypeFromTypeID(read.ReadUnmanaged<ushort>());
-
-                    AssetLookupDirect[$"{archiveName}/{assetPath}"] = new AssetDataRange(archivePath, assetType, assetOffset, assetLength);
-                }
-            }
-        }
-
-
-        //construct folder lookup
-
-        foreach (var kv in AssetLookupDirect)
-        {
-            var idxof = kv.Key.LastIndexOf('/');
-            var container = kv.Key[..idxof];
-
-            if (!FolderLookupDirect.TryGetValue(container, out var dict)) FolderLookupDirect[container] = dict = new();
-
-            dict[kv.Key[(idxof + 1)..]] = kv.Value;
-        }
-
-#endif
-    }
 
 
 
@@ -173,7 +119,7 @@ public partial class GameResource
 
 
     /// <summary>
-    /// Loads a <see cref="GameResource"/> from a folder/archive within the game's asset root directory (see <see cref="AssetRootDirectoryPath"/>).
+    /// Loads or fetches a <see cref="GameResource"/> from a folder/archive within the game's asset root directory (see <see cref="AssetRootDirectoryPath"/>).
     /// <br/> <b><paramref name="resourcePath"/> should be relative to the asset root directory and should not include a file extension. </b>
     /// </summary>
     /// <typeparam name="T"></typeparam>
@@ -221,7 +167,7 @@ public partial class GameResource
 
             //if type converts, try loading cached result, otherwise convert and cache result if cached file doesnt exist or doesnt match
 
-            stream = await GetFinalAssetBytes<T>(loadpath);
+            stream = await GetFinalAssetBytes(typeof(T), loadpath);
 
 
 #else
@@ -249,54 +195,34 @@ public partial class GameResource
 
 
 
-    /// <summary>
-    /// Caches and/or fetches the asset file at <paramref name="relativePath"/>'s final bytes.
-    /// <br/> This is a development-time debug-only method and usually shouldn't be used directly.
-    /// </summary>
-    /// <typeparam name="T"></typeparam>
-    /// <param name="relativePath"></param>
-    /// <returns></returns>
-    public static async Task<AssetByteStream> GetFinalAssetBytes<T>(string relativePath) where T : GameResource
-    {
-        return await GetFinalAssetBytes<T>(new Bytes(await AcquireAssetByteStream(relativePath).GetArray()), relativePath);
-    }
-
-    public static Task<AssetByteStream> GetFinalAssetBytes(Type resourceType, string relativePath)
-    {
-       return (Task<AssetByteStream>)typeof(GameResource).GetMethod(nameof(GetFinalAssetBytes), [typeof(string)]).MakeGenericMethod(resourceType).Invoke(null, [relativePath]);
-    }
-
-    public static Task<AssetByteStream> GetFinalAssetBytes(Type resourceType, Bytes unconvertedData, string relativePath = null)
-    {
-        return (Task<AssetByteStream>)typeof(GameResource).GetMethod(nameof(GetFinalAssetBytes), [typeof(Bytes), typeof(string)]).MakeGenericMethod(resourceType).Invoke(null, [unconvertedData, relativePath]);
-    }
-
-
-
-
-
-
-
-
-
 
     private static readonly SemaphoreSlim AssetConversionThrottle = new(MaxParallelAssetConversions);
-
-
-    public static async Task EnterAssetConversionSemaphore()
-    {
-        if (MaxParallelAssetConversions != 0) await AssetConversionThrottle.WaitAsync();
-    }
-    public static void ExitAssetConversionSemaphore()
-    {
-        if (MaxParallelAssetConversions != 0) AssetConversionThrottle.Release();
-    }
+    private static readonly AsyncLocal<string> CurrentConvertingTopLevelAsset = new();
 
 
 
 
     /// <summary>
-    /// Fetches and/or caches an asset file's final bytes, assuming the asset file's contents are <paramref name="unconvertedData"/>, and its path on disk is <paramref name="relativePath"/>.
+    /// <inheritdoc cref="GetFinalAssetBytes(Type, Bytes, string)"/>
+    /// </summary>
+    /// <param name="resourceT"></param>
+    /// <param name="relativePath"></param>
+    /// <returns></returns>
+    /// <exception cref="InvalidOperationException"></exception>
+    public static async Task<AssetByteStream> GetFinalAssetBytes(Type resourceT, string relativePath = null)
+    {
+        if (!resourceT.IsAssignableTo(typeof(GameResource)))
+            throw new InvalidOperationException();
+
+        return await GetFinalAssetBytes(resourceT, new Bytes(await AcquireAssetByteStream(relativePath).GetArray()), relativePath);
+    }
+
+
+
+
+
+    /// <summary>
+    /// Fetches and/or caches a file's final bytes, assuming the asset file's contents are <paramref name="unconvertedData"/>, and its path on disk is <paramref name="relativePath"/>.
     /// <br/>
     /// <br/> This is a development-time debug-only method and usually shouldn't be used directly.
     /// </summary>
@@ -304,10 +230,12 @@ public partial class GameResource
     /// <param name="unconvertedData"></param>
     /// <param name="relativePath"></param>
     /// <returns></returns>
-    public static async Task<AssetByteStream> GetFinalAssetBytes<T>(Bytes unconvertedData, string relativePath = null) where T : GameResource
+    public static async Task<AssetByteStream> GetFinalAssetBytes(Type resourceT, Bytes unconvertedData, string relativePath = null)
     {
 
-       
+        if (!resourceT.IsAssignableTo(typeof(GameResource))) 
+            throw new InvalidOperationException();
+
 
 
         var loadingDbgString = $"Loading asset file '{relativePath}'";
@@ -323,7 +251,7 @@ public partial class GameResource
 
 
 
-        var convertcheck = typeof(T).IsAssignableTo(typeof(GameResource.IConverts));
+        var convertcheck = resourceT.IsAssignableTo(typeof(IConverts));
 
 
         if (convertcheck)
@@ -368,7 +296,7 @@ public partial class GameResource
                             var validationBlock = read.ReadUnmanagedSpan<byte>(validationLength);
 
 
-                            var method = typeof(T)
+                            var method = resourceT
                                 .GetMethods(BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic)
                                 .Single(m =>
                                     m.Name.Contains("Validate") &&
@@ -420,7 +348,11 @@ public partial class GameResource
 
             if (crc == 0)
             {
-                await EnterAssetConversionSemaphore();
+
+
+                if (CurrentConvertingTopLevelAsset.Value == null)
+                    CurrentConvertingTopLevelAsset.Value = relativePath;
+
 
 
                 statusPrint($"Required cache missing or out of date for asset '{relativePath}', converting...");
@@ -442,8 +374,10 @@ public partial class GameResource
                 for (int i = 0; i < 4; i++)
                 {
                     if (unconvertedData.ByteArray[i] != zstdMagic[i])
+                    {
                         zstd = false;
                         break;
+                    }
                 }
 
 
@@ -469,21 +403,24 @@ public partial class GameResource
 
 
 
-                var method = typeof(T)
+
+                var method = resourceT
                     .GetMethods(BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic)
                     .Single(m =>
                         m.Name.Contains("ConvertToFinalAssetBytes") &&
                         m.GetParameters().Length == 2 &&
-                        m.ReturnType == typeof(Task<GameResource.IConverts.FinalAssetBytes>)
+                        m.ReturnType == typeof(Task<IConverts.FinalAssetBytes>)
                     );
 
 
-                var finalBytes = await (Task<GameResource.IConverts.FinalAssetBytes>)method.Invoke(null, [unconvertedData, relativePath]);
+                var finalBytes = await (Task<IConverts.FinalAssetBytes>)method.Invoke(null, [unconvertedData, relativePath]);
 
 
                 //just incase not disposed..
                 unconvertedData.Dispose();
                 unconvertedData = null;
+
+
 
 
 
@@ -547,7 +484,11 @@ public partial class GameResource
                 GC.Collect();
 
 
-                ExitAssetConversionSemaphore();
+
+                if (CurrentConvertingTopLevelAsset.Value == relativePath)
+                    CurrentConvertingTopLevelAsset.Value = null;
+
+
             }
         }
 
@@ -644,16 +585,6 @@ public partial class GameResource
     private static readonly SemaphoreSlim ResourceLoadThrottle = new(MaxParalleResourceLoads);
 
 
-    public static async Task EnterResourceLoadThrottleSemaphore()
-    {
-        if (MaxParalleResourceLoads != 0) await ResourceLoadThrottle.WaitAsync();
-    }
-    public static void ExitResourceLoadThrottleSemaphore()
-    {
-        if (MaxParalleResourceLoads != 0) ResourceLoadThrottle.Release();
-    }
-
-
 
 
 
@@ -661,11 +592,8 @@ public partial class GameResource
 
     private static readonly SemaphoreSlim LoadedResourcesSemaphore = new(1, 1);
 
-    private static readonly Dictionary<string, TaskCompletionSource<References.WeakObjRef<GameResource>>> LoadedResources = new();
-
-
-
-
+    private static readonly Dictionary<string, Task<GameResource>> LoadingResources = new();
+    private static readonly Dictionary<string, WeakObjRef<GameResource>> WeakLoadedResources = new();
 
 
     /// <summary>
@@ -674,116 +602,65 @@ public partial class GameResource
     /// <param name="resourcePath"></param>
     /// <param name="loader"></param>
     /// <returns></returns>
-    public static async Task<GameResource> InternalLoadOrFetchResource(string resourcePath, Func<Task<GameResource>> loader)
+    public static async Task<GameResource> InternalLoadOrFetchResource(
+        string resourcePath,
+        Func<Task<GameResource>> loader)
     {
-        await EnterResourceLoadThrottleSemaphore();
+        Task<GameResource> loadTask;
 
-
-        //acquire semaphore
         await LoadedResourcesSemaphore.WaitAsync();
 
+        try
+        {
+            if (LoadingResources.TryGetValue(resourcePath, out loadTask))
+                return await loadTask;
 
-        //see if resource is already loading or loaded, and if so, use that
-        if (LoadedResources.TryGetValue(resourcePath, out var loadstatus))
+            if (WeakLoadedResources.TryGetValue(resourcePath, out var weakRef))
+            {
+                var existing = weakRef.Dereference();
+
+                if (existing != null)
+                    return existing;
+
+                WeakLoadedResources.Remove(resourcePath);
+            }
+
+            loadTask = loader();
+            LoadingResources[resourcePath] = loadTask;
+        }
+        finally
         {
             LoadedResourcesSemaphore.Release();
-            return (await loadstatus.Task).Dereference(); 
         }
 
-
-        //otherwise, set up a task source and release the semaphore
-        LoadedResources[resourcePath] = new();
-        LoadedResourcesSemaphore.Release();
-
-        //load the resource
-        var resource = await loader.Invoke();
-
-
-        ExitResourceLoadThrottleSemaphore();
-
-
-
-
-        if (!LoadedResources.TryGetValue(resource.Key, out var get))
-            LoadedResources[resource.Key] = get = new();
-
-        get.SetResult(resource.GetWeakRef());
-
-
-
-        return resource;
-    }
-
-
-
-
-
-
-
-
-
-
-
-    public static string RelativePathToFullPath(string path, string baseDir)
-    {
-        if (!path.StartsWith('/')) path = baseDir + path;
-        return path;
-    }
-
-
-
-
-
-
-    /// <summary>
-    /// Determines whether a file exists. Always case sensitive unlike <see cref="File.Exists(string?)"/>
-    /// </summary>
-    /// <param name="path"></param>
-    /// <returns></returns>
-    public static bool FileExistsCaseSensitive(string path)
-    {
-        var fullPath = Path.GetFullPath(path);
-
-        var directory = Path.GetDirectoryName(fullPath);
-        var fileName = Path.GetFileName(fullPath);
-
-        if (directory == null || !Directory.Exists(directory))
-            return false;
-
-        foreach (var entry in Directory.EnumerateFiles(directory, fileName))
+        try
         {
-            if (Path.GetFileName(entry) == fileName)
-                return true;
+            return await loadTask;
         }
-
-        return false;
-    }
-
-
-    /// <summary>
-    /// Determines whether a directory exists. Always case sensitive unlike <see cref="Directory.Exists(string?)"/>
-    /// </summary>
-    /// <param name="path"></param>
-    /// <returns></returns>
-    public static bool DirectoryExistsCaseSensitive(string path)
-    {
-        var fullPath = Path.GetFullPath(path);
-
-        var parent = Path.GetDirectoryName(fullPath);
-        var name = Path.GetFileName(fullPath);
-
-        if (parent == null || !Directory.Exists(parent))
-            return false;
-
-        foreach (var entry in Directory.EnumerateDirectories(parent, name))
+        finally
         {
-            if (Path.GetFileName(entry) == name)
-                return true;
+            await LoadedResourcesSemaphore.WaitAsync();
+
+            try
+            {
+                if (LoadingResources.TryGetValue(resourcePath, out var existingTask) &&
+                    existingTask == loadTask)
+                {
+                    if (loadTask.IsCompletedSuccessfully)
+                    {
+                        var resource = await loadTask;
+                        WeakLoadedResources[resourcePath] = resource.GetWeakRef();
+                    }
+
+                    LoadingResources.Remove(resourcePath);
+                }
+            }
+            finally
+            {
+                LoadedResourcesSemaphore.Release();
+            }
         }
-
-        return false;
     }
-
 
 
 

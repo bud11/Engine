@@ -123,7 +123,7 @@ public abstract partial class GameResource : Freeable
 
         LoadedResourcesSemaphore.Wait();
 
-        LoadedResources.Remove(Key);
+        LoadingResources.Remove(Key);
 
         LoadedResourcesSemaphore.Release();
     }

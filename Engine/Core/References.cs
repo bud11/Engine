@@ -58,14 +58,10 @@ public static class References
             // same ref
             if (_value == other._value) return true;
 
-            // same instance
             var a = Dereference();
             var b = other.Dereference();
 
-
-            if (ReferenceEquals(a,b)) return true;
-
-            return object.Equals(a, b);
+            return Equals(a, b);
         }
 
 
@@ -76,12 +72,9 @@ public static class References
             if (b is WeakObjRef r)
                 return Equals(r);
 
-
             var a = Dereference();
 
-            if (ReferenceEquals(a, b)) return true;
-
-            return object.Equals(a, b);
+            return Equals(a, b);
         }
 
 
@@ -254,7 +247,6 @@ public static class References
         public static implicit operator WeakObjRef(WeakObjRef<T> id) => id.Ref;
 
         public static explicit operator WeakObjRef<T>(WeakObjRef id) => new(id);
-
 
 
 
@@ -501,6 +493,10 @@ public static class References
 
     public static UnmanagedKeyValueCollection<WeakObjRef<TKey>, WeakObjRef<TValue>> ToUnmanagedKV<TKey, TValue>(this Dictionary<TKey, TValue> dict) where TKey : class where TValue : class
     {
+
+        if (dict == null || dict.Count == 0) return default;
+
+
         var ret = new UnmanagedKeyValueCollection<WeakObjRef<TKey>, WeakObjRef<TValue>>();
 
         ref var kvs = ref ret.KeyValuePairs;
@@ -513,6 +509,10 @@ public static class References
 
     public static UnmanagedKeyValueCollection<WeakObjRef<TKey>, TValue> ToUnmanagedK<TKey, TValue>(this Dictionary<TKey, TValue> dict) where TKey : class where TValue : unmanaged
     {
+
+        if (dict == null || dict.Count == 0) return default;
+
+
         var ret = new UnmanagedKeyValueCollection<WeakObjRef<TKey>, TValue>();
 
         ref var kvs = ref ret.KeyValuePairs;
@@ -525,6 +525,10 @@ public static class References
 
     public static UnmanagedKeyValueCollection<TKey, WeakObjRef<TValue>> ToUnmanagedV<TKey, TValue>(this Dictionary<TKey, TValue> dict) where TKey : unmanaged where TValue : class
     {
+
+        if (dict == null || dict.Count == 0) return default;
+
+
         var ret = new UnmanagedKeyValueCollection<TKey, WeakObjRef<TValue>>();
 
         ref var kvs = ref ret.KeyValuePairs;
@@ -538,6 +542,13 @@ public static class References
 
 
 
+/*
 
+    private static HashSet<object> KeepAlive = new();
+    public static void KeepAliveUntilSafe(object obj) => KeepAlive.Add(obj);
+
+    public static void ClearKeepAlive(object obj) => KeepAlive.Clear();
+
+*/
 
 }

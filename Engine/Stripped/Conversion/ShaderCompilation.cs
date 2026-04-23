@@ -29,9 +29,6 @@ public static partial class ShaderCompilation
     private static readonly List<Task> ShaderCompilationTasks = new();
 
 
-    private static readonly Dictionary<string, ShaderMetadata.ShaderResourceSetMetadata> GlobalResourceSetContracts = new();
-
-
     private static object SuccessLock = new();
     private static bool Success = true;
 
@@ -47,7 +44,7 @@ public static partial class ShaderCompilation
 
         Success = true;
 
-        GlobalResourceSetContracts.Clear();
+        GlobalResourceSetMetadata.Clear();
 
 
         // collect outgoing shader register calls 
@@ -89,7 +86,7 @@ public static partial class ShaderCompilation
         if (ShaderCompilationTasks.Count != 0) 
             throw new Exception("Must be called before any shaders are registered.");
 
-        GlobalResourceSetContracts.Add(name, null);
+        GlobalResourceSetMetadata.Add(name, null);
     }
 
 
@@ -118,77 +115,81 @@ public static partial class ShaderCompilation
     private static List<ShaderError> ValidateResourceSetContracts(FrozenDictionary<string, (byte Binding, ShaderMetadata.ShaderResourceSetMetadata Metadata)> sets, ShaderRegisterCallInformation shaderInfo)
     {
 
-        var err = new List<ShaderError>();
-
-
-        foreach (var set in sets)
+        lock (GlobalResourceSetMetadata)
         {
-            if (GlobalResourceSetContracts.TryGetValue(set.Key, out var contract))
+            var err = new List<ShaderError>();
+
+
+            foreach (var set in sets)
             {
 
-                // add
-                if (contract == null)
+                if (GlobalResourceSetMetadata.TryGetValue(set.Key, out var contract))
                 {
-                    GlobalResourceSetMetadata[set.Key] = set.Value.Metadata;
+
+                    // add
+                    if (contract == null)
+                    {
+                        GlobalResourceSetMetadata[set.Key] = GlobalResourceSetMetadata[set.Key] = set.Value.Metadata;
+                    }
+
+
+                    // validate match
+                    else
+                    {
+                        var actual = set.Value.Metadata;
+
+
+                        // -------- TEXTURES --------
+
+                        foreach (var tex in contract.Textures)
+                        {
+                            if (!actual.Textures.TryGetValue(tex.Key, out var texget))
+                                err.Add(new ShaderError(-1, $"Missing texture '{tex.Key}' in set '{set.Key}'"));
+
+                            if (texget.Binding != tex.Value.Binding
+                                || texget.Metadata.SamplerType != tex.Value.Metadata.SamplerType
+                                || texget.Metadata.ArrayLength != tex.Value.Metadata.ArrayLength)
+                                err.Add(new ShaderError(-1, $"Mismatch for texture '{tex.Key}' in set '{set.Key}'"));
+                        }
+
+                        foreach (var tex in actual.Textures)
+                        {
+                            if (!contract.Textures.ContainsKey(tex.Key))
+                                err.Add(new ShaderError(-1, $"Extra texture '{tex.Key}' in set '{set.Key}'"));
+                        }
+
+
+
+
+                        // -------- BUFFERS --------
+
+                        foreach (var ubo in contract.Buffers)
+                        {
+                            if (!actual.Buffers.TryGetValue(ubo.Key, out var uboget))
+                                err.Add(new ShaderError(-1, $"Missing data buffer '{ubo.Key}' in set '{set.Key}'"));
+
+                            if (uboget.Binding != ubo.Value.Binding
+                                || uboget.Metadata.SizeRequirement != ubo.Value.Metadata.SizeRequirement
+                                || !uboget.Metadata.Members.SequenceEqual(ubo.Value.Metadata.Members))
+                                err.Add(new ShaderError(-1, $"Mismatch for data buffer '{ubo.Key}' in set '{set.Key}'"));
+                        }
+
+                        foreach (var ubo in actual.Buffers)
+                        {
+                            if (!contract.Buffers.ContainsKey(ubo.Key))
+                                err.Add(new ShaderError(-1, $"Extra data buffer '{ubo.Key}' in set '{set.Key}'"));
+                        }
+
+
+                    }
                 }
 
-
-                // validate match
-                else
-                {
-                    var actual = set.Value.Metadata;
-
-
-
-
-                    // -------- TEXTURES --------
-
-                    foreach (var tex in contract.Textures)
-                    {
-                        if (!actual.Textures.TryGetValue(tex.Key, out var texget))
-                            err.Add(new ShaderError(-1, $"Missing texture '{tex.Key}' in set '{set.Key}'"));
-
-                        if (texget.Binding != tex.Value.Binding
-                            || texget.Metadata.SamplerType != tex.Value.Metadata.SamplerType
-                            || texget.Metadata.ArrayLength != tex.Value.Metadata.ArrayLength)
-                            err.Add(new ShaderError(-1, $"Mismatch for texture '{tex.Key}' in set '{set.Key}'"));
-                    }
-
-                    foreach (var tex in actual.Textures)
-                    {
-                        if (!contract.Textures.ContainsKey(tex.Key))
-                            err.Add(new ShaderError(-1, $"Extra texture '{tex.Key}' in set '{set.Key}'"));
-                    }
-
-
-
-
-                    // -------- BUFFERS --------
-
-                    foreach (var ubo in contract.Buffers)
-                    {
-                        if (!actual.Buffers.TryGetValue(ubo.Key, out var uboget))
-                            err.Add(new ShaderError(-1, $"Missing data buffer '{ubo.Key}' in set '{set.Key}'"));
-
-                        if (uboget.Binding != ubo.Value.Binding
-                            || uboget.Metadata.SizeRequirement != ubo.Value.Metadata.SizeRequirement
-                            || !uboget.Metadata.FieldOffsets.SequenceEqual(ubo.Value.Metadata.FieldOffsets)
-                            || !uboget.Metadata.ContiguousRegions.SequenceEqual(ubo.Value.Metadata.ContiguousRegions))
-                            err.Add(new ShaderError(-1, $"Mismatch for data buffer '{ubo.Key}' in set '{set.Key}'"));
-                    }
-
-                    foreach (var ubo in actual.Buffers)
-                    {
-                        if (!contract.Buffers.ContainsKey(ubo.Key))
-                            err.Add(new ShaderError(-1, $"Extra data buffer '{ubo.Key}' in set '{set.Key}'"));
-                    }
-
-
-                }
             }
+
+            return err;
+
         }
 
-        return err;
     }
 
 
@@ -696,7 +697,8 @@ public static partial class ShaderCompilation
                             var set = tex.GetProperty("set").GetByte();
                             if (!Textures.TryGetValue(set, out var setGet)) Textures[set] = setGet = new();
 
-                            setGet[tex.GetProperty("name").GetString()] = (tex.GetProperty("binding").GetByte(), new ShaderMetadata.ShaderTextureMetadata(parse, 1));
+                            setGet[tex.GetProperty("name").GetString()] = (tex.GetProperty("binding").GetByte(), new ShaderMetadata.ShaderTextureMetadata(parse, tex.TryGetProperty("array", out var arr) ? arr.EnumerateArray().First().GetUInt32() : 1));
+
                         }
 
                         else
@@ -729,86 +731,153 @@ public static partial class ShaderCompilation
 
 
 
-
-                            List<(uint start, uint end)> datastartendpoints = new();
-
-                            Dictionary<string, uint> offsets = new();
+                            Dictionary<string, ShaderMetadata.ShaderDataBufferMetadata.MemberInfo> memberMetadata = new();
 
 
+                            var members = bufTypeInfo.GetProperty("members").EnumerateArray().ToArray();
 
-
-                            var members = bufTypeInfo.GetProperty("members").EnumerateArray();
-
-                            foreach (var m in members)
+                            for (int i = 0; i < members.Length; i++)
                             {
-                                string name = m.GetProperty("name").GetString();
-                                uint offset = m.GetProperty("offset").GetUInt32();
+                                var member = members[i];
 
-                                offsets[name] = offset;
+                                var parse = ParseMember(
+                                    member, 
+                                    types, 
+                                    i == members.Length-1 ? bufBlockSize : members[i + 1].GetProperty("offset").GetUInt32()
+                                    );
 
-                                AddRegionsForType(m, offset, types, datastartendpoints);
-                            }
 
-
-                            static void AddRegionsForType(
-                                JsonElement typeInfo,
-                                uint baseOffset,
-                                JsonElement types,
-                                List<(uint start, uint end)> datastartendpoints)
-                            {
-                                if (typeInfo.TryGetProperty("type", out var typeProp))
-                                {
-                                    string type = typeProp.GetString();
-
-                                    var size = GetSPIRVPrimitiveSize(type);
-
-                                    if (size.HasValue)
-                                    {
-                                        datastartendpoints.Add((baseOffset, baseOffset + size.Value));
-                                        return;
-                                    }
-
-                                    typeInfo = types.GetProperty(type);
-                                }
-
-                                var members = typeInfo.GetProperty("members").EnumerateArray();
-
-                                foreach (var m in members)
-                                {
-                                    uint memberOffset = m.GetProperty("offset").GetUInt32();
-                                    AddRegionsForType(m, baseOffset + memberOffset, types, datastartendpoints);
-                                }
+                                memberMetadata.Add(parse.name, parse.info);
                             }
 
 
 
 
 
-                            var regionsList = new List<ContiguousRegion>();
-                            if (datastartendpoints.Count != 0)
+
+                            static (string name, ShaderMetadata.ShaderDataBufferMetadata.MemberInfo info) ParseMember(JsonElement m, JsonElement types, uint nextPhysicalStart)
                             {
-                                datastartendpoints.Sort((a, b) => a.start.CompareTo(b.start));
 
-                                uint mergedStart = datastartendpoints[0].start;
-                                uint mergedEnd = datastartendpoints[0].end;
+                                string member_name = m.GetProperty("name").GetString()!;
+                                uint member_physicaloffset = m.GetProperty("offset").GetUInt32()!;
 
-                                for (int i = 1; i < datastartendpoints.Count; i++)
+
+                                var member_typeLogicalSize = GetTypeLogicalSize(m, types);
+
+
+                                bool member_isArray = m.TryGetProperty("array", out var arrayGet);
+                                uint member_arrayStride = member_isArray ? m.GetProperty("array_stride").GetUInt32() : 0;
+
+                                uint member_physicalSize = member_isArray ? member_arrayStride : nextPhysicalStart-member_physicaloffset;
+
+
+
+                                ShaderMetadata.ShaderDataBufferMetadata.MemberInfo info;
+
+
+
+                                // PRIMITIVE
+
+                                if (member_typeLogicalSize.primitive)
                                 {
-                                    var (start, end) = datastartendpoints[i];
-
-                                    if (start <= mergedEnd)
-                                    {
-                                        mergedEnd = Math.Max(mergedEnd, end);
-                                    }
-                                    else
-                                    {
-                                        regionsList.Add(new ContiguousRegion(mergedStart, mergedEnd));
-                                        mergedStart = start;
-                                        mergedEnd = end;
-                                    }
+                                    info = new ShaderMetadata.ShaderDataBufferMetadata.PrimitiveInfo(member_physicaloffset, member_physicalSize, member_typeLogicalSize.size);
                                 }
 
-                                regionsList.Add(new ContiguousRegion(mergedStart, mergedEnd));
+
+                                // STRUCT
+
+                                else
+                                {
+                                    var memberMetadata = new Dictionary<string, ShaderMetadata.ShaderDataBufferMetadata.MemberInfo>();
+
+                                    var structMembers = types
+                                        .GetProperty(m.GetProperty("type").GetString())
+                                        .GetProperty("members")
+                                        .EnumerateArray()
+                                        .ToArray();
+
+
+
+                                    for (int i = 0; i < structMembers.Length; i++)
+                                    {
+                                        var member = structMembers[i];
+
+                                        var parse = ParseMember(
+                                            member, 
+                                            types, i == structMembers.Length - 1
+                                                ? member_physicalSize
+                                                : structMembers[i + 1].GetProperty("offset").GetUInt32());
+
+                                        memberMetadata.Add(parse.name, parse.info);
+                                    }
+
+
+                                    info =
+                                        new ShaderMetadata.ShaderDataBufferMetadata.StructInfo(member_physicaloffset, member_physicalSize, member_typeLogicalSize.size, 
+                                            FrozenDictionary.ToFrozenDictionary(memberMetadata),
+                                            ImmutableArray.ToImmutableArray(memberMetadata.Select(x => (x.Key, x.Value)).OrderBy(x => x.Value.RelativeOffset))
+                                            );
+                                }
+
+
+
+                                if (member_isArray)
+                                {
+                                    var length = arrayGet.EnumerateArray().First().GetUInt32();
+                                    return (member_name, new ShaderMetadata.ShaderDataBufferMetadata.ArrayInfo(BaseMemberInfo: info, Length: length));
+                                }
+
+
+                                return (member_name, info);
+
+
+
+                                static (bool primitive, uint size) GetTypeLogicalSize(JsonElement t, JsonElement types)
+                                {
+                                    var typeName = t.GetProperty("type").GetString();
+
+                                    uint? typeLogicalSize = typeName switch
+                                    {
+                                        "float" => 4,
+                                        "int" => 4,
+                                        "uint" => 4,
+                                        "bool" => 4,
+
+                                        "vec2" => 8,
+                                        "vec3" => 12,
+                                        "vec4" => 16,
+
+                                        "ivec2" => 8,
+                                        "ivec3" => 12,
+                                        "ivec4" => 16,
+
+                                        "uvec2" => 8,
+                                        "uvec3" => 12,
+                                        "uvec4" => 16,
+
+                                        "mat2" => 16,
+                                        "mat3" => 36,
+                                        "mat4" => 64,
+
+                                        _ => null,
+                                    };
+
+
+                                    // primitive
+                                    if (typeLogicalSize.HasValue)
+                                        return (true, typeLogicalSize.Value);
+
+
+
+                                    // struct
+                                    uint logicalSize = 0;
+                                    foreach (var m in types.GetProperty(typeName).GetProperty("members").EnumerateArray())
+                                        logicalSize += GetTypeLogicalSize(m, types).size;
+
+
+                                    return (false, logicalSize);
+                                }
+
                             }
 
 
@@ -817,14 +886,13 @@ public static partial class ShaderCompilation
                             if (!addTo.TryGetValue(set, out var setGet)) addTo[set] = setGet = new();
 
 
-
                             setGet[bufName] = new(
                                 buf.GetProperty("binding").GetByte(), new ShaderMetadata.ShaderDataBufferMetadata
                                 (
                                     UsageFlags : group == "ubos" ? BufferUsageFlags.Uniform : BufferUsageFlags.Storage,
                                     ReadWriteFlags : (buf.TryGetProperty("readonly", out var readonlyGet) && readonlyGet.GetBoolean()) ? ReadWriteFlags.GPURead : ReadWriteFlags.GPURead | ReadWriteFlags.GPUWrite,
-                                    FieldOffsets: FrozenDictionary.ToFrozenDictionary(offsets),
-                                    ContiguousRegions: regionsList.ToImmutableArray(),
+                                    Members: FrozenDictionary.ToFrozenDictionary(memberMetadata),
+                                    MembersIndexed: ImmutableArray.ToImmutableArray(memberMetadata.Select(x=>(x.Key, x.Value)).OrderBy(x=>x.Value.RelativeOffset)),
                                     SizeRequirement: buf.GetProperty("block_size").GetUInt32()
                                 ));
 
@@ -918,14 +986,6 @@ public static partial class ShaderCompilation
 
 
 
-        for (byte i = 0; i < SetNames.Length; i++)
-        {
-            string name = SetNames[i];
-            if (!sets.ContainsKey(name))
-                err.Add(new ShaderError(-1, $"Set name '{name}' does not correspond to any resources"));
-        }
-
-
 
 
         // ------------ RETURN ------------
@@ -933,39 +993,6 @@ public static partial class ShaderCompilation
         return new(err, FrozenDictionary.ToFrozenDictionary(InputAttributes), FrozenDictionary.ToFrozenDictionary(OutputAttributes), FrozenDictionary.ToFrozenDictionary(sets));
 
 
-    }
-
-
-
-
-
-    private static uint? GetSPIRVPrimitiveSize(string typeName)
-    {
-        return typeName switch
-        {
-            "float" => 4,
-            "int" => 4,
-            "uint" => 4,
-            "bool" => 4,
-
-            "vec2" => 8,
-            "vec3" => 12,
-            "vec4" => 16,
-
-            "ivec2" => 8,
-            "ivec3" => 12,
-            "ivec4" => 16,
-
-            "uvec2" => 8,
-            "uvec3" => 12,
-            "uvec4" => 16,
-
-            "mat2" => 16,
-            "mat3" => 36,
-            "mat4" => 64,
-
-            _ => null
-        };
     }
 
 
@@ -1538,7 +1565,7 @@ public static partial class ShaderCompilation
 
                 return new SpirvDrawCompilationResult(vertTask.Result,
                                                       fragTask.Result,
-                                                      new ShaderMetadata(reflect.VertexInputAttributes, reflect.FragmentOutputAttributes, reflect.ResourceSets),
+                                                      new ShaderMetadata(shaderInfo.shaderName, reflect.VertexInputAttributes, reflect.FragmentOutputAttributes, reflect.ResourceSets),
                                                       null);
             }
 
@@ -1930,23 +1957,29 @@ public static partial class ShaderCompilation
             {
                 var type = f.FieldType;
 
+                var fieldName = f.Name;
+
+                if (fieldName.Contains("k__BackingField"))
+                    fieldName = fieldName.Replace("<", "").Replace(">", "").Replace("k__BackingField", "");
+
+
 
                 // ------------- FIXED BUFFER -------------
 
-                if (f.IsDefined(typeof(System.Runtime.CompilerServices.FixedBufferAttribute), false))
+                if (f.IsDefined(typeof(FixedBufferAttribute), false))
                 {
-                    var attr = f.GetCustomAttribute<System.Runtime.CompilerServices.FixedBufferAttribute>();
+                    var attr = f.GetCustomAttribute<FixedBufferAttribute>();
                     var elemType = MapToGlslType(attr.ElementType).name;
                     int length = attr.Length;
 
-                    sb.AppendLine($"    {elemType} {f.Name}[{length}];");
+                    sb.AppendLine($"    {elemType} {fieldName}[{length}];");
                     return;
                 }
 
 
                 // ------------- INLINE ARRAY -------------
 
-                var inlineAttr = type.GetCustomAttribute<System.Runtime.CompilerServices.InlineArrayAttribute>();
+                var inlineAttr = type.GetCustomAttribute<InlineArrayAttribute>();
                 if (inlineAttr != null)
                 {
                     int length = inlineAttr.Length;
@@ -1956,7 +1989,7 @@ public static partial class ShaderCompilation
 
                     var elemType = MapToGlslType(elementField.FieldType).name;
 
-                    sb.AppendLine($"    {elemType} {f.Name}[{length}];");
+                    sb.AppendLine($"    {elemType} {fieldName}[{length}];");
                     return;
                 }
 
@@ -1964,7 +1997,7 @@ public static partial class ShaderCompilation
                 // ------------- FIELD -------------
 
                 var glslType = MapToGlslType(type).name;
-                sb.AppendLine($"    {glslType} {f.Name};");
+                sb.AppendLine($"    {glslType} {fieldName};");
             }
         }
 
@@ -2053,7 +2086,7 @@ public static partial class ShaderCompilation
 
             return new SpirvDrawCompilationResult(vertTask.Result,
                                                   fragTask.Result,
-                                                  success ? new ShaderMetadata(reflect.VertexInputAttributes, reflect.FragmentOutputAttributes, reflect.ResourceSets) : null,
+                                                  success ? new ShaderMetadata(shaderInfo.shaderName, reflect.VertexInputAttributes, reflect.FragmentOutputAttributes, reflect.ResourceSets) : null,
                                                   null);
         }
 

@@ -1,11 +1,13 @@
-﻿namespace Engine.Core;
+﻿using ZstdSharp;
+
+namespace Engine.Core;
 
 
 
 
 
 
-public static class IO
+public static partial class IO
 {
 
 
@@ -43,8 +45,8 @@ public static class IO
 
 
 
-    private static readonly Dictionary<string, AssetDataRange> AssetLookupDirect = new();
-    private static readonly Dictionary<string, Dictionary<string, AssetDataRange>> FolderLookupDirect = new();
+    public static readonly Dictionary<string, AssetDataRange> AssetLookupDirect = new();
+    public static readonly Dictionary<string, Dictionary<string, AssetDataRange>> FolderLookupDirect = new();
 
 
 
@@ -180,12 +182,12 @@ public static class IO
         return new AssetByteStream(File.OpenRead(assetPath), new FileInfo(assetPath).Length);
 #else
 
-    var entry = AssetLookupDirect[assetPath];
+        var entry = AssetLookupDirect[assetPath];
 
-    var fs = File.OpenRead(entry.archivePath);
-    fs.Position = (long)entry.Offset;
+        var fs = File.OpenRead(entry.archivePath);
+        fs.Position = (long)entry.Offset;
 
-    return new AssetByteStream(new DecompressionStream(fs, bufferSize: (int)entry.Length, leaveOpen: false), (long)entry.Length);
+        return new AssetByteStream(new DecompressionStream(fs, bufferSize: (int)entry.Length, leaveOpen: false), (long)entry.Length);
 #endif
 
     }
@@ -395,45 +397,45 @@ public static class IO
     {
 #if RELEASE && !ENGINE_BUILD_PASS
 
-    AssetLookupDirect.Clear();
-    FolderLookupDirect.Clear();
+        AssetLookupDirect.Clear();
+        FolderLookupDirect.Clear();
 
 
-    //find archives, load headers
+        //find archives, load headers
 
-    foreach (string archiveName in AssetArchiveNames)
-    {
-        var archivePath = Path.Combine(Directory.GetCurrentDirectory(), archiveName);
-
-        using (var filestream = new FileStream(archivePath, FileMode.Open, FileAccess.Read))
+        foreach (string archiveName in AssetArchiveNames)
         {
-            var read = Parsing.ValueReader.FromStream(filestream);
+            var archivePath = Path.Combine(Directory.GetCurrentDirectory(), archiveName);
 
-            var assetCount = read.ReadUnmanaged<uint>();
-            for (uint i = 0; i < assetCount; i++)
+            using (var filestream = new FileStream(archivePath, FileMode.Open, FileAccess.Read))
             {
-                var assetOffset = read.ReadUnmanaged<ulong>();
-                var assetLength = read.ReadUnmanaged<ulong>();
-                var assetPath = read.ReadString();
-                Type assetType = GameResource.GetGameResourceTypeFromTypeID(read.ReadUnmanaged<ushort>());
+                var read = Parsing.ValueReader.FromStream(filestream);
 
-                AssetLookupDirect[$"{archiveName}/{assetPath}"] = new AssetDataRange(archivePath, assetType, assetOffset, assetLength);
+                var assetCount = read.ReadUnmanaged<uint>();
+                for (uint i = 0; i < assetCount; i++)
+                {
+                    var assetOffset = read.ReadUnmanaged<ulong>();
+                    var assetLength = read.ReadUnmanaged<ulong>();
+                    var assetPath = read.ReadString();
+                    Type assetType = GameResource.GetGameResourceTypeFromTypeID(read.ReadUnmanaged<ushort>());
+
+                    AssetLookupDirect[$"{archiveName}/{assetPath}"] = new AssetDataRange(archivePath, assetType, assetOffset, assetLength);
+                }
             }
         }
-    }
 
 
-    //construct folder lookup
+        //construct folder lookup
 
-    foreach (var kv in AssetLookupDirect)
-    {
-        var idxof = kv.Key.LastIndexOf('/');
-        var container = kv.Key[..idxof];
+        foreach (var kv in AssetLookupDirect)
+        {
+            var idxof = kv.Key.LastIndexOf('/');
+            var container = kv.Key[..idxof];
 
-        if (!FolderLookupDirect.TryGetValue(container, out var dict)) FolderLookupDirect[container] = dict = new();
+            if (!FolderLookupDirect.TryGetValue(container, out var dict)) FolderLookupDirect[container] = dict = new();
 
-        dict[kv.Key[(idxof + 1)..]] = kv.Value;
-    }
+            dict[kv.Key[(idxof + 1)..]] = kv.Value;
+        }
 
 #endif
     }

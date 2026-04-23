@@ -10,12 +10,12 @@ using Engine.Core;
 using static Engine.Core.Parsing;
 
 using static Engine.Core.References;
+using static Engine.Core.IO;
 
 
 
 #if DEBUG
 using System.Text.Json;
-using static Engine.Core.IO;
 #endif
 
 
@@ -35,6 +35,7 @@ public class ModelResource : GameResource, GameResource.ILoads
     public readonly AABB BaseAABB;
 
     public readonly BackendBufferReference.IIndexBuffer IndexBuffer;
+    public readonly IndexBufferFormat IndexBufferFormat;
 
 
     public readonly Dictionary<string, VertexAttributeDefinitionBufferPair> Buffers;
@@ -119,15 +120,6 @@ public class ModelResource : GameResource, GameResource.ILoads
 
 
 
-            static int GetAlignment(VertexAttributeBufferComponentFormat fmt) => fmt switch
-            {
-                VertexAttributeBufferComponentFormat.Byte => 1,
-                VertexAttributeBufferComponentFormat.Half => 2,
-                VertexAttributeBufferComponentFormat.Float => 4,
-                _ => throw new NotImplementedException()
-            };
-
-
 
 
             // Compute offsets + final stride
@@ -141,7 +133,7 @@ public class ModelResource : GameResource, GameResource.ILoads
             {
                 var def = ordered[i].Value.def;
 
-                int align = GetAlignment(def.ComponentFormat);
+                int align = GetVertexAttributeBufferComponentFormatSize(def.ComponentFormat);
                 maxAlignment = Math.Max(maxAlignment, align);
 
                 runningOffset = runningOffset.Align(align);
@@ -234,7 +226,7 @@ public class ModelResource : GameResource, GameResource.ILoads
 
         for (var i = 0; i < bufferCount; i++)
         {
-            bool mutable = stream.ReadByte() == 1;
+            bool mutable = reader.ReadUnmanaged<byte>() == 1;
             var data = reader.ReadLengthPrefixedUnmanagedSpan<byte>();
 
             var buf = (BackendBufferReference.IVertexBuffer)BackendBufferReference.Create<byte>(data, BufferUsageFlags.Vertex, mutable ? ReadWriteFlags.CPUWrite : default);
@@ -252,11 +244,11 @@ public class ModelResource : GameResource, GameResource.ILoads
         {
             string name = reader.ReadString();
 
-            var componentFormat = (VertexAttributeBufferComponentFormat)stream.ReadByte();
-            byte offset = (byte)stream.ReadByte();
-            byte stride = (byte)stream.ReadByte();
-            var scope = (VertexAttributeScope)stream.ReadByte();
-            byte bufferIndex = (byte)stream.ReadByte();
+            var componentFormat = reader.ReadUnmanaged<VertexAttributeBufferComponentFormat>();
+            ushort offset = reader.ReadUnmanaged<ushort>();
+            ushort stride = reader.ReadUnmanaged<ushort>();
+            var scope = reader.ReadUnmanaged<VertexAttributeScope>();
+            byte bufferIndex = reader.ReadUnmanaged<byte>();
 
             attributes[name] = new VertexAttributeDefinitionBufferPair(buffers[bufferIndex], new VertexAttributeDefinition(componentFormat, stride, offset, scope));
         }
@@ -266,8 +258,19 @@ public class ModelResource : GameResource, GameResource.ILoads
 
 
 
-        var idxbuffer = reader.ReadLengthPrefixedUnmanagedSpan<uint>();
-        var indexbuffer = idxbuffer == null ? default : (BackendBufferReference.IIndexBuffer)BackendBufferReference.Create<uint>(idxbuffer, BufferUsageFlags.Index, default);
+
+        BackendBufferReference.IIndexBuffer indexbuffer = null;
+
+        IndexBufferFormat idxbufferfmt = default;
+
+        var idxbufferdata = reader.ReadLengthPrefixedUnmanagedSpan<byte>();
+
+
+        if (idxbufferdata != null)
+        {
+            idxbufferfmt = reader.ReadUnmanaged<IndexBufferFormat>();
+            indexbuffer = (BackendBufferReference.IIndexBuffer)BackendBufferReference.Create<byte>(idxbufferdata, BufferUsageFlags.Index, default);
+        }
 
 
 
@@ -277,6 +280,7 @@ public class ModelResource : GameResource, GameResource.ILoads
             attributes,
             submeshes,
             indexbuffer,
+            idxbufferfmt,
             aabb,
             key
         );
@@ -288,7 +292,9 @@ public class ModelResource : GameResource, GameResource.ILoads
 
         Dictionary<string, VertexAttributeDefinitionBufferPair> buffers,
         SubmeshRange[] submeshes,
+
         BackendBufferReference.IIndexBuffer indexBuffer = default,
+        IndexBufferFormat indexBufferFormat = default,
 
         AABB baseAABB = default,
 
@@ -300,6 +306,7 @@ public class ModelResource : GameResource, GameResource.ILoads
         SubMeshes = submeshes;
         BaseAABB = baseAABB;
         IndexBuffer = indexBuffer;
+        IndexBufferFormat = indexBufferFormat;
     }
 
 
@@ -309,7 +316,10 @@ public class ModelResource : GameResource, GameResource.ILoads
 
         Dictionary<string, VertexAttributeDefinitionPlusData> buffers,
         SubmeshRange[] submeshes,
-        uint[] indexBuffer = null,
+
+        byte[] indexBufferContents = null,
+        IndexBufferFormat indexBufferFormat = default,
+
         bool mutableIndexBuffer = false,
 
         AABB baseAABB = default,
@@ -331,12 +341,13 @@ public class ModelResource : GameResource, GameResource.ILoads
 
         }
 
+        IndexBuffer = (BackendBufferReference.IIndexBuffer)(indexBufferContents != null ? (BackendBufferReference.Create<byte>(indexBufferContents, BufferUsageFlags.Index, mutableIndexBuffer ? ReadWriteFlags.CPUWrite : default)) : default);
+        IndexBufferFormat = indexBufferFormat;
 
 
         SubMeshes = submeshes;
         BaseAABB = baseAABB;
 
-        IndexBuffer = (BackendBufferReference.IIndexBuffer)(indexBuffer != null ? (BackendBufferReference.Create<uint>(indexBuffer, BufferUsageFlags.Index, mutableIndexBuffer ? ReadWriteFlags.CPUWrite : default)) : default);
     }
 
 
@@ -384,13 +395,7 @@ public class ModelResource : GameResource, GameResource.ILoads
 
                 componentFormat,
 
-                (ushort)((componentFormat switch
-                {
-                    VertexAttributeBufferComponentFormat.Byte => 1,
-                    VertexAttributeBufferComponentFormat.Half => 2,
-                    VertexAttributeBufferComponentFormat.Float => 4,
-                    _ => throw new NotImplementedException(),
-                }) * componentCount),
+                (ushort)(GetVertexAttributeBufferComponentFormatSize(componentFormat) * componentCount),
 
                 0,
 
@@ -428,10 +433,10 @@ public class ModelResource : GameResource, GameResource.ILoads
         {
             write.WriteString(kv.Key);
 
-            write.WriteUnmanaged<byte>((byte)kv.Value.def.ComponentFormat);
-            write.WriteUnmanaged<byte>((byte)kv.Value.def.Offset);
-            write.WriteUnmanaged<byte>((byte)kv.Value.def.Stride);
-            write.WriteUnmanaged<byte>((byte)kv.Value.def.Scope);
+            write.WriteUnmanaged(kv.Value.def.ComponentFormat);
+            write.WriteUnmanaged(kv.Value.def.Offset);
+            write.WriteUnmanaged(kv.Value.def.Stride);
+            write.WriteUnmanaged(kv.Value.def.Scope);
 
             write.WriteUnmanaged<byte>(0);
         }
@@ -441,18 +446,20 @@ public class ModelResource : GameResource, GameResource.ILoads
 
 
         // Submeshes
-        write.WriteLengthPrefixedUnmanagedSpan<SubmeshRange>(dict["SubMeshes"].Deserialize<SubmeshRange[]>(Parsing.JsonAssetLoadingOptions));
-
+        write.WriteLengthPrefixedUnmanagedSpan<SubmeshRange>(dict["SubMeshes"].Deserialize<SubmeshRange[]>(JsonAssetLoadingOptions));
 
 
         // Index buffer
         if (dict.TryGetValue("IndexBufferBase64Data", out var idxbuf))
         {
             byte[] b = Convert.FromBase64String(idxbuf.GetString());
-            uint[] uints = new uint[b.Length / 4];
-            Buffer.BlockCopy(b, 0, uints, 0, b.Length);
 
-            write.WriteLengthPrefixedUnmanagedSpan<uint>(uints);
+            var idxBufferFormat = dict["IndexBufferFormat"].Deserialize<IndexBufferFormat>(JsonAssetLoadingOptions);
+            
+            write.WriteLengthPrefixedUnmanagedSpan<byte>(b);
+
+            write.WriteUnmanaged(idxBufferFormat);
+
         }
         else
             write.WriteVariableLengthUnsigned(0);
@@ -466,7 +473,7 @@ public class ModelResource : GameResource, GameResource.ILoads
 
         return new IConverts.FinalAssetBytes(write.GetSpan().ToArray(), null);
     }
-    
+
 
 #endif
 

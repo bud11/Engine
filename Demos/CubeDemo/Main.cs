@@ -4,7 +4,8 @@ using Engine.GameResources;
 using System.Numerics;
 
 using static Engine.Core.References;
-using System.Diagnostics;
+using static Engine.Core.RenderingBackend;
+
 
 
 
@@ -33,9 +34,9 @@ using Engine.Stripped;
 //
 //
 
-//DEMO 2
-//This is the cube demo. It shows more structured drawing with objects, cameras and materials, as well as some very basic game logic.
-//The end result is a spinning cube object drawn to a camera object's framebuffer via a basic pipeline, which is then drawn to the screen.
+// DEMO 2
+// This is the cube demo. It shows more structured drawing with objects, cameras and materials, as well as some very basic game logic.
+// The end result is a spinning cube object drawn to a camera object's framebuffer via a basic pipeline, which is then drawn to the screen.
 
 
 ////////////////////////////////////////////
@@ -71,14 +72,6 @@ public static unsafe partial class Entry
 
 
 
-
-    // -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
-
-    // We need a shader to draw the cube, and a shader to draw the camera's primary framebuffer texture to the screen with.
-
-
-
-
 #if DEBUG
 
     /// <summary>
@@ -87,14 +80,19 @@ public static unsafe partial class Entry
     public static partial void InitShaders()
     {
 
+        // -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+
         // This time, we need to define resource sets in our shader.
 
         // Resource sets are logical groups of shader resources, such as textures and uniform buffers, which can be shared across shaders.
 
 
 
-        // Given that resource sets are indeed often shared or used at different semantic levels, sometimes a stable layout is required.
-        // This method lets you enforce that as a contract, both for the sake of clarity and to enable fetching metadata for these sets later without also needing a relative shader instance's metadata.
+
+        // -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+        // Given that resource sets are indeed often shared or used at different semantic levels, sometimes a stable layout is required across multiple shaders.
+        // This method lets you enforce that as a contract, both for the sake of clarity and to enable fetching metadata for these sets later without needing to access a specific shader instance's metadata.
 
         ShaderCompilation.DeclareResourceSetConsistent("GlobalResources");
         ShaderCompilation.DeclareResourceSetConsistent("ModelResources");
@@ -102,12 +100,19 @@ public static unsafe partial class Entry
 
 
 
+
+        // -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+        // Cube shader
+
+
+
         ShaderCompilation.RegisterShader(
 
-            shaderName: "exampleShader",
+            shaderName: "cubeShader",
 
 
-            // Resources sets correspond nicely to sets in GLSL.
+            // Resource sets correspond nicely to sets in GLSL.
             resourceSetNames:
             [
                 "GlobalResources",  //set = 0
@@ -166,41 +171,45 @@ public static unsafe partial class Entry
 
 
 
+        // -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+        // We also need a small basic shader to handle camera framebuffer -> screen drawing.
+
+
 
         ShaderCompilation.RegisterShader(
 
-            shaderName: "screenQuad",
+            shaderName: "unshaded",
 
-            resourceSetNames: ["TextureResources"],
+            resourceSetNames: ["Resources"],
 
             vertexSource:
             """
-
             in vec2 Position;
-            out vec2 FragPosition;
+            in vec2 UV;
+            out vec2 FragUV;
 
             void main()
             {
-                FragPosition = Position;
-                gl_Position = vec4(Position, 0.0, 1.0);
+                gl_Position = vec4(Position, 0, 1.0);   
+                FragUV = UV;
             }
-
             """,
+
 
             fragmentSource:
             """
-
-            layout(set = 0) uniform sampler2D Texture;
-
-            in vec2 FragPosition;
+            in vec2 FragUV;
             out vec4 FinalColor;
+
+            layout (set = 0) uniform sampler2D Texture;
 
             void main()
             {
-                FinalColor = textureLod(Texture, -FragPosition * 0.5 + 0.5, 0);
+                FinalColor = textureLod(Texture, FragUV, 0);
             }
-
             """,
+
 
             languageHandler: ShaderCompilation.GLSL
         );
@@ -245,25 +254,13 @@ public static unsafe partial class Entry
 
 
         // We also need to quickly define a method to upload the object transform to the shader.
-        // DrawObject.PreDraw is only ever called a maximum of once per frame, making it ideal for writes that don't need updates.
+        // DrawObject.PreDraw is only ever called a maximum of once per frame, making it ideal for this sort of thing.
 
         public override void PreDraw()
         {
-
-            // Here, we can use this simple method to check if we need to (re)upload the global model matrix.
-            
-            if (IsGlobalTransformDirtyForDraw())
-            {
-                ModelInstanceResourceSets["ModelResources"]
-                    .GetResource<RenderingBackend.BackendBufferReference.IDataBuffer>("ModelUBO")
-                    .WriteFromOffsetOf("ModelMatrix", GlobalTransform, nessecary: true);     //  <-----------------
-
-
-                // Notice the "nessecary" flag - if a resource modification is flagged UNNESSECARY, then if the upcoming rendered frame is dropped, the modification will also be dropped.
-                // For consistent every-frame updates, it should be false, to reduce overhead.
-            }
-
-
+            ModelInstanceResourceSets["ModelResources"]
+                   .GetResource<BackendBufferReference.IDataBuffer>("ModelUBO")
+                   .WriteFromOffsetOf("ModelMatrix", GlobalTransform, necessary: false, skipPadding: true);
 
             base.PreDraw();
         }
@@ -274,29 +271,26 @@ public static unsafe partial class Entry
 
 
 
+
     // -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 
+    // Global resources 
 
+    private static BackendResourceSetReference GlobalResources;
+    private static BackendBufferReference.IDataBuffer GlobalBuffer;
 
-    //global resources + metadata
-
-    private static RenderingBackend.BackendResourceSetReference GlobalResources;
-    private static RenderingBackend.BackendBufferReference.IDataBuffer GlobalUniformBuffer;
-
-
-    //screen quad for drawing to screen
-
-    private static RenderingBackend.BackendBufferReference.IVertexBuffer ScreenQuadVertPos;
-    private static Dictionary<string, RenderingBackend.VertexAttributeDefinitionBufferPair> ScreenQuadAttributes;
-    private static Dictionary<string, RenderingBackend.BackendResourceSetReference> ScreenQuadResourceSetCollection;
-    private static Rendering.NamedShaderReference ScreenQuadShaderRef;
+    private static BackendResourceSetReference ScreenPresentResources;
 
 
 
-    //objects
+
+    // -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+    // Objects
 
     private static SpinningCube Cube;
     private static Camera Camera;
+
 
 
 
@@ -310,63 +304,18 @@ public static unsafe partial class Entry
     {
 
 
-
         // -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
-
-        // Global resources / materials
-
-
-        // We need a material to draw the cube with.
-        // Materials are vague data containers designed to be interpreted at draw time, so no control is particularly lost over manual drawing, nor is any particular pipeline idea imposed.
-
-        var material = new MaterialResource(
-                                        shaderRef: new Rendering.NamedShaderReference("exampleShader"),
-
-                                        //Arbitrary parameters and texture references can be defined and interpreted later. in this case, neither are required.
-                                        parameters: null,         
-                                        textures: null,
-
-                                        //GameResources given keys are able to be registered, such that trying to load the same resource via the same key will fetch the existing one.
-                                        //Typically null for code-generated resources
-                                        key: null
-
-                                        );
-
-
-
-
         
-
-        GlobalResources = RenderingBackend.BackendResourceSetReference.CreateFromMetadata("GlobalResources");
-
-        GlobalUniformBuffer = GlobalResources.SetResource("GlobalUBO", RenderingBackend.BackendBufferReference.CreateDataBufferFromMetadata(GlobalResources.Metadata.Buffers["GlobalUBO"].Metadata, extraAccessFlags: RenderingBackend.ReadWriteFlags.CPUWrite));
+        // Global resources 
 
 
+        // This is the resource set. Given it opted into the fixed layout contract, we can just create it by name.
+        GlobalResources = BackendResourceSetReference.CreateFromMetadata("GlobalResources");
 
 
-
-
-        // -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
-
-        // Cube GameObject
-
-
-        Cube = new SpinningCube();
-
-        Cube.SpinSpeed = 45f;
-        Cube.Model = MeshGeneration.GenerateCube(Vector3.One);    //<--  this creates a model resource, which is basically just a wrapper around buffers like the ones from the triangle demo. 
-        Cube.Materials = [material];
-
-
-
-
-        // Models have differently-scoped resource sets that can be hooked into.
-
-        var modelresources = RenderingBackend.BackendResourceSetReference.CreateFromMetadata("ModelResources");
-
-        modelresources.SetResource("ModelUBO", RenderingBackend.BackendBufferReference.CreateDataBufferFromMetadata(modelresources.Metadata.Buffers["ModelUBO"].Metadata, extraAccessFlags: RenderingBackend.ReadWriteFlags.CPUWrite));
-
-        Cube.ModelInstanceResourceSets["ModelResources"] = modelresources;
+        // And this is the global buffer.
+        GlobalBuffer = BackendBufferReference.CreateDataBufferFromMetadata(metadata: GlobalResources.Metadata.Buffers["GlobalUBO"].Metadata, extraAccessFlags: ReadWriteFlags.CPUWrite);
+        GlobalResources.SetResource("GlobalUBO", GlobalBuffer);
 
 
         ModelInstance.GlobalModelInstanceResourceSets["GlobalResources"] = GlobalResources;
@@ -375,9 +324,36 @@ public static unsafe partial class Entry
 
 
 
+        // -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+        // Cube
 
 
-        // ! ! ! ! ! Any game objects created manually via code (aka not instanced via scene or similar) must call Init() ! ! ! ! ! 
+        // We need a material to draw the cube with.
+        // Materials are vague data containers designed to be interpreted and cached at draw time, so no control or performance is particularly lost over manual drawing, nor is any particular pipeline idea imposed.
+
+        MaterialResource cubeMaterial = new
+        (
+            parameters: new() { { "shader", new Rendering.NamedShaderReference("cubeShader") } },   //<-- we can reference the shader here, as well as any other properties or resources we might like a material to have
+            textures: null,
+            key: null
+        );
+
+
+        Cube = new SpinningCube
+        {
+            SpinSpeed = 45f,
+            Model = MeshGeneration.GenerateCube(Vector3.One),    //<--  this creates a model resource, which is basically just a wrapper around buffers like the ones from the triangle demo. 
+            Materials = [cubeMaterial]
+        };
+
+
+
+        var modelresources = BackendResourceSetReference.CreateFromMetadata("ModelResources");
+        modelresources.SetResource("ModelUBO", BackendBufferReference.CreateDataBufferFromMetadata(modelresources.Metadata.Buffers["ModelUBO"].Metadata, extraAccessFlags: ReadWriteFlags.CPUWrite));
+        Cube.ModelInstanceResourceSets["ModelResources"] = modelresources;
+
+
         Cube.Init();
 
 
@@ -390,84 +366,52 @@ public static unsafe partial class Entry
         // And then the camera and the framebuffer presentation setup.
 
 
-
-
-
-        Camera = new Camera();
-        Camera.Resolution = new EngineMath.Vector2<uint>(1920, 1080);
-        Camera.GlobalPosition = new Vector3(0, 0, -10);
-
-        Camera.Init();
-
-
-
-        //The final screen quad isn't an object in the scene and doesn't need to be treated like one.
-
-        ScreenQuadVertPos = (RenderingBackend.BackendBufferReference.IVertexBuffer)RenderingBackend.BackendBufferReference.Create<float>([-1, -1, 1, -1, 1, 1, -1, -1, -1, 1, 1, 1], RenderingBackend.BufferUsageFlags.Vertex, default);
-
-
-        ScreenQuadAttributes =
-            new()
-            {
-                { 
-                    "Position", 
-
-                    new(
-                        ScreenQuadVertPos,
-                        new
-                        (
-                            RenderingBackend.VertexAttributeBufferComponentFormat.Float,
-                            sizeof(float),
-                            0,
-                            RenderingBackend.VertexAttributeScope.PerVertex
-                        )
-                    )
-                }
-            };
-
-
-
-
-        ScreenQuadShaderRef = new Rendering.NamedShaderReference("screenQuad");
-
-
-        var screenQuadResourceSet = RenderingBackend.BackendResourceSetReference.CreateFromMetadata(ScreenQuadShaderRef.Shader, "TextureResources");
-
-        ScreenQuadResourceSetCollection = new() { ["TextureResources"] = screenQuadResourceSet };
-
-
-
-
-
-        // Textures (and texture + sampler pairs) are immutable, so if the resolution changes, the old texture becomes invalid, and the set needs to be updated.
-
-        Camera.OnResolutionChanged.Add(() =>
+        Camera = new Camera
         {
-            var cameraTexture = new RenderingBackend.BackendTextureAndSamplerReferencesPair(
-
-                                        //the color buffer from the camera that we want to display on screen
-                                        Camera.FrameBuffer.ColorAttachments[0],
-
-                                        //..plus the sampler, to describe how to present it.
-                                        RenderingBackend.BackendSamplerReference.Get(
-
-                                            new RenderingBackend.SamplerDetails(
-                                                WrapMode: RenderingBackend.TextureWrapModes.ClampToEdge,
-                                                MinFilter: RenderingBackend.TextureFilters.Linear,
-                                                MagFilter: RenderingBackend.TextureFilters.Linear,
-                                                MipmapFilter: RenderingBackend.TextureFilters.Linear,
-                                                EnableDepthComparison: false))
-
-                                        );
+            Resolution = new EngineMath.Vector2<uint>(1920, 1080),
+            GlobalPosition = new Vector3(0, 0, -10)
+        };
 
 
-            screenQuadResourceSet.SetResource("Texture", cameraTexture);
+        ScreenPresentResources = BackendResourceSetReference.CreateFromMetadata(BackendShaderReference.Get("unshaded").Metadata.ResourceSets["Resources"].Metadata);
+
+
+        // This creates a framebuffer owned by the camera, which in this case, will always update to have the same resolution as Camera.Resolution, given res * 1x1 = res.
+
+        Camera.CreateDynamicSizeCameraFrameBuffer(name: "main",
+                                                  scalingFactor: Vector2.One,  //<-- 1x1
+                                                  colorTargetCount: 1,
+                                                  colorTargetFormat: TextureFormats.RGBA8_UNORM,  //<-- simple 8 bit rgba
+                                                  createDepthStencil: true,
+                                                  mipCount: 1);
+
+
+
+
+        // Whenever the camera refreshes and it leads to a change, we need to reobtain the framebuffer texture.
+
+        Camera.OnRefreshChange.Add(() =>
+        {
+            ScreenPresentResources.SetResource(
+                
+                "Texture", 
+
+                new BackendTexture2DSamplerPair
+                (
+                    (BackendTexture2DReference)Camera.GetCameraFrameBuffer("main").ColorAttachments[0],
+
+                    WrapMode: TextureWrapModes.ClampToEdge,
+                    MinFilter: TextureFilters.Linear,
+                    MagFilter: TextureFilters.Linear,
+                    MipmapFilter: TextureFilters.Linear
+                )
+            );
         });
 
 
+
+        Camera.Init(); 
     }
-
-
 
 
 
@@ -482,10 +426,8 @@ public static unsafe partial class Entry
 
 
 
-
     public static unsafe partial void Loop()
     {
-
 
 
         // -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
@@ -501,95 +443,104 @@ public static unsafe partial class Entry
 
 
 
+
+
         // -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 
         // Next up is rendering with the camera.
 
 
 
-        GlobalUniformBuffer.WriteFromOffsetOf("ProjectionMatrix", Camera.GetProjectionMatrix(), nessecary: false);   // These writes can be treated as unnessecary, since we want changes every frame and caching isnt worth it.
-        GlobalUniformBuffer.WriteFromOffsetOf("ViewMatrix", Camera.GetViewMatrix(), nessecary: false);
+        // --------------------------------------------------------------------------
 
+        // Enforcing the camera's resolution is the same as the window's
 
-        // ---------------------------------------------------------------------------
-
-        // Writes can also be done with less safety if speed is a bigger concern, like for example this;
-
-        var upload = stackalloc Matrix4x4[] { Camera.GetProjectionMatrix(), Camera.GetViewMatrix() };
-
-        GlobalUniformBuffer.WriteAndSkipPadding(new WriteRange(0, 128, upload), nessecary: false);
-
-
-        // Or even this, if you're totally confident in the underlying data layout:
-
-        GlobalUniformBuffer.Write(new WriteRange(0, 128, upload), nessecary: false);
-
-        // ---------------------------------------------------------------------------
+        Camera.Resolution = CurrentSwapchainDetails.Size;  
+        Camera.Refresh();
 
 
 
 
+        // --------------------------------------------------------------------------
 
-        // Cameras have a flexible programmable pipeline system, but all we need to do here is draw everything, so this is a simple one stage pipeline with basic material handling.
+        // Writing the view/projection matrix to the global buffer
 
-
-        Camera.Resolution = RenderingBackend.CurrentSwapchainDetails.Size;  //<-- Enforcing the camera's resolution is the same as the window's
-
-        Rendering.SetScissor(default, Camera.Resolution);
+        GlobalBuffer.WriteFromOffsetOf("ProjectionMatrix", Camera.GetProjectionMatrix(), necessary: false, skipPadding: true);
+        GlobalBuffer.WriteFromOffsetOf("ViewMatrix", Camera.GetViewMatrix(), necessary: false, skipPadding: true);
 
 
 
 
 
+        // --------------------------------------------------------------------------
 
-#if DEBUG
+        // This defines and initializes a framebuffer pipeline with the camera's framebuffer.
+        // The resulting ref struct can be used to advance the specified pipeline.
 
-        // ===== ( In a rendering scenario with many variables, it can sometimes be worth enabling some or all of the flags offered by EngineDebug ) =====
+        var op = Rendering.FrameBufferPipelineStateOperator.StartFrameBufferPipeline(
 
-        EngineDebug.ThrowIfVertexBufferMissing =
-        EngineDebug.ThrowIfResourceSetMissing =
-        EngineDebug.ThrowIfResourceMissing =
-        EngineDebug.DeferredCommandStackTraceStorage = true;
+            framebuffer: 
+            Camera.GetCameraFrameBuffer("main"),
 
-#endif
+            // In this case, we just want one single stage, wherein which we clear and then write to color and depth.
 
-
-
-
-        Camera.Render(
+            stages:
             [
-                new Camera.CameraSubpassDefinition
-                (
-                    //All we're doing here is saying that this stage in the pipeline should clear the color and depth buffers and then write into them.
-                    frameBufferPipelineStageReq: new RenderingBackend.FrameBufferPipelineStage()
-                                                .SpecifyColorAttachments(rangeStart: 0, rangeEnd: 1, access: RenderingBackend.FrameBufferPipelineAttachmentAccessFlags.Write, clear: true)
-                                                .SpecifyDepth(access: RenderingBackend.FrameBufferPipelineAttachmentAccessFlags.Write, clear: true),
-
-
-                    ordering: Camera.CameraDrawSortMode.NearToFar,
-
-                    objectWhiteList: DrawObject.AllDrawableObjects,
-
-                    materialResolver: &ResolveMaterial     //<-- a pointer to a static method, which interprets certain material details, per pass, on demand, into near-final draw call details
-                ),
+                new FrameBufferPipelineStage()
+                                        .SpecifyColorAttachments(rangeStart: 0, rangeEnd: 1, access: FrameBufferPipelineAttachmentAccessFlags.Write, clear: true)
+                                        .SpecifyDepth(access: FrameBufferPipelineAttachmentAccessFlags.Write, clear: true),
             ]
         );
 
 
 
-        // This is a very simple and literal resolve, but you could for example differ behavior based on the material's high level parameters or the pass this is being used for.
-
-        static MaterialResource.MaterialResolution ResolveMaterial(MaterialResource mat)
-            => new MaterialResource.MaterialResolution(mat.ShaderRef,
-                                                       new RenderingBackend.DrawPipelineDetails.RasterizationDetails(),
-                                                       new RenderingBackend.DrawPipelineDetails.BlendState(),
-                                                       new RenderingBackend.DrawPipelineDetails.DepthStencilState(),
-                                                       mat.MaterialResourceSets.ToUnmanagedKV());
 
 
 
+        // --------------------------------------------------------------------------
+
+        // Drawing objects
 
 
+        // Camera exposes a few methods for sorting and culling object lists.
+        // While not technically needed here, they're useful for any kind of real rendering pipeline.
+        
+        using ArrayFromPool<DrawObject> culledWhitelist = Camera.CullDrawObjectList(DrawObject.AllDrawObjects, Camera.GetViewMatrix(), Camera.GetProjectionMatrix());
+
+
+
+        for (int i = 0; i < culledWhitelist.Length; i++)
+        {
+
+            // This is where materials are resolved from high level details and parameters into draw-ready resources and details.
+            
+            culledWhitelist[i].Draw(new DrawObject.DrawState() { MaterialResolver = &MaterialResolve });
+
+
+
+            // Material resolutions are cached using the given static fn pointer as a key, so this is only called once.
+
+            static MaterialResource.MaterialResolution MaterialResolve(MaterialResource mat)
+            {
+                return new MaterialResource.MaterialResolution(
+                        ((Rendering.NamedShaderReference)mat.GetParameter("shader")).Shader,   //<-- the shader we stored earlier
+                        null,
+                        new DrawPipelineDetails.RasterizationDetails() { CullMode = CullMode.Back },
+                        new DrawPipelineDetails.BlendState() { Enable = false },
+                        new DrawPipelineDetails.DepthStencilState() { DepthWrite = true, DepthFunction = DepthOrStencilFunction.LessOrEqual }
+                    );
+            }
+        }
+
+
+
+
+        // --------------------------------------------------------------------------
+
+        // Now we can advance the operator.
+        // This will move onto the next stage, or in our case, the end, given there are no more.
+
+        op.Advance();  
 
 
 
@@ -598,45 +549,17 @@ public static unsafe partial class Entry
 
         // -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 
-        //And, finally, we can present to screen, like before.
+        //And, finally, we can present to screen.
 
 
         Rendering.StartDrawToScreen();
 
-
-        Rendering.SetScissor(default, RenderingBackend.CurrentSwapchainDetails.Size);
-
-
-        Rendering.Draw(
-            Attributes: ScreenQuadAttributes.VertexAttributesToUnmanaged(),
-            ResourceSets: ScreenQuadResourceSetCollection.ToUnmanagedKV(),           
-            Shader: ScreenQuadShaderRef.Shader,
-
-            //the rasterization, blending and depth stencil structs already have sane defaults that we can use here.
-            Rasterization: new(),
-            Blending: new(),
-            DepthStencil: default,
-
-            IndexBuffer: null,      //no index buffer needed either here
-            IndexingDetails: new(0,6,0,1)
-        );
-
+        // This is a small helper method capable of drawing arbitrary NDC-space quads. Read the summary for more info.
+        Rendering.DrawQuad(Vector2.One, -Vector2.One, ScreenPresentResources, BackendShaderReference.Get("unshaded"));
 
         Rendering.EndDrawToScreen();
 
 
-
-
-#if DEBUG
-
-        // ===== ( We can disable these debug flags after we're done. These only affect the current thread, so they can be safely used to create logical debugging ranges. ) =====
-
-        EngineDebug.ThrowIfVertexBufferMissing = 
-        EngineDebug.ThrowIfResourceSetMissing =
-        EngineDebug.ThrowIfResourceMissing = 
-        EngineDebug.DeferredCommandStackTraceStorage = true;
-
-#endif
 
 
     }

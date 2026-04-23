@@ -214,7 +214,7 @@
 	
 	<!-- final NativeAOT publish release -->
 	<PropertyGroup Condition="'$(IsPublish)' == 'true'">
-		<ZStdCompressionQuality>22</ZStdCompressionQuality>
+		<ZStdCompressionQuality>1</ZStdCompressionQuality>
 	</PropertyGroup>
 
 

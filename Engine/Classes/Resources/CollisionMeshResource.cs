@@ -12,10 +12,11 @@ using Engine.Core;
 
 using static Engine.Core.Parsing;
 
+using static Engine.Core.IO;
+
 
 #if DEBUG
 using System.Text.Json;
-using static Engine.Core.IO;
 #endif
 
 
@@ -74,7 +75,7 @@ public class CollisionMeshResource : GameResource, GameResource.ILoads
 
     public static async Task<IConverts.FinalAssetBytes> ConvertToFinalAssetBytes(Bytes bytes, string key)
     {
-        var dict = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(bytes.ByteArray, Parsing.JsonAssetLoadingOptions);
+        var dict = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(bytes.ByteArray, JsonAssetLoadingOptions);
 
         bytes.Dispose();
 
@@ -86,8 +87,8 @@ public class CollisionMeshResource : GameResource, GameResource.ILoads
         // AABB
         if (dict.TryGetValue("LocalAABB", out var aabb))
         {
-            var min = JsonSerializer.Deserialize<float[]>(aabb.GetProperty("Min"), Parsing.JsonAssetLoadingOptions);
-            var max = JsonSerializer.Deserialize<float[]>(aabb.GetProperty("Max"), Parsing.JsonAssetLoadingOptions);
+            var min = JsonSerializer.Deserialize<float[]>(aabb.GetProperty("Min"), JsonAssetLoadingOptions);
+            var max = JsonSerializer.Deserialize<float[]>(aabb.GetProperty("Max"), JsonAssetLoadingOptions);
 
             foreach (var f in min) write.WriteUnmanaged(f);
             foreach (var f in max) write.WriteUnmanaged(f);

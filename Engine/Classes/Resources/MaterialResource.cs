@@ -11,11 +11,12 @@ using System.Numerics;
 
 using static Engine.Core.References;
 
+using static Engine.Core.IO;
+
 
 
 #if DEBUG
 using System.Text.Json;
-using static Engine.Core.IO;
 #endif
 
 
@@ -33,30 +34,106 @@ public partial class MaterialResource :
 
 
 
-    public readonly Dictionary<string, BackendResourceSetReference> MaterialResourceSets = new();
+
+    /// <summary>
+    /// Contains resolved material details that can be used for draw calls.
+    /// </summary>
+    public unsafe readonly record struct MaterialResolution(
+
+        BackendShaderReference Shader,
+        Dictionary<string, BackendResourceSetReference> ResourceSets,
+
+        RasterizationDetails RasterizationDetails,
+        BlendState BlendState,
+        DepthStencilState DepthStencilState
+
+        );
 
 
-    public readonly Rendering.NamedShaderReference ShaderRef;
 
 
-    public readonly Dictionary<string, BackendTextureAndSamplerReferencesPair> Textures;
-    public readonly Dictionary<string, object> Parameters;
+    private readonly Dictionary<nint, (MaterialResolution resolution, bool valid)> Resolutions = new();
+
+    public unsafe MaterialResolution ResolveMaterial(delegate*<MaterialResource, MaterialResolution> resolveFn)
+    {
+        lock (Resolutions)
+        {
+            var has = Resolutions.TryGetValue((nint)resolveFn, out var get);
+
+            if (has && get.valid)
+                return get.resolution;
+
+
+            var ret = resolveFn(this);
+            Resolutions[(nint)resolveFn] = get = new(ret, true);
+
+            return get.resolution;
+        }
+    }
 
 
 
-    public MaterialResource(Rendering.NamedShaderReference shaderRef,
 
-                            Dictionary<string, object> parameters,
-                            Dictionary<string, BackendTextureAndSamplerReferencesPair> textures,
+    private readonly Dictionary<string, TextureResource> Textures;
+    private readonly Dictionary<string, object> Parameters;
+
+
+    public bool TryGetParameter(string name, out object value) => Parameters.TryGetValue(name, out value);
+    public object GetParameter(string name) => Parameters[name];
+
+    public void SetParameter(string name, object value)
+    {
+        if (Parameters.TryGetValue(name, out var get) && get == value)
+            return;
+
+        Parameters[name] = value;
+
+        MaterialDataChanged();
+    }
+    public IReadOnlyDictionary<string, object> GetParameters() => Parameters;
+
+
+
+
+    public bool TryGetTexture(string name, out TextureResource value) => Textures.TryGetValue(name, out value);
+    public TextureResource GetTexture(string name) => Textures[name];
+
+    public void SetTexture(string name, TextureResource value)
+    {
+        if (Textures.TryGetValue(name, out var get) && get == value)
+            return;
+
+        Textures[name] = value;
+
+        MaterialDataChanged();
+    }
+    public IReadOnlyDictionary<string, TextureResource> GetTextures() => Textures;
+
+
+
+
+    private void MaterialDataChanged()
+    {
+        lock (Resolutions)
+        {
+            foreach (var kv in Resolutions)
+                Resolutions[kv.Key] = kv.Value with { valid = false };
+        }
+    }
+
+
+
+
+
+
+    public MaterialResource(Dictionary<string, object> parameters,
+                            Dictionary<string, TextureResource> textures,
 
                             string key = null) : base(key)
     
     {
-        ShaderRef = shaderRef;
-
         Textures = textures;
         Parameters = parameters;
-
     }
 
 
@@ -86,81 +163,43 @@ public partial class MaterialResource :
         var reader = ValueReader.FromStream(stream);
 
 
-        // --- reads ---
-
-        var shaderName = reader.ReadString();
-
 
 
         // --- load textures ---
 
-        ExitResourceLoadThrottleSemaphore();
-
-
         var textureCount = reader.ReadUnmanaged<byte>();
 
 
-        var texturetasks = new Dictionary<string, (Task<TextureResource>, SamplerDetails)>(textureCount);
+        var texturetasks = new Dictionary<string, Task<TextureResource>>(textureCount);
 
         for (ulong i = 0; i < textureCount; i++)
-            texturetasks[reader.ReadString()] = (LoadResource<TextureResource>(reader.ReadString()), reader.ReadUnmanaged<SamplerDetails>());
+            texturetasks[reader.ReadString()] = LoadResource<TextureResource>(reader.ReadString());
 
 
 
         // --- collect textures ---
 
-        var finaltextures = new Dictionary<string, BackendTextureAndSamplerReferencesPair>(textureCount);
+        var finaltextures = new Dictionary<string, TextureResource>(textureCount);
 
-        foreach (var tex in texturetasks)
-            finaltextures[tex.Key] = new BackendTextureAndSamplerReferencesPair((await tex.Value.Item1).BackendReference, BackendSamplerReference.Get(tex.Value.Item2));
-
-
-        await EnterResourceLoadThrottleSemaphore();
+        foreach (var result in texturetasks)
+            finaltextures[result.Key] = await result.Value;
 
 
 
+        var arguments = MaterialPropertySerializerDeserializer.Instance.ReadKnownType<Dictionary<string, object>>(ref reader);
 
-        var arguments = MaterialPropertySerializerDeserializer.Instance.ReadKnownType<Dictionary<string, object>>(ref reader); 
 
-        return new MaterialResource(new Rendering.NamedShaderReference(shaderName), arguments, finaltextures, key);
+        return new MaterialResource(arguments, finaltextures, key);
     }
 
 
 
-
-
-    /// <summary>
-    /// Represents expanded details to be used for a material-driven draw call, derived from a <see cref="MaterialResource"/>.
-    /// </summary>
-    public struct MaterialResolution
-    {
-        public Rendering.NamedShaderReference ShaderRef;
-
-        public RasterizationDetails RasterizationDetails;
-        public BlendState BlendState;
-        public DepthStencilState DepthStencilState;
-
-        public UnmanagedKeyValueCollection<WeakObjRef<string>, WeakObjRef<BackendResourceSetReference>> MaterialResourceSets;
-
-        public MaterialResolution(Rendering.NamedShaderReference shaderName, RasterizationDetails rasterizationDetails, BlendState blendState, DepthStencilState depthStencilState, UnmanagedKeyValueCollection<WeakObjRef<string>, WeakObjRef<BackendResourceSetReference>> materialResourceSets)
-        {
-            ShaderRef = shaderName;
-            RasterizationDetails = rasterizationDetails;
-            BlendState = blendState;
-            DepthStencilState = depthStencilState;
-            MaterialResourceSets = materialResourceSets;
-        }
-    }
 
 
 
 
 #if DEBUG
 
-
-
-
-    private record struct MaterialTextureDefinition(string Path, SamplerDetails SamplerDetails);
 
 
 
@@ -176,25 +215,20 @@ public partial class MaterialResource :
         bytes.Dispose();
 
 
-        var shaderName = dict["Shader"].GetString();
-
 
         ValueWriter wr = ValueWriter.CreateWithBufferWriter();
 
 
-        wr.WriteString(shaderName);
-
         if (dict.TryGetValue("Textures", out var texGet))
         {
-            var textures = texGet.Deserialize<Dictionary<string, MaterialTextureDefinition>>(JsonAssetLoadingOptions);
+            var textures = texGet.Deserialize<Dictionary<string, string>>(JsonAssetLoadingOptions);
 
             wr.WriteUnmanaged((byte)textures.Count);
 
             foreach (var kv in textures)
             {
                 wr.WriteString(kv.Key);
-                wr.WriteString(kv.Value.Path);
-                wr.WriteUnmanaged(kv.Value.SamplerDetails);
+                wr.WriteString(kv.Value);
             }
         }
         else
@@ -207,7 +241,7 @@ public partial class MaterialResource :
 
         wr.WriteUnmanagedSpan<byte>(GetArgumentBytes<MaterialPropertySerializerDeserializer>(argsGet));
 
-        return new IConverts.FinalAssetBytes(wr.GetSpan().ToArray(),null);
+        return new IConverts.FinalAssetBytes(wr.GetSpan().ToArray(), null);
 
     }
 

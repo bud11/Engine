@@ -10,7 +10,6 @@ namespace Engine.Core;
 
 using Silk.NET.Core.Native;
 using Silk.NET.Vulkan;
-using Silk.NET.Vulkan.Extensions.EXT;
 using Silk.NET.Vulkan.Extensions.KHR;
 using System.Diagnostics;
 using System.Numerics;
@@ -21,6 +20,7 @@ using static Engine.Core.References;
 
 
 #if DEBUG
+using Silk.NET.Vulkan.Extensions.EXT;
 using Engine.Stripped;
 #endif
 
@@ -761,8 +761,8 @@ public static partial class RenderingBackend
                 LoadOp = AttachmentLoadOp.Clear,
                 StoreOp = AttachmentStoreOp.Store,
 
-                StencilLoadOp = AttachmentLoadOp.DontCare,
-                StencilStoreOp = AttachmentStoreOp.DontCare,
+                StencilLoadOp = AttachmentLoadOp.Load,
+                StencilStoreOp = AttachmentStoreOp.Store,
 
                 InitialLayout = ImageLayout.Undefined,
                 FinalLayout = ImageLayout.PresentSrcKhr
@@ -913,6 +913,8 @@ public static partial class RenderingBackend
 
 
 
+        private Stopwatch FrameStopwatch = new();
+
 
         public void StartFrameRendering()
         {
@@ -938,11 +940,12 @@ public static partial class RenderingBackend
 
             VK.BeginCommandBuffer(RenderThreadCommandBuffer, in beginInfo);
 
+            FrameStopwatch.Restart();
         }
 
 
 
-        public void EndFrameRendering()
+        public float EndFrameRendering()
         {
 
 
@@ -986,6 +989,10 @@ public static partial class RenderingBackend
             VK.WaitForFences(device, 1, [FrameFence], true, ulong.MaxValue);
 
 
+            FrameStopwatch.Stop();
+            var ret = (float)FrameStopwatch.Elapsed.TotalSeconds;
+
+
 
             PresentInfoKHR presentInfo = new()
             {
@@ -1000,6 +1007,9 @@ public static partial class RenderingBackend
 
             lock (this)
                 khrSwapChain.QueuePresent(graphicsQueue, &presentInfo);
+
+
+            return ret;
         }
 
 
@@ -1063,7 +1073,7 @@ public static partial class RenderingBackend
                         {
                             Type = DescriptorType.CombinedImageSampler,
                             DescriptorCount = MaxTexturesPerSet * MaxSets
-                        }
+                        },
 
                     ];
 
@@ -1451,7 +1461,7 @@ public static partial class RenderingBackend
         public unsafe void WriteToBuffer(BackendBufferReference buffer, WriteRange write)
         {
             var vkbuf = (VulkanBufferAndMemory)buffer.BackendRef;
-            Unsafe.CopyBlockUnaligned((byte*)vkbuf.MappedPtr + write.Offset, write.Content, write.Length);
+            Unsafe.CopyBlockUnaligned((byte*)vkbuf.MappedPtr + write.OffsetIntoDst, write.Src, write.LengthOfSrc);
         }
 
 
@@ -1497,11 +1507,9 @@ public static partial class RenderingBackend
 
                 details.ResourceType[details.ResourceCount] = get.ResourceType switch
                 {
-
                     ResourceSetResourceDeclaration.ResourceSetResourceType.Texture => (byte)DescriptorType.CombinedImageSampler,
                     ResourceSetResourceDeclaration.ResourceSetResourceType.ConstantDataBuffer => (byte)DescriptorType.UniformBuffer,
                     
-
                     ResourceSetResourceDeclaration.ResourceSetResourceType.ReadOnlyDataBuffer 
                     or ResourceSetResourceDeclaration.ResourceSetResourceType.ReadWriteDataBuffer 
                         => (byte)DescriptorType.StorageBuffer,
@@ -1544,144 +1552,91 @@ public static partial class RenderingBackend
 
 
 
-        public void WriteToResourceSet(BackendResourceSetReference set, ResourceSetResourceBind write)
-            => VKWriteToDescriptorSet((VulkanDescriptorSet)set.BackendRef, [write]);
-
-
-
-        private unsafe void VKWriteToDescriptorSet(VulkanDescriptorSet vkset, ReadOnlySpan<ResourceSetResourceBind> contents)
+        public unsafe void WriteToResourceSet(BackendResourceSetReference set, ResourceSetResourceBind bind)
         {
 
-            Span<WriteDescriptorSet> writes = stackalloc WriteDescriptorSet[contents.Length];
-            Span<DescriptorBufferInfo> bufferInfos = stackalloc DescriptorBufferInfo[contents.Length];
-            Span<DescriptorImageInfo> imageInfos = stackalloc DescriptorImageInfo[contents.Length];
+            var vkset = (VulkanDescriptorSet)set.BackendRef;
+
+            WriteDescriptorSet write = default;
+            write.SType = StructureType.WriteDescriptorSet;
+            write.DstSet = vkset.Set;
+            write.DstBinding = bind.Binding;
+            write.DstArrayElement = bind.Element;
+            write.DescriptorCount = 1;
+
+            DescriptorBufferInfo bufferInfo = default;
+            DescriptorImageInfo imageInfo = default;
 
 
-            int writeIndex = 0;
 
-            for (int i = 0; i < contents.Length; i++)
+
+            if (bind.Resource is IBackendTextureSamplerPair tex)
             {
-                var slot = contents[i];
-
-
-                var currentResource = vkset.Contents[slot.Binding];
-
-
-
-
-                var resource = slot.ResourceHandle.Dereference();
-
-
-
-                if (resource is BackendTextureAndSamplerReferencesPair tex)
+                imageInfo = new DescriptorImageInfo
                 {
-                    imageInfos[writeIndex] = new DescriptorImageInfo
-                    {
-                        ImageLayout = ImageLayout.ShaderReadOnlyOptimal,
-                        ImageView = ((VulkanTexture)tex.Texture.BackendRef).View,
-                        Sampler = (Sampler)tex.Sampler.BackendRef
-                    };
+                    ImageLayout = ImageLayout.ShaderReadOnlyOptimal,
+                    ImageView = ((VulkanTexture)tex.Texture.BackendRef).View,
+                    Sampler = (Sampler)tex.Sampler.BackendRef
+                };
 
-                    fixed (DescriptorImageInfo* p = &imageInfos[writeIndex])
-                    {
-                        writes[writeIndex] = new WriteDescriptorSet
-                        {
-                            SType = StructureType.WriteDescriptorSet,
-                            DstSet = vkset.Set,
-                            DstBinding = slot.Binding,
-                            DescriptorCount = 1,
-                            DescriptorType = DescriptorType.CombinedImageSampler,
-                            PImageInfo = p
-                        };
-                    }
-
-                    writeIndex++;
-                }
-
-
-                else if (resource is BackendTextureAndSamplerReferencesPairsArray texArray)
-                {
-                    int arrayLength = texArray.Array.Length;
-
-
-                    var imageInfosArray = new DescriptorImageInfo[arrayLength];
-
-                    for (int i2 = 0; i2 < arrayLength; i2++)
-                    {
-                        imageInfosArray[i2] = new DescriptorImageInfo
-                        {
-                            ImageLayout = ImageLayout.ShaderReadOnlyOptimal,
-                            ImageView = ((VulkanTexture)texArray.Array[i2].Texture.BackendRef).View,
-                            Sampler = (Sampler)texArray.Array[i2].Sampler.BackendRef
-                        };
-                    }
-
-                    fixed (DescriptorImageInfo* p = imageInfosArray)
-                    {
-                        writes[writeIndex] = new WriteDescriptorSet
-                        {
-                            SType = StructureType.WriteDescriptorSet,
-                            DstSet = vkset.Set,
-                            DstBinding = slot.Binding,
-                            DescriptorCount = (uint)arrayLength,
-                            DescriptorType = DescriptorType.CombinedImageSampler,
-                            PImageInfo = p
-                        };
-                    }
-
-                    if (arrayLength == 0) throw new Exception();
-
-                    writeIndex++;
-                }
-
-
-
-                else if (resource is BackendBufferReference.IDataBuffer)
-                {
-                    var dataBuffer = (BackendBufferReference)resource;
-
-
-
-                    bufferInfos[writeIndex] = new DescriptorBufferInfo
-                    {
-                        Buffer = ((VulkanBufferAndMemory)dataBuffer.BackendRef).Buffer,
-                        Offset = 0,
-                        Range = slot.Range,
-                    };
-
-                    fixed (DescriptorBufferInfo* p = &bufferInfos[writeIndex])
-                    {
-                        writes[writeIndex] = new WriteDescriptorSet
-                        {
-                            SType = StructureType.WriteDescriptorSet,
-                            DstSet = vkset.Set,
-                            DstBinding = slot.Binding,
-                            DescriptorCount = 1,
-                            DescriptorType = dataBuffer.UsageFlags.EnumHasValue(BufferUsageFlags.Uniform) ? DescriptorType.UniformBuffer : DescriptorType.StorageBuffer,
-                            PBufferInfo = p
-                        };
-                    }
-
-
-                    writeIndex++;
-                }
-
-
-                else throw new NotImplementedException();
-
-
-                vkset.Contents[slot.Binding] = slot;
-
+                write.DescriptorType = DescriptorType.CombinedImageSampler;
+                write.PImageInfo = &imageInfo;
             }
 
 
 
 
-            fixed (WriteDescriptorSet* pWrites = writes)
-            fixed (DescriptorBufferInfo* pBuffers = bufferInfos)
-            fixed (DescriptorImageInfo* pImages = imageInfos)
-                VK.UpdateDescriptorSets(device, (uint)writeIndex, pWrites, 0, null);
+            else if (bind.Resource is BackendTexture2DMSAttachmentReference ms)
+            {
+                var texms = (BackendTextureReference)ms;
+
+                imageInfo = new DescriptorImageInfo
+                {
+                    ImageLayout = ImageLayout.ShaderReadOnlyOptimal,
+                    ImageView = ((VulkanTexture)texms.BackendRef).View,
+
+                    Sampler = (Sampler)BackendTexture2DSamplerPair
+                        .GetPlaceholder()
+                        .Sampler.BackendRef
+                };
+
+                write.DescriptorType = DescriptorType.CombinedImageSampler;
+                write.PImageInfo = &imageInfo;
+            }
+
+
+
+            else if (bind.Resource is BackendBufferReference.IDataBuffer)
+            {
+                var dataBuffer = (BackendBufferReference)bind.Resource;
+
+                bufferInfo = new DescriptorBufferInfo
+                {
+                    Buffer = ((VulkanBufferAndMemory)dataBuffer.BackendRef).Buffer,
+                    Offset = 0,
+                    Range = bind.MappingRange
+                };
+
+                write.DescriptorType =
+                    dataBuffer.UsageFlags.EnumHasValue(BufferUsageFlags.Uniform)
+                        ? DescriptorType.UniformBuffer
+                        : DescriptorType.StorageBuffer;
+
+                write.PBufferInfo = &bufferInfo;
+            }
+
+            else
+                throw new NotImplementedException();
+
+
+
+            VK.UpdateDescriptorSets(device, 1, &write, 0, null);
+
+
+            vkset.Contents[bind.Binding] = bind;
         }
+
+
 
 
 
@@ -1706,14 +1661,12 @@ public static partial class RenderingBackend
 
 
 
-        public object CreateTexture(Vector3<uint> Dimensions, TextureTypes type, TextureFormats format, bool FramebufferAttachmentCompatible, byte[][] texturemips = null)
+        public object CreateTexture(Vector3<uint> Size, TextureTypes type, TextureFormats format, bool FramebufferAttachmentCompatible, TextureMipCount mipCount, TextureMipData[] texturemips = null, MultiSampleCount framebufferSampleCount = 0)
         {
 
             var vkFormat = ConvertTextureDataFormats(format);
 
-
-
-            ushort mipLevels = (ushort)(Math.Floor(Math.Log2(Math.Max(Math.Max(Dimensions.X, Dimensions.Y), Dimensions.Z))) + 1);
+            var samples = GetSampleCount(framebufferSampleCount);
 
             uint LayerCount = type == TextureTypes.TextureCubeMap ? 6u : 1u;
 
@@ -1724,12 +1677,11 @@ public static partial class RenderingBackend
 
             if (FramebufferAttachmentCompatible)
             {
-                if (format == TextureFormats.DepthStencil) usage |= ImageUsageFlags.DepthStencilAttachmentBit;
+                if (IsTextureFormatDepth(format)) usage |= ImageUsageFlags.DepthStencilAttachmentBit;
                 else usage |= ImageUsageFlags.ColorAttachmentBit;
 
                 usage |= ImageUsageFlags.TransferSrcBit;
             }
-
 
 
 
@@ -1738,10 +1690,10 @@ public static partial class RenderingBackend
                 SType = StructureType.ImageCreateInfo,
                 ImageType = ImageType.Type2D,
                 Format = vkFormat,
-                Extent = new Extent3D { Width = Dimensions.X, Height = Dimensions.Y, Depth = Dimensions.Z },
-                MipLevels = mipLevels,
+                Extent = new Extent3D { Width = Size.X, Height = Size.Y, Depth = Size.Z },
+                MipLevels = mipCount,
                 ArrayLayers = LayerCount,
-                Samples = SampleCountFlags.Count1Bit,
+                Samples = samples,
                 Tiling = ImageTiling.Optimal,
                 Usage = usage,
                 SharingMode = SharingMode.Exclusive,
@@ -1780,8 +1732,9 @@ public static partial class RenderingBackend
             ImageView imageView = CreateImageView(image,
                 type == TextureTypes.TextureCubeMap ? ImageViewType.TypeCube : ImageViewType.Type2D,
                 vkFormat,
-                format == TextureFormats.DepthStencil ? ImageAspectFlags.DepthBit : ImageAspectFlags.ColorBit,
-                mipLevels);
+                IsTextureFormatDepth(format) ? ImageAspectFlags.DepthBit : ImageAspectFlags.ColorBit,
+                mipCount);
+
 
 
 
@@ -1799,21 +1752,18 @@ public static partial class RenderingBackend
 
             if (texturemips != default)
             {
-                if (FramebufferAttachmentCompatible) throw new Exception("not compatible");
 
-
-
-                TransitionImageLayoutInternal(cmd, image, vkFormat, ImageLayout.Undefined, ImageLayout.TransferDstOptimal, 0, mipLevels, LayerCount);
+                TransitionImageLayoutInternal(cmd, image, vkFormat, ImageLayout.Undefined, ImageLayout.TransferDstOptimal, 0, mipCount, LayerCount);
                 currentLayout = ImageLayout.TransferDstOptimal;
 
 
 
-                int mipCount = texturemips.Length;
+                int mipsPresent = texturemips.Length;
 
 
                 ulong totalSize = 0;
-                for (int mip = 0; mip < mipCount; mip++)
-                    totalSize += (ulong)texturemips[mip].Length * LayerCount;
+                for (int mip = 0; mip < mipsPresent; mip++)
+                    totalSize += (ulong)texturemips[mip].Data.Length * LayerCount;
 
 
                 CreateStagingBuffer(totalSize, out stagingBuffer, out stagingMemory);
@@ -1826,9 +1776,9 @@ public static partial class RenderingBackend
                 byte* dst = (byte*)mapped;
                 ulong offset = 0;
 
-                for (int mip = 0; mip < mipCount; mip++)
+                for (int mip = 0; mip < mipsPresent; mip++)
                 {
-                    byte[] mipData = texturemips[mip];
+                    byte[] mipData = texturemips[mip].Data;
 
                     for (uint layer = 0; layer < LayerCount; layer++)
                     {
@@ -1845,13 +1795,13 @@ public static partial class RenderingBackend
 
 
 
-                Span<BufferImageCopy> regions = stackalloc BufferImageCopy[mipCount * (int)LayerCount];
+                Span<BufferImageCopy> regions = stackalloc BufferImageCopy[mipsPresent * (int)LayerCount];
                 offset = 0;
 
-                for (int mip = 0; mip < mipCount; mip++)
+                for (int mip = 0; mip < mipsPresent; mip++)
                 {
-                    uint width = Math.Max(1u, Dimensions.X >> mip);
-                    uint height = Math.Max(1u, Dimensions.Y >> mip);
+                    uint width = Math.Max(1u, Size.X >> mip);
+                    uint height = Math.Max(1u, Size.Y >> mip);
 
 
                     for (uint layer = 0; layer < LayerCount; layer++)
@@ -1864,7 +1814,7 @@ public static partial class RenderingBackend
 
                             ImageSubresource = new ImageSubresourceLayers
                             {
-                                AspectMask = format == TextureFormats.DepthStencil ? ImageAspectFlags.DepthBit : ImageAspectFlags.ColorBit,
+                                AspectMask = IsTextureFormatDepth(format) ? ImageAspectFlags.DepthBit : ImageAspectFlags.ColorBit,
                                 MipLevel = (uint)mip,
                                 BaseArrayLayer = layer,
                                 LayerCount = 1
@@ -1875,11 +1825,11 @@ public static partial class RenderingBackend
                             {
                                 Width = width,
                                 Height = height,
-                                Depth = Math.Max(1u, Dimensions.Z >> mip)
+                                Depth = Math.Max(1u, Size.Z >> mip)
                             }
                         };
 
-                        offset += (ulong)texturemips[mip].Length;
+                        offset += (ulong)texturemips[mip].Data.Length;
                     }
                 }
 
@@ -1895,17 +1845,20 @@ public static partial class RenderingBackend
 
             ImageView framebufferimageView = default;
 
+
             if (FramebufferAttachmentCompatible)
             {
                 framebufferimageView = CreateImageView(image,
-                    type == TextureTypes.TextureCubeMap ? ImageViewType.TypeCube : ImageViewType.Type2D,
-                    vkFormat,
-                    format == TextureFormats.DepthStencil ? ImageAspectFlags.DepthBit | ImageAspectFlags.StencilBit : ImageAspectFlags.ColorBit,
-                    1);
-
+                        type == TextureTypes.TextureCubeMap ? ImageViewType.TypeCube : ImageViewType.Type2D,
+                        vkFormat,
+                        IsTextureFormatDepth(format) ? ImageAspectFlags.DepthBit | ImageAspectFlags.StencilBit : ImageAspectFlags.ColorBit,
+                        1);
             }
 
-            TransitionImageLayoutInternal(cmd, image, vkFormat, currentLayout, ImageLayout.ShaderReadOnlyOptimal, 0, mipLevels, LayerCount);
+
+
+
+            TransitionImageLayoutInternal(cmd, image, vkFormat, currentLayout, ImageLayout.ShaderReadOnlyOptimal, 0, mipCount, LayerCount);
             currentLayout = ImageLayout.ShaderReadOnlyOptimal;
 
 
@@ -1921,6 +1874,7 @@ public static partial class RenderingBackend
                 VK.DestroyBuffer(device, stagingBuffer, null);
                 VK.FreeMemory(device, stagingMemory, null);
             }
+
 
 
 
@@ -2111,7 +2065,8 @@ public static partial class RenderingBackend
                 TextureFormats.RG16_SFLOAT => 4,
                 TextureFormats.RGBA16_SFLOAT => 8,
 
-                TextureFormats.DepthStencil => 4,
+                TextureFormats.Depth24_Stencil8 => 4,
+                TextureFormats.Depth32 => 4,
 
                 _ => throw new NotImplementedException() 
             };
@@ -2186,7 +2141,7 @@ public static partial class RenderingBackend
             var img = (VulkanTexture)tex.BackendRef;
             if (dest != img.CurrentLayout)
             {
-                TransitionImageLayoutInternal(cmd, img.Image, img.Format, img.CurrentLayout, dest, 0, tex.MipCount, tex.TextureType == TextureTypes.TextureCubeMap ? 6u : 1u);
+                TransitionImageLayoutInternal(cmd, img.Image, img.Format, img.CurrentLayout, dest, 0, tex.MipCount, tex is BackendTextureCubeMapReference ? 6u : 1u);
 
                 img.CurrentLayout = dest;
             }
@@ -2259,7 +2214,7 @@ public static partial class RenderingBackend
 
                 CompareEnable = details.EnableDepthComparison,
 
-                CompareOp = details.EnableDepthComparison ? CompareOp.Always : CompareOp.LessOrEqual,
+                CompareOp = details.EnableDepthComparison ? CompareOp.LessOrEqual : CompareOp.Always,
 
                 MipmapMode = (SamplerMipmapMode)ConvertTextureFilter(details.MinFilter),
                 MinLod = 0.0f,
@@ -2298,9 +2253,10 @@ public static partial class RenderingBackend
 
             public ImageView FramebufferCompatibleView;  // a view with only 1 mip, if applicable
 
+
             public Format Format;
 
-            public ImageLayout CurrentLayout;   //all mips are always transitioned to the same one layout for simplicity
+            public ImageLayout CurrentLayout;   //all mips are currently always transitioned to the same one layout for simplicity
         }
 
 
@@ -2395,7 +2351,6 @@ public static partial class RenderingBackend
         {
             var module = CreateShaderModule(shaderSource.Source.AsSpan());
 
-            // 3. Wrap in your struct
             return new VulkanComputeShader()
             {
                 Module = module,
@@ -2440,9 +2395,10 @@ public static partial class RenderingBackend
                 TextureFormats.RGBA8_BC7_UNORM => Format.BC7UnormBlock,
                 TextureFormats.RGB16_BC6H_SFLOAT => Format.BC6HSfloatBlock,
 
-                TextureFormats.DepthStencil => Format.D24UnormS8Uint,
+                TextureFormats.Depth24_Stencil8 => Format.D24UnormS8Uint,
+                TextureFormats.Depth32 => Format.D32Sfloat,
 
-                _ => throw new NotImplementedException(),  //may be unintentionally left out, check if format needed conversion or something for example
+                _ => throw new NotImplementedException(), 
             };
         }
 
@@ -2499,9 +2455,9 @@ public static partial class RenderingBackend
         {
             return v switch
             {
-                RenderingBackend.PolygonMode.Fill => Silk.NET.Vulkan.PolygonMode.Fill,
-                RenderingBackend.PolygonMode.Line => Silk.NET.Vulkan.PolygonMode.Line,
-                RenderingBackend.PolygonMode.Point => Silk.NET.Vulkan.PolygonMode.Point,
+                PolygonMode.Fill => Silk.NET.Vulkan.PolygonMode.Fill,
+                PolygonMode.Line => Silk.NET.Vulkan.PolygonMode.Line,
+                PolygonMode.Point => Silk.NET.Vulkan.PolygonMode.Point,
                 _ => throw new NotImplementedException(),
             };
         }
@@ -2611,9 +2567,9 @@ public static partial class RenderingBackend
 
             DynamicState* dynamic = stackalloc DynamicState[]
             {
-                    DynamicState.Viewport,
-                    DynamicState.Scissor
-                };
+                DynamicState.Viewport,
+                DynamicState.Scissor
+            };
 
             PipelineDynamicStateCreateInfo dynamicState = new()
             {
@@ -2672,16 +2628,7 @@ public static partial class RenderingBackend
             DescriptorSetLayout* layouts = stackalloc DescriptorSetLayout[sets.Count];
 
             for (byte i = 0; i < sets.Count; i++)
-            {
-                var get = sets[i];
-
-                for (int v = 0; v < sets[i].ResourceCount; v++)
-                {
-                    var t = (DescriptorType)get.ResourceType[v];
-                }
-
                 layouts[i] = CreateOrFetchDescriptorSetLayout(sets[i]);
-            }
 
 
 
@@ -2748,8 +2695,6 @@ public static partial class RenderingBackend
             };
 
 
-            //throw new Exception();
-
 
 
 
@@ -2790,7 +2735,7 @@ public static partial class RenderingBackend
                 {
                     SType = StructureType.PipelineMultisampleStateCreateInfo,
                     SampleShadingEnable = false,
-                    RasterizationSamples = GetSampleCount(FramebufferPipeline == null ? FramebufferSampleCount.Sample1 : FramebufferPipeline.Details.SampleCount)
+                    RasterizationSamples = GetSampleCount(FramebufferPipeline == null ? 0 : FramebufferPipeline.Details.SampleCount)
                 };
 
 
@@ -2932,25 +2877,92 @@ public static partial class RenderingBackend
 
 
 
-        private static SampleCountFlags GetSampleCount(FramebufferSampleCount count)
+        private static SampleCountFlags GetSampleCount(MultiSampleCount count)
             => count switch
             {
-                FramebufferSampleCount.Sample1 => SampleCountFlags.Count1Bit,
-                FramebufferSampleCount.Sample2 => SampleCountFlags.Count2Bit,
-                FramebufferSampleCount.Sample4 => SampleCountFlags.Count4Bit,
-                FramebufferSampleCount.Sample8 => SampleCountFlags.Count8Bit,
-                FramebufferSampleCount.Sample16 => SampleCountFlags.Count16Bit,
+                (MultiSampleCount)0 or (MultiSampleCount)1 => SampleCountFlags.Count1Bit,
+
+                MultiSampleCount.Sample2 => SampleCountFlags.Count2Bit,
+                MultiSampleCount.Sample4 => SampleCountFlags.Count4Bit,
+                MultiSampleCount.Sample8 => SampleCountFlags.Count8Bit,
+                MultiSampleCount.Sample16 => SampleCountFlags.Count16Bit,
                 _ => throw new NotImplementedException(),
             };
 
 
 
 
-
-        private static Format GetVertexAttributeBufferFormat(VertexAttributeBufferComponentFormat src, ShaderAttributeBufferFinalFormat final)
+        private static Format GetVertexAttributeBufferFormat(
+            VertexAttributeBufferComponentFormat src,
+            ShaderAttributeBufferFinalFormat final)
         {
             return (src, final) switch
             {
+
+                // ----------- BYTE -----------
+
+                (VertexAttributeBufferComponentFormat.UByteNormalized, ShaderAttributeBufferFinalFormat.Float) => Format.R8Unorm,
+                (VertexAttributeBufferComponentFormat.UByteNormalized, ShaderAttributeBufferFinalFormat.Vec2) => Format.R8G8Unorm,
+                (VertexAttributeBufferComponentFormat.UByteNormalized, ShaderAttributeBufferFinalFormat.Vec3) => Format.R8G8B8Unorm,
+                (VertexAttributeBufferComponentFormat.UByteNormalized, ShaderAttributeBufferFinalFormat.Vec4) => Format.R8G8B8A8Unorm,
+
+                (VertexAttributeBufferComponentFormat.UByte, ShaderAttributeBufferFinalFormat.UInt) => Format.R8Uint,
+                (VertexAttributeBufferComponentFormat.UByte, ShaderAttributeBufferFinalFormat.UVec2) => Format.R8G8Uint,
+                (VertexAttributeBufferComponentFormat.UByte, ShaderAttributeBufferFinalFormat.UVec3) => Format.R8G8B8Uint,
+                (VertexAttributeBufferComponentFormat.UByte, ShaderAttributeBufferFinalFormat.UVec4) => Format.R8G8B8A8Uint,
+
+                (VertexAttributeBufferComponentFormat.SByteNormalized, ShaderAttributeBufferFinalFormat.Float) => Format.R8SNorm,
+                (VertexAttributeBufferComponentFormat.SByteNormalized, ShaderAttributeBufferFinalFormat.Vec2) => Format.R8G8SNorm,
+                (VertexAttributeBufferComponentFormat.SByteNormalized, ShaderAttributeBufferFinalFormat.Vec3) => Format.R8G8B8SNorm,
+                (VertexAttributeBufferComponentFormat.SByteNormalized, ShaderAttributeBufferFinalFormat.Vec4) => Format.R8G8B8A8SNorm,
+
+                (VertexAttributeBufferComponentFormat.SByte, ShaderAttributeBufferFinalFormat.Int) => Format.R8Sint,
+                (VertexAttributeBufferComponentFormat.SByte, ShaderAttributeBufferFinalFormat.IVec2) => Format.R8G8Sint,
+                (VertexAttributeBufferComponentFormat.SByte, ShaderAttributeBufferFinalFormat.IVec3) => Format.R8G8B8Sint,
+                (VertexAttributeBufferComponentFormat.SByte, ShaderAttributeBufferFinalFormat.IVec4) => Format.R8G8B8A8Sint,
+
+
+
+                // ----------- SHORT -----------
+
+                (VertexAttributeBufferComponentFormat.UShortNormalized, ShaderAttributeBufferFinalFormat.Float) => Format.R16Unorm,
+                (VertexAttributeBufferComponentFormat.UShortNormalized, ShaderAttributeBufferFinalFormat.Vec2) => Format.R16G16Unorm,
+                (VertexAttributeBufferComponentFormat.UShortNormalized, ShaderAttributeBufferFinalFormat.Vec3) => Format.R16G16B16Unorm,
+                (VertexAttributeBufferComponentFormat.UShortNormalized, ShaderAttributeBufferFinalFormat.Vec4) => Format.R16G16B16A16Unorm,
+
+                (VertexAttributeBufferComponentFormat.UShort, ShaderAttributeBufferFinalFormat.UInt) => Format.R16Uint,
+                (VertexAttributeBufferComponentFormat.UShort, ShaderAttributeBufferFinalFormat.UVec2) => Format.R16G16Uint,
+                (VertexAttributeBufferComponentFormat.UShort, ShaderAttributeBufferFinalFormat.UVec3) => Format.R16G16B16Uint,
+                (VertexAttributeBufferComponentFormat.UShort, ShaderAttributeBufferFinalFormat.UVec4) => Format.R16G16B16A16Uint,
+
+
+                (VertexAttributeBufferComponentFormat.ShortNormalized, ShaderAttributeBufferFinalFormat.Float) => Format.R16SNorm,
+                (VertexAttributeBufferComponentFormat.ShortNormalized, ShaderAttributeBufferFinalFormat.Vec2) => Format.R16G16SNorm,
+                (VertexAttributeBufferComponentFormat.ShortNormalized, ShaderAttributeBufferFinalFormat.Vec3) => Format.R16G16B16SNorm,
+                (VertexAttributeBufferComponentFormat.ShortNormalized, ShaderAttributeBufferFinalFormat.Vec4) => Format.R16G16B16A16SNorm,
+
+                (VertexAttributeBufferComponentFormat.Short, ShaderAttributeBufferFinalFormat.Int) => Format.R16Sint,
+                (VertexAttributeBufferComponentFormat.Short, ShaderAttributeBufferFinalFormat.IVec2) => Format.R16G16Sint,
+                (VertexAttributeBufferComponentFormat.Short, ShaderAttributeBufferFinalFormat.IVec3) => Format.R16G16B16Sint,
+                (VertexAttributeBufferComponentFormat.Short, ShaderAttributeBufferFinalFormat.IVec4) => Format.R16G16B16A16Sint,
+
+
+                // ----------- INT -----------
+
+                (VertexAttributeBufferComponentFormat.Int, ShaderAttributeBufferFinalFormat.Int) => Format.R32Sint,
+                (VertexAttributeBufferComponentFormat.Int, ShaderAttributeBufferFinalFormat.IVec2) => Format.R32G32Sint,
+                (VertexAttributeBufferComponentFormat.Int, ShaderAttributeBufferFinalFormat.IVec3) => Format.R32G32B32Sint,
+                (VertexAttributeBufferComponentFormat.Int, ShaderAttributeBufferFinalFormat.IVec4) => Format.R32G32B32A32Sint,
+
+                (VertexAttributeBufferComponentFormat.UInt, ShaderAttributeBufferFinalFormat.UInt) => Format.R32Uint,
+                (VertexAttributeBufferComponentFormat.UInt, ShaderAttributeBufferFinalFormat.UVec2) => Format.R32G32Uint,
+                (VertexAttributeBufferComponentFormat.UInt, ShaderAttributeBufferFinalFormat.UVec3) => Format.R32G32B32Uint,
+                (VertexAttributeBufferComponentFormat.UInt, ShaderAttributeBufferFinalFormat.UVec4) => Format.R32G32B32A32Uint,
+
+
+
+
+                // ----------- FLOAT -----------
 
                 (VertexAttributeBufferComponentFormat.Float, ShaderAttributeBufferFinalFormat.Float) => Format.R32Sfloat,
                 (VertexAttributeBufferComponentFormat.Float, ShaderAttributeBufferFinalFormat.Vec2) => Format.R32G32Sfloat,
@@ -2958,24 +2970,28 @@ public static partial class RenderingBackend
                 (VertexAttributeBufferComponentFormat.Float, ShaderAttributeBufferFinalFormat.Vec4) => Format.R32G32B32A32Sfloat,
 
 
+
+                // ----------- HALF -----------
+
                 (VertexAttributeBufferComponentFormat.Half, ShaderAttributeBufferFinalFormat.Float) => Format.R16Sfloat,
                 (VertexAttributeBufferComponentFormat.Half, ShaderAttributeBufferFinalFormat.Vec2) => Format.R16G16Sfloat,
                 (VertexAttributeBufferComponentFormat.Half, ShaderAttributeBufferFinalFormat.Vec3) => Format.R16G16B16Sfloat,
                 (VertexAttributeBufferComponentFormat.Half, ShaderAttributeBufferFinalFormat.Vec4) => Format.R16G16B16A16Sfloat,
 
 
-                (VertexAttributeBufferComponentFormat.Byte, ShaderAttributeBufferFinalFormat.Float) => Format.R8Unorm,
-                (VertexAttributeBufferComponentFormat.Byte, ShaderAttributeBufferFinalFormat.Vec2) => Format.R8G8Unorm,
-                (VertexAttributeBufferComponentFormat.Byte, ShaderAttributeBufferFinalFormat.Vec3) => Format.R8G8B8Unorm,
-                (VertexAttributeBufferComponentFormat.Byte, ShaderAttributeBufferFinalFormat.Vec4) => Format.R8G8B8A8Unorm,
-                (VertexAttributeBufferComponentFormat.Byte, ShaderAttributeBufferFinalFormat.UInt) => Format.R8Uint,
-                (VertexAttributeBufferComponentFormat.Byte, ShaderAttributeBufferFinalFormat.UVec2) => Format.R8G8Uint,
-                (VertexAttributeBufferComponentFormat.Byte, ShaderAttributeBufferFinalFormat.UVec3) => Format.R8G8B8Uint,
-                (VertexAttributeBufferComponentFormat.Byte, ShaderAttributeBufferFinalFormat.UVec4) => Format.R8G8B8A8Uint,
 
-                _ => throw new NotImplementedException()
+                // ----------- DOUBLE -----------
+
+                (VertexAttributeBufferComponentFormat.Double, ShaderAttributeBufferFinalFormat.Float) => Format.R64Sfloat,
+                (VertexAttributeBufferComponentFormat.Double, ShaderAttributeBufferFinalFormat.Vec2) => Format.R64G64Sfloat,
+                (VertexAttributeBufferComponentFormat.Double, ShaderAttributeBufferFinalFormat.Vec3) => Format.R64G64B64Sfloat,
+                (VertexAttributeBufferComponentFormat.Double, ShaderAttributeBufferFinalFormat.Vec4) => Format.R64G64B64A64Sfloat,
+
+
+                _ => throw new NotSupportedException()
             };
         }
+
 
 
 
@@ -3056,7 +3072,7 @@ public static partial class RenderingBackend
 
 
 
-        public object CreateFrameBufferObject(ReadOnlySpan<BackendTextureReference> colorTargets, BackendTextureReference depthStencilTarget, BackendFrameBufferPipelineReference pipeline, Vector2<uint> dimensions)
+        public object CreateFrameBufferObject(ReadOnlySpan<IFramebufferAttachment> colorTargets, IFramebufferAttachment depthStencilTarget, BackendFrameBufferPipelineReference pipeline, Vector2<uint> Size)
         {
             var rp = (VulkanFramebufferPipeline)pipeline.BackendRef;
 
@@ -3072,14 +3088,18 @@ public static partial class RenderingBackend
                 var views = new ImageView[pass.AttachmentCount];
                 int idx = 0;
 
-                // Add ONLY color attachments actually used by this render pass
+
+
                 for (int c = 0; c < pass.ColorAttachmentCount; c++)
                     views[idx++] =
-                        ((VulkanTexture)colorTargets[c].BackendRef).FramebufferCompatibleView;
+                        ((VulkanTexture)(((BackendTextureReference)colorTargets[c]).BackendRef)).FramebufferCompatibleView;
+
 
                 if (pass.HasDepthStencil)
                     views[idx++] =
-                        ((VulkanTexture)depthStencilTarget.BackendRef).FramebufferCompatibleView;
+                        ((VulkanTexture)(((BackendTextureReference)depthStencilTarget).BackendRef)).FramebufferCompatibleView;
+
+
 
                 fixed (ImageView* pViews = views)
                 {
@@ -3089,8 +3109,8 @@ public static partial class RenderingBackend
                         RenderPass = pass.Pass,
                         AttachmentCount = (uint)views.Length,
                         PAttachments = pViews,
-                        Width = dimensions.X,
-                        Height = dimensions.Y,
+                        Width = Size.X,
+                        Height = Size.Y,
                         Layers = 1
                     };
 
@@ -3126,9 +3146,12 @@ public static partial class RenderingBackend
 
         public object CreateFrameBufferPipeline(FrameBufferPipelineDetails details)
         {
-            // ---------------------------------------------------------------------
-            // Helpers
-            // ---------------------------------------------------------------------
+
+
+
+            // =========================================================
+            // HELPERS
+            // =========================================================
 
             static bool HasRead(byte a)
                 => ((FrameBufferPipelineAttachmentAccessFlags)a &
@@ -3147,11 +3170,10 @@ public static partial class RenderingBackend
                 out AttachmentUsageState newStencil,
                 out AttachmentUsageState[] newColors)
             {
-                newDepth   = depthState;
+                newDepth = depthState;
                 newStencil = stencilState;
-                newColors  = (AttachmentUsageState[])colorStates.Clone();
+                newColors = (AttachmentUsageState[])colorStates.Clone();
 
-                // Depth
                 if (HasWrite(next.SpecifiedDepthAccess) &&
                     newDepth == AttachmentUsageState.ReadOnly)
                     return false;
@@ -3162,7 +3184,6 @@ public static partial class RenderingBackend
                 else if (HasWrite(next.SpecifiedDepthAccess))
                     newDepth = AttachmentUsageState.Written;
 
-                // Stencil
                 if (HasWrite(next.SpecifiedStencilAccess) &&
                     newStencil == AttachmentUsageState.ReadOnly)
                     return false;
@@ -3173,7 +3194,6 @@ public static partial class RenderingBackend
                 else if (HasWrite(next.SpecifiedStencilAccess))
                     newStencil = AttachmentUsageState.Written;
 
-                // Color
                 for (int i = 0; i < newColors.Length; i++)
                 {
                     var access = next.SpecifiedColorAccesses[i];
@@ -3190,67 +3210,92 @@ public static partial class RenderingBackend
                 return true;
             }
 
-            // ---------------------------------------------------------------------
-            // 1) Partition stages into render passes
-            // ---------------------------------------------------------------------
+
+
+
+
+            // =========================================================
+            // GROUP STAGES INTO RENDER PASSES
+            // =========================================================
 
             List<List<int>> renderPasses = new();
-            List<int> currentRP = new() { 0 };
 
-            AttachmentUsageState depthState = AttachmentUsageState.Unused;
-            AttachmentUsageState stencilState = AttachmentUsageState.Unused;
-            AttachmentUsageState[] colorStates =
-                new AttachmentUsageState[details.ColorAttachmentCount];
+            var currentRP = new List<int> { 0 };
+
+            var depthState = AttachmentUsageState.Unused;
+            var stencilState = AttachmentUsageState.Unused;
+            var colorStates = new AttachmentUsageState[details.ColorAttachmentCount];
 
             for (int i = 1; i < details.StageCount; i++)
             {
-                if (CanAppendStage(
-                    details.Stages[i],
-                    depthState,
-                    stencilState,
-                    colorStates,
-                    out var nd, out var ns, out var nc))
+                if (CanAppendStage(details.Stages[i],
+                                   depthState,
+                                   stencilState,
+                                   colorStates,
+                                   out var nd,
+                                   out var ns,
+                                   out var nc))
                 {
-                    depthState   = nd;
+                    depthState = nd;
                     stencilState = ns;
-                    colorStates  = nc;
+                    colorStates = nc;
+
                     currentRP.Add(i);
                 }
                 else
                 {
                     renderPasses.Add(currentRP);
-                    currentRP = new() { i };
 
-                    depthState   = AttachmentUsageState.Unused;
+                    currentRP = new List<int> { i };
+
+                    depthState = AttachmentUsageState.Unused;
                     stencilState = AttachmentUsageState.Unused;
-                    colorStates =
-                        new AttachmentUsageState[details.ColorAttachmentCount];
+                    colorStates = new AttachmentUsageState[details.ColorAttachmentCount];
                 }
             }
 
             renderPasses.Add(currentRP);
 
-            // ---------------------------------------------------------------------
-            // 2) Build Vulkan render passes
-            // ---------------------------------------------------------------------
+
+
+
+
+            // =========================================================
+            // PIPELINE OUTPUT
+            // =========================================================
 
             var pipeline = new VulkanFramebufferPipeline
             {
-                Stages       = new VulkanFramebufferPipeline.Stage[details.StageCount],
+                Stages = new VulkanFramebufferPipeline.Stage[details.StageCount],
                 RenderPasses = new VulkanFramebufferPipeline.RenderPassDetails[renderPasses.Count]
             };
 
             byte rpIndex = 0;
 
+
+
+
+
+
+            // =========================================================
+            // PHASE 2 — BUILD EACH RENDER PASS
+            // =========================================================
+
             foreach (var rpStages in renderPasses)
             {
-                bool[] colorUsed = new bool[details.ColorAttachmentCount];
+
+
+                // ----------------------------
+                // ANALYSIS
+                // ----------------------------
+
+                Span<bool> colorUsed = stackalloc bool[details.ColorAttachmentCount];
+                Span<bool> clearColors = stackalloc bool[details.ColorAttachmentCount];
+
                 bool depthUsed = false;
                 bool clearDepth = false;
                 bool clearStencil = false;
-                bool[] clearColors = new bool[details.ColorAttachmentCount];
 
-                // Determine which attachments are used and which need clears
                 foreach (int s in rpStages)
                 {
                     var stage = details.Stages[s];
@@ -3259,23 +3304,39 @@ public static partial class RenderingBackend
                     {
                         bool used = stage.SpecifiedColorAccesses[i] != 0;
                         colorUsed[i] |= used;
-                        clearColors[i] |= used && (stage.SpecifiedColorClears & (1 << i)) != 0;
+                        clearColors[i] |= used &&
+                            (stage.SpecifiedColorClears & (1 << i)) != 0;
                     }
 
                     depthUsed |= stage.SpecifiedDepth;
                     clearDepth |= stage.SpecifiedDepth && stage.SpecifiedClearDepth;
-
                     clearStencil |= stage.SpecifiedStencil && stage.SpecifiedClearStencil;
                 }
 
-                int colorAttachmentCount = colorUsed.Count(b => b);
+
+                int colorAttachmentCount = 0;
+                for (int i = 0; i < colorUsed.Length; i++)
+                    if (colorUsed[i]) colorAttachmentCount++;
+
                 int totalAttachmentCount = colorAttachmentCount + (depthUsed ? 1 : 0);
 
-                Span<AttachmentDescription> attachments = stackalloc AttachmentDescription[totalAttachmentCount];
-                int[] colorIndexMap = new int[details.ColorAttachmentCount];
+
+
+
+
+
+                // ----------------------------
+                // BUILD ATTACHMENTS
+                // ----------------------------
+
+                Span<AttachmentDescription> attachments =
+                    stackalloc AttachmentDescription[totalAttachmentCount];
+
+                Span<int> colorIndexMap =
+                    stackalloc int[details.ColorAttachmentCount];
+
                 int attachmentIdx = 0;
 
-                // Color attachments
                 for (int i = 0; i < colorUsed.Length; i++)
                 {
                     if (!colorUsed[i])
@@ -3299,8 +3360,8 @@ public static partial class RenderingBackend
                     };
                 }
 
-                // Depth/stencil attachment
                 AttachmentReference depthRef = default;
+
                 if (depthUsed)
                 {
                     attachments[attachmentIdx] = new AttachmentDescription
@@ -3324,7 +3385,13 @@ public static partial class RenderingBackend
                     attachmentIdx++;
                 }
 
-                // Subpasses
+
+
+
+                // ----------------------------
+                // BUILD SUBPASSES
+                // ----------------------------
+
                 var subpasses = stackalloc SubpassDescription[rpStages.Count];
                 var dependencies = stackalloc SubpassDependency[rpStages.Count];
                 var subpassColorRefs = new AttachmentReference[rpStages.Count][];
@@ -3332,9 +3399,12 @@ public static partial class RenderingBackend
                 for (int sp = 0; sp < rpStages.Count; sp++)
                 {
                     int stageIdx = rpStages[sp];
-                    pipeline.Stages[stageIdx] = new VulkanFramebufferPipeline.Stage(rpIndex, (byte)sp);
+
+                    pipeline.Stages[stageIdx] =
+                        new VulkanFramebufferPipeline.Stage(rpIndex, (byte)sp);
 
                     var refs = new List<AttachmentReference>();
+
                     for (int i = 0; i < colorIndexMap.Length; i++)
                     {
                         if (colorIndexMap[i] >= 0 &&
@@ -3378,6 +3448,13 @@ public static partial class RenderingBackend
                     };
                 }
 
+
+
+
+                // ----------------------------
+                // CREATE VULKAN RENDER PASS
+                // ----------------------------
+
                 fixed (AttachmentDescription* attachmentsPtr = attachments)
                 {
                     RenderPassCreateInfo rpInfo = new()
@@ -3410,8 +3487,8 @@ public static partial class RenderingBackend
 
 
 
-        //this is a generated list of render passes and sometimes subpasses.
-        //some stage transitions would be illegal as subpass transitions, so they need to be split into render passes
+
+
         private class VulkanFramebufferPipeline
         {
             public readonly record struct Stage(byte RenderPass, byte SubPass);
@@ -3435,7 +3512,7 @@ public static partial class RenderingBackend
 
 
             StartRenderPass(
-                fbo.Dimensions,
+                fbo.Size,
                 ((VulkanIndividualFramebufferDetails[])fbo.BackendRef)[s.RenderPass].Framebuffer,
                 pass);
         }
@@ -3462,7 +3539,7 @@ public static partial class RenderingBackend
 
 
             StartRenderPass(
-                fbo.Dimensions,
+                fbo.Size,
                 ((VulkanIndividualFramebufferDetails[])fbo.BackendRef)[curr.RenderPass].Framebuffer,
                 pass);
         }
@@ -3475,7 +3552,7 @@ public static partial class RenderingBackend
 
 
         private void StartRenderPass(
-            Vector2<uint> dimensions,
+            Vector2<uint> Size,
             Framebuffer framebuffer,
             VulkanFramebufferPipeline.RenderPassDetails pass)
         {
@@ -3506,8 +3583,8 @@ public static partial class RenderingBackend
                         Offset = default,
                         Extent = new Extent2D
                         {
-                            Width = dimensions.X,
-                            Height = dimensions.Y
+                            Width = Size.X,
+                            Height = Size.Y
                         }
                     },
                     ClearValueCount = pass.AttachmentCount,
@@ -3545,151 +3622,238 @@ public static partial class RenderingBackend
 
 
 
+        private Pipeline lastPipeline;
+        private PipelineLayout lastPipelineLayout;
 
-        private Pipeline lastPipelineUsed;
+
+        private WeakObjRef<BackendResourceSetReference>[] lastResourceSets = new WeakObjRef<BackendResourceSetReference>[16];
+        private uint lastResourceSetsCount;
+
+
 
 
 
         public void Draw(
-
             ReadOnlySpan<VertexAttributeDefinitionBufferPair.Struct> AttributeBuffers,
             ReadOnlySpan<WeakObjRef<BackendResourceSetReference>> ResourceSets,
             BackendDrawPipelineReference pipeline,
             BackendBufferReference.IIndexBuffer indexBuffer,
             uint indexBufferOffset,
             IndexingDetails indexing)
-
         {
 
 
 
-
-            var vkPipelineAndLayout = ((VulkanPipelineAndLayout[])pipeline.BackendRef)[ActiveFrameBufferPipelineStage];
+            var vkPipelineAndLayout = ((VulkanPipelineAndLayout[])pipeline.BackendRef)[ActiveFrameBufferPipelineStageInFlight];
 
             var vkpipeline = vkPipelineAndLayout.Pipeline;
             var vkLayout = vkPipelineAndLayout.Layout;
 
 
-            if (lastPipelineUsed.Handle != vkpipeline.Handle)
+
+
+            // ---------------- Pipeline bind ----------------
+
+            if (lastPipeline.Handle != vkpipeline.Handle)
             {
-                lastPipelineUsed = vkpipeline;
                 VK.CmdBindPipeline(RenderThreadCommandBuffer, PipelineBindPoint.Graphics, vkpipeline);
+                lastPipeline = vkpipeline;
             }
 
 
 
 
+            // ---------------- Vertex buffers ----------------
 
             var bufferHandles = stackalloc Buffer[AttributeBuffers.Length];
             var bufferOffsets = stackalloc ulong[AttributeBuffers.Length];
 
-
             for (int i = 0; i < AttributeBuffers.Length; i++)
             {
                 var bind = AttributeBuffers[i];
-
                 var bufferResource = bind.BufferRef.Dereference();
 
                 bufferHandles[i] = ((VulkanBufferAndMemory)((BackendBufferReference)bufferResource).BackendRef).Buffer;
             }
 
-
-
             VK.CmdBindVertexBuffers(RenderThreadCommandBuffer, 0, (uint)AttributeBuffers.Length, bufferHandles, bufferOffsets);
 
 
 
+
+
+
+
+
+            // ---------------- Index buffer ----------------
+
             if (indexBuffer != null)
             {
-                VK.CmdBindIndexBuffer(RenderThreadCommandBuffer, ((VulkanBufferAndMemory)((BackendBufferReference)indexBuffer).BackendRef).Buffer, indexBufferOffset, IndexType.Uint32);
+                VK.CmdBindIndexBuffer(
+                    RenderThreadCommandBuffer,
+                    ((VulkanBufferAndMemory)((BackendBufferReference)indexBuffer).BackendRef).Buffer,
+                    indexBufferOffset,
+                    indexing.IndexBufferFormat switch
+                    {
+                        IndexBufferFormat.UByte => IndexType.Uint8,
+                        IndexBufferFormat.UShort => IndexType.Uint16,
+                        IndexBufferFormat.UInt => IndexType.Uint32,
+                        _ => throw new NotImplementedException(),
+                    });
             }
 
 
 
+            // ---------------- Descriptor sets ----------------
 
-
-
-            var sets = stackalloc DescriptorSet[ResourceSets.Length];
-
-            for (int i = 0; i < ResourceSets.Length; i++)
+            if (ResourceSets.Length != 0)
             {
-                var setRef = ResourceSets[i].Dereference();
-                sets[i] = ((VulkanDescriptorSet)setRef.BackendRef).Set;
-            }
+                uint newCount = (uint)ResourceSets.Length;
 
+                bool layoutChanged = vkLayout.Handle != lastPipelineLayout.Handle;
 
-            VK.CmdBindDescriptorSets(
-                RenderThreadCommandBuffer,
-                PipelineBindPoint.Graphics,
-                vkLayout,
-                0,                             
-                (uint)ResourceSets.Length,      
-                sets,                            
-                0,
-                null
-            );
-
-
-
-
-
-            if (LastFBPipelineUsed != ActiveFrameBufferObject)
-            {
-                LastFBPipelineUsed = ActiveFrameBufferObject;
-
-                var dims = ActiveFrameBufferObject == null ? CurrentSwapchainDetails.Size : ActiveFrameBufferObject.Dimensions;
-
-                Viewport viewport = new()
+                if (layoutChanged)
                 {
-                    X = 0,
-                    Y = 0,
-                    Width = dims.X,
-                    Height = dims.Y,
-                    MinDepth = 0.0f,
-                    MaxDepth = 1.0f
-                };
+                    var sets = stackalloc DescriptorSet[(int)newCount];
 
+                    for (uint i = 0; i < newCount; i++)
+                    {
+                        var setRef = ResourceSets[(int)i].Dereference();
+                        sets[i] = ((VulkanDescriptorSet)setRef.BackendRef).Set;
 
-                VK.CmdSetViewport(RenderThreadCommandBuffer, 0, 1, &viewport);
-            }
+                        lastResourceSets[i] = ResourceSets[(int)i];
+                    }
 
+                    VK.CmdBindDescriptorSets(
+                        RenderThreadCommandBuffer,
+                        PipelineBindPoint.Graphics,
+                        vkLayout,
+                        0,
+                        newCount,
+                        sets,
+                        0,
+                        null
+                    );
 
-
-            if (ScissorDirty)
-            {
-                Rect2D scissor = new()
+                    lastResourceSetsCount = newCount;
+                }
+                else
                 {
-                    Offset = new Offset2D { X = (int)ScissorOffset.X, Y = (int)ScissorOffset.Y },
-                    Extent = new Extent2D { Width = ScissorSize.X, Height = ScissorSize.Y }
-                };
+                    uint firstDirty = uint.MaxValue;
 
-                VK.CmdSetScissor(RenderThreadCommandBuffer, 0, 1, &scissor);
+                    if (newCount != lastResourceSetsCount)
+                    {
+                        firstDirty = 0;
+                    }
+                    else
+                    {
+                        for (uint i = 0; i < newCount; i++)
+                        {
+                            if (!lastResourceSets[i].Equals(ResourceSets[(int)i]))
+                            {
+                                firstDirty = i;
+                                break;
+                            }
+                        }
+                    }
 
+                    if (firstDirty != uint.MaxValue)
+                    {
+                        uint bindCount = newCount - firstDirty;
 
-                ScissorDirty = false;
+                        var sets = stackalloc DescriptorSet[(int)bindCount];
+
+                        for (uint i = 0; i < bindCount; i++)
+                        {
+                            var setRef = ResourceSets[(int)(firstDirty + i)].Dereference();
+                            sets[i] = ((VulkanDescriptorSet)setRef.BackendRef).Set;
+
+                            // update cache
+                            lastResourceSets[firstDirty + i] = ResourceSets[(int)(firstDirty + i)];
+                        }
+
+                        VK.CmdBindDescriptorSets(
+                            RenderThreadCommandBuffer,
+                            PipelineBindPoint.Graphics,
+                            vkLayout,
+                            firstDirty,
+                            bindCount,
+                            sets,
+                            0,
+                            null
+                        );
+
+                        lastResourceSetsCount = newCount;
+                    }
+                }
+            }
+            else
+            {
+                lastResourceSetsCount = 0;
             }
 
+            lastPipelineLayout = vkLayout;
 
 
+
+
+
+
+            // ---------------- Viewport ----------------
+
+            var dims = ActiveFrameBufferObjectInFlight == null
+                ? CurrentSwapchainDetails.Size
+                : ActiveFrameBufferObjectInFlight.Size;
+
+            Viewport viewport = new()
+            {
+                X = 0,
+                Y = 0,
+                Width = dims.X,
+                Height = dims.Y,
+                MinDepth = 0.0f,
+                MaxDepth = 1.0f
+            };
+
+            VK.CmdSetViewport(RenderThreadCommandBuffer, 0, 1, &viewport);
+
+
+
+
+
+            // ---------------- Scissor ----------------
+
+            Rect2D scissor = new()
+            {
+                Offset = new Offset2D { X = (int)ScissorOffset.X, Y = (int)ScissorOffset.Y },
+                Extent = new Extent2D { Width = ScissorSize.X, Height = ScissorSize.Y }
+            };
+
+            VK.CmdSetScissor(RenderThreadCommandBuffer, 0, 1, &scissor);
+
+
+
+
+            // ---------------- Draw ----------------
 
             if (indexBuffer != null)
             {
                 VK.CmdDrawIndexed(
                     RenderThreadCommandBuffer,
-                    indexing.End - indexing.Start, // index count
+                    indexing.End - indexing.Start,
                     indexing.InstanceCount,
-                    indexing.Start,               // first index
-                    (int)indexing.BaseVertex,    // vertex offset
-                    0                            // first instance
+                    indexing.Start,
+                    (int)indexing.BaseVertex,
+                    0
                 );
             }
             else
             {
                 VK.CmdDraw(
                     RenderThreadCommandBuffer,
-                    indexing.End - indexing.Start, // vertex count
+                    indexing.End - indexing.Start,
                     indexing.InstanceCount,
-                    indexing.Start,               // first vertex
+                    indexing.Start,
                     0
                 );
             }
@@ -3697,24 +3861,17 @@ public static partial class RenderingBackend
 
 
 
-        private BackendFrameBufferObjectReference LastFBPipelineUsed;
 
 
 
-
-
-
-
-        private bool ScissorDirty = false;
         private static Vector2<uint> ScissorOffset, ScissorSize;
 
         public void SetScissor(Vector2<uint> offset, Vector2<uint> size)
         { 
             ScissorOffset = offset;
             ScissorSize = size;
-
-            ScissorDirty = true;
         }
+
 
 
 
@@ -3779,9 +3936,16 @@ public static partial class RenderingBackend
             VK.DestroyImage(device, tex.Image, null);
             VK.FreeMemory(device, tex.Memory, null);
 
+
+
             if (tex.FramebufferCompatibleView.Handle != 0)
+            {
                 VK.DestroyImageView(device, tex.FramebufferCompatibleView, null);
+
+            }
         }
+
+
 
 
         public void DestroyFrameBufferObject(BackendFrameBufferObjectReference buffer)
@@ -3809,13 +3973,14 @@ public static partial class RenderingBackend
         public void DestroyDrawPipeline(BackendDrawPipelineReference pipeline)
         {
             var pipelines = (VulkanPipelineAndLayout[])pipeline.BackendRef;
-            for (int i = 0; i<pipelines.Length; i++)
+            for (int i = 0; i < pipelines.Length; i++)
             {
                 ref var get = ref pipelines[i];
 
                 VK.DestroyPipeline(device, get.Pipeline, null);
                 VK.DestroyPipelineLayout(device, get.Layout, null);
             }
+
         }
 
 

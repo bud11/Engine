@@ -113,7 +113,7 @@ public partial class GameObject : Freeable
 
 
     /// <summary>
-    /// The world-space transform of the object. This is cached where possible to reduce unnessecary matrix multiplications.
+    /// The world-space transform of the object. This is cached where possible to reduce unnecessary matrix multiplications.
     /// </summary>
     public Matrix4x4 GlobalTransform
     {
@@ -303,10 +303,10 @@ public partial class GameObject : Freeable
 
 
     [Indexable]
-    public bool EnableCameraCulling = true;
+    public bool EnableCulling = true;
 
     /// <summary>
-    /// Whether this object and all of its ancestors have <see cref="EnableCameraCulling"/> enabled.
+    /// Whether this object and all of its ancestors have <see cref="EnableCulling"/> enabled.
     /// </summary>
     /// <returns></returns>
     public bool IsEnableCameraCullingInTree()
@@ -316,8 +316,8 @@ public partial class GameObject : Freeable
 
         static bool check(GameObject obj)
         {
-            if (obj.Parent != null) return obj.EnableCameraCulling && check(obj.Parent);
-            return obj.EnableCameraCulling;
+            if (obj.Parent != null) return obj.EnableCulling && check(obj.Parent);
+            return obj.EnableCulling;
         }
     }
 

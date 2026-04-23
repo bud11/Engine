@@ -13,16 +13,12 @@ using System.Numerics;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using static Comparisons;
-using static EngineMath;
 using static Engine.Core.References;
+using static EngineMath;
 using static RenderingBackend.ResourceSetResourceDeclaration;
 using static RenderThread;
 
 
-
-#if DEBUG
-using Engine.Stripped;
-#endif
 
 
 
@@ -46,13 +42,9 @@ public static partial class RenderingBackend
     {
         var get = RenderingBackendData[backend.ToString()];
 
-        RenderingBackend.Backend = get.Constructor.Invoke(sdlwindow);
+        Backend = get.Constructor.Invoke(sdlwindow);
         CurrentBackend = backend;
 
-
-
-
-        CreateBasicObjects();
 
 
 #if RELEASE 
@@ -127,111 +119,6 @@ public static partial class RenderingBackend
 
 
 
-    private static readonly Dictionary<ShaderMetadata.ShaderResourceSetMetadata, BackendResourceSetReference> DummyResourceSets = new();
-
-
-    public static BackendTextureAndSamplerReferencesPair Dummy2DTextureSamplerPair { get; private set; }
-    public static BackendTextureAndSamplerReferencesPair Dummy2DShadowTextureSamplerPair { get; private set; }
-    public static BackendTextureAndSamplerReferencesPair DummyCubeTextureSamplerPair { get; private set; }
-    public static BackendTextureAndSamplerReferencesPair Dummy3DTextureSamplerPair { get; private set; }
-
-    public static BackendBufferReference.IVertexBuffer DummyVertex { get; private set; }
-
-
-
-    private static List<BackendBufferReference> DummyBuffers = new();
-    
-    private static HashSet<BackendBufferReference> DummyBuffersHashSet = new();
-
-    public static BackendBufferReference GetDummyBuffer(uint sizeReq, BufferUsageFlags type, ReadWriteFlags flags)
-    {
-        lock (DummyBuffers)
-        {
-            for (int i = 0; i < DummyBuffers.Count; i++)
-            {
-                var get = DummyBuffers[i];
-                if (get.Size > sizeReq) 
-                    return get;
-            }
-
-            var ret = BackendBufferReference.Create(sizeReq, type, flags);
-
-            DummyBuffers.Add(ret);
-            DummyBuffersHashSet.Add(ret);
-
-            return ret;
-        }
-    }
-
-    public static bool IsResourceDummy(IBackendResourceReference res)
-    {
-        if (res == Dummy2DTextureSamplerPair) return true;
-        if (res == Dummy2DShadowTextureSamplerPair) return true;
-        if (res == Dummy3DTextureSamplerPair) return true;
-        if (res == DummyCubeTextureSamplerPair) return true;
-
-        if (res is BackendBufferReference databuf)
-        {
-            lock (DummyBuffers)
-                return DummyBuffersHashSet.Contains(databuf);
-        }
-            
-
-        return false;
-    }
-
-
-
-
-
-
-    public static unsafe void CreateBasicObjects()
-    {
-
-        DummyVertex = (BackendBufferReference.IVertexBuffer)BackendBufferReference.Create(1, BufferUsageFlags.Vertex, ReadWriteFlags.GPURead);
-
-
-
-
-        //solid white 1x1
-        Dummy2DTextureSamplerPair = new BackendTextureAndSamplerReferencesPair(
-            BackendTextureReference.Create(new Vector3<uint>(1), TextureTypes.Texture2D, TextureFormats.RGB8_UNORM, FramebufferAttachmentCompatible: false, Mips: [[255, 255, 255]]),
-            BackendSamplerReference.Get(new(TextureWrapModes.Repeat, TextureFilters.Nearest, TextureFilters.Nearest, TextureFilters.Nearest, EnableDepthComparison: false)));
-
-
-        //24 8 depth stencil - max depth, no stencil mask
-        Dummy2DShadowTextureSamplerPair = new BackendTextureAndSamplerReferencesPair(
-            BackendTextureReference.Create(new Vector3<uint>(1), TextureTypes.Texture2D, TextureFormats.DepthStencil, FramebufferAttachmentCompatible: false, Mips: [[0xFF, 0xFF, 0xFF, 0x00]]),
-            BackendSamplerReference.Get(new(TextureWrapModes.Repeat, TextureFilters.Nearest, TextureFilters.Nearest, TextureFilters.Nearest, EnableDepthComparison: true)));
-
-
-        //solid white 1x1 for each face
-        DummyCubeTextureSamplerPair = new BackendTextureAndSamplerReferencesPair(
-            BackendTextureReference.Create(new Vector3<uint>(1), TextureTypes.TextureCubeMap, TextureFormats.RGB8_UNORM, FramebufferAttachmentCompatible: false,
-            Mips:
-            [
-                [
-                    255, 255, 255,
-                    255, 255, 255,
-                    255, 255, 255,
-                    255, 255, 255,
-                    255, 255, 255,
-                    255, 255, 255,
-                ]
-            ]
-            ),
-            BackendSamplerReference.Get(new(TextureWrapModes.Repeat, TextureFilters.Nearest, TextureFilters.Nearest, TextureFilters.Nearest, EnableDepthComparison: false)));
-
-
-        //solid white 1x1x1
-        Dummy3DTextureSamplerPair = new BackendTextureAndSamplerReferencesPair(
-            BackendTextureReference.Create(new Vector3<uint>(1), TextureTypes.Texture3D, TextureFormats.RGB8_UNORM, FramebufferAttachmentCompatible: false, Mips: [[255, 255, 255]]),
-            BackendSamplerReference.Get(new(TextureWrapModes.Repeat, TextureFilters.Nearest, TextureFilters.Nearest, TextureFilters.Nearest, EnableDepthComparison: false)));
-
-    }
-
-
-
 
 
 
@@ -260,11 +147,12 @@ public static partial class RenderingBackend
             Definition = definition;
         }
 
-
         public Struct GetStruct() => new Struct(BufRef, Definition);
 
         public readonly record struct Struct(WeakObjRef<BackendBufferReference.IVertexBuffer> BufferRef, VertexAttributeDefinition Definition);
     }
+
+
 
 
 
@@ -312,7 +200,7 @@ public static partial class RenderingBackend
 
 
 
-    public unsafe record struct IndexingDetails(uint Start, uint End, uint BaseVertex, uint InstanceCount);
+    public unsafe record struct IndexingDetails(uint Start, uint End, uint BaseVertex, uint InstanceCount, IndexBufferFormat IndexBufferFormat);
 
 
 
@@ -331,8 +219,40 @@ public static partial class RenderingBackend
     /// <br/> Given a buffer supports one or more usages, it can be explicitly cast to one or more corresponding interfaces.
     /// <br/> For example, given a buffer was created with <see cref="BufferUsageFlags.Vertex"/>, it can be cast to <see cref="IVertexBuffer"/>.
     /// </summary>
-    public unsafe class BackendBufferReference : BackendReference
+    public unsafe class BackendBufferReference : BackendReference, IPlaceholderProvider<BackendBufferReference, (uint size, BufferUsageFlags usageFlags, ReadWriteFlags accessFlags)>
     {
+
+        private bool Dummy;
+        public bool IsPlaceholder => Dummy;
+
+
+
+        private static readonly List<BackendBufferReference> DummyBuffers = new();
+
+        public static BackendBufferReference GetPlaceholder((uint size, BufferUsageFlags usageFlags, ReadWriteFlags accessFlags) requirement)
+        {
+            lock (DummyBuffers)
+            {
+                for (int i = 0; i < DummyBuffers.Count; i++)
+                {
+                    var get = DummyBuffers[i];
+                    if (get.Size > requirement.size)
+                        return get;
+                }
+
+                var ret = Create(requirement.size, requirement.usageFlags, requirement.accessFlags);
+
+                ret.Dummy = true;
+
+                DummyBuffers.Add(ret);
+
+                return ret;
+            }
+        }
+
+
+
+
 
 
         /// <summary>
@@ -340,9 +260,9 @@ public static partial class RenderingBackend
         /// </summary>
         public interface IVertexBuffer
         {
-            public unsafe void Write(WriteRange write, bool nessecary);
-            public unsafe void Write<T>(T write, uint offset, bool nessecary) where T : unmanaged;
-            public unsafe void Write<T>(ReadOnlySpan<T> write, uint offset, bool nessecary) where T : unmanaged;
+            public unsafe void Write(WriteRange write, bool necessary);
+            public unsafe void Write<T>(T write, uint offset, bool necessary) where T : unmanaged;
+            public unsafe void Write<T>(ReadOnlySpan<T> write, uint offset, bool necessary) where T : unmanaged;
         }
 
 
@@ -351,9 +271,9 @@ public static partial class RenderingBackend
         /// </summary>
         public interface IIndexBuffer
         {
-            public unsafe void Write(WriteRange write, bool nessecary);
-            public unsafe void Write<T>(T write, uint offset, bool nessecary) where T : unmanaged;
-            public unsafe void Write<T>(ReadOnlySpan<T> write, uint offset, bool nessecary) where T : unmanaged;
+            public unsafe void Write(WriteRange write, bool necessary);
+            public unsafe void Write<T>(T write, uint offset, bool necessary) where T : unmanaged;
+            public unsafe void Write<T>(ReadOnlySpan<T> write, uint offset, bool necessary) where T : unmanaged;
         }
 
 
@@ -366,40 +286,23 @@ public static partial class RenderingBackend
             public ShaderMetadata.ShaderDataBufferMetadata Metadata { get; set; }
 
 
-            /// <summary>
-            /// Writes from the offset of a top level member defined in <see cref="IDataBuffer.Metadata"/>.
-            /// <br/> If <paramref name="skipPadding"/> is true, input data should be tightly packed, and will be scatter copied into the buffer, skipping over padding.
-            /// </summary>
-            /// <typeparam name="ValueT"></typeparam>
-            /// <param name="fieldName"></param>
-            /// <param name="val"></param>
-            /// <param name="extraOffset"></param>
-            /// <param name="skipPadding"></param>
-            public void WriteFromOffsetOf<ValueT>(string fieldName, ValueT val, bool nessecary, uint extraOffset = 0, bool skipPadding = true) where ValueT : unmanaged;
+
+            public unsafe void WriteFromOffsetOf<T>(string MemberName, T value, bool necessary, bool skipPadding) where T : unmanaged;
+            public unsafe void WriteFromOffsetOf<T>(string MemberName, ReadOnlySpan<T> value, bool necessary, bool skipPadding) where T : unmanaged;
 
 
-            /// <summary>
-            /// <inheritdoc cref="WriteFromOffsetOf{ValueT}(string, ValueT, bool, uint, bool)"/>
-            /// </summary>
-            /// <param name="fieldName"></param>
-            /// <param name="dataSize"></param>
-            /// <param name="dataPtr"></param>
-            /// <param name="extraOffset"></param>
-            /// <param name="skipPadding"></param>
-            public void WriteFromOffsetOf(string fieldName, uint dataSize, void* dataPtr, bool nessecary, uint extraOffset = 0, bool skipPadding = true);
-
-
-            /// <summary>
-            /// Writes into this buffer while skipping over padding defined in given metadata.
-            /// </summary>
-            /// <param name="write"></param>
-            public unsafe void WriteAndSkipPadding(WriteRange write, bool nessecary);
+            public unsafe void WriteFromOffsetOfArrayElement<T>(string ArrayName, uint index, T value, bool necessary, bool skipPadding) where T : unmanaged;
+            public unsafe void WriteFromOffsetOfArrayElement<T>(string ArrayName, uint index, ReadOnlySpan<T> value, bool necessary, bool skipPadding) where T : unmanaged;
 
 
 
-            public unsafe void Write(WriteRange write, bool nessecary);
-            public unsafe void Write<T>(T write, uint offset, bool nessecary) where T : unmanaged;
-            public unsafe void Write<T>(ReadOnlySpan<T> write, uint offset, bool nessecary) where T : unmanaged;
+            public unsafe void WriteAndSkipPadding(WriteRange write, bool necessary);
+
+
+
+            public unsafe void Write(WriteRange write, bool necessary);
+            public unsafe void Write<T>(T write, uint offset, bool necessary) where T : unmanaged;
+            public unsafe void Write<T>(ReadOnlySpan<T> write, uint offset, bool necessary) where T : unmanaged;
         }
 
 
@@ -414,7 +317,6 @@ public static partial class RenderingBackend
         public readonly ReadWriteFlags AccessFlags;
 
 
-
         private BackendBufferReference(uint size, BufferUsageFlags usageFlags, ReadWriteFlags accessFlags, object backendRef) : base(backendRef)
         {
             Size = size;
@@ -426,12 +328,8 @@ public static partial class RenderingBackend
 
         protected override void OnFree()
         {
-            _ = PushDeferredIdleRenderThreadAction(() =>
-            {
-                Backend.DestroyBuffer(this);
-                Kernel.ReleaseVram(Size);
-                return null;
-            });
+            Backend.DestroyBuffer(this);
+            Kernel.ReleaseVram(Size);
 
             base.OnFree();
         }
@@ -571,11 +469,15 @@ public static partial class RenderingBackend
             if (usageFlags.EnumHasValues([BufferUsageFlags.Index]))
                 return new BackendBufferReference_Index(size, usageFlags, accessFlags, backendRef);
 
-            if (usageFlags.EnumHasValue(BufferUsageFlags.Storage) || usageFlags.EnumHasValue(BufferUsageFlags.Uniform))
+            if (usageFlags.EnumHasValue(BufferUsageFlags.Storage) ^ usageFlags.EnumHasValue(BufferUsageFlags.Uniform))
                 return new BackendBufferReference_Data(size, usageFlags, accessFlags, metadata, backendRef);
 
 
-            throw new NotImplementedException("Invalid buffer usage combination");
+            throw new NotImplementedException(
+#if DEBUG
+                "Invalid buffer usage combination"
+#endif
+                );
         }
 
 
@@ -614,9 +516,9 @@ public static partial class RenderingBackend
             [StackTraceHidden]
 
             [Conditional("DEBUG")]
-            private void AssetHasMetadata()
+            private void AssertHasMetadata()
             {
-                if (IsResourceDummy(this))
+                if (this.IsPlaceholder)
                     throw new InvalidOperationException($"This buffer is a dummy buffer and shouldn't be written to.");
 
 
@@ -629,63 +531,237 @@ public static partial class RenderingBackend
             public ShaderMetadata.ShaderDataBufferMetadata Metadata { get; set; } = metadata;
 
 
-            [DebuggerHidden]
-            [StackTraceHidden]
-            public void WriteFromOffsetOf<ValueT>(string fieldName, ValueT val, bool nessecary, uint extraOffset = 0, bool skipPadding = true) where ValueT : unmanaged
-            {
-                AssetHasMetadata();
-
-                if (skipPadding) WriteAndSkipPadding(new WriteRange(Metadata.FieldOffsets[fieldName] + extraOffset, (uint)sizeof(ValueT), &val), nessecary);
-                else Write(new WriteRange(Metadata.FieldOffsets[fieldName] + extraOffset, (uint)sizeof(ValueT), &val), nessecary);
-            }
 
             [DebuggerHidden]
             [StackTraceHidden]
-            public void WriteFromOffsetOf(string fieldName, uint dataSize, void* dataPtr, bool nessecary, uint extraOffset = 0, bool skipPadding = true)
-            {
-                AssetHasMetadata();
+            public void WriteFromOffsetOf<ValueT>(string fieldName, ValueT val, bool necessary, bool skipPadding = true) where ValueT : unmanaged
+                => WriteFromOffsetOf(fieldName, (uint)sizeof(ValueT), &val, necessary, skipPadding);
 
-                if (skipPadding) WriteAndSkipPadding(new WriteRange(Metadata.FieldOffsets[fieldName] + extraOffset, dataSize, dataPtr), nessecary);
-                else Write(new WriteRange(Metadata.FieldOffsets[fieldName] + extraOffset, dataSize, dataPtr), nessecary);
-            }
+
 
             [DebuggerHidden]
             [StackTraceHidden]
-            public unsafe void WriteAndSkipPadding(WriteRange write, bool nessecary)
+            public void WriteFromOffsetOf<ValueT>(string fieldName, ReadOnlySpan<ValueT> val, bool necessary, bool skipPadding = true) where ValueT : unmanaged
             {
-                AssetHasMetadata();
-
-                var contiguous = Metadata.ContiguousRegions.AsSpan();
-
-                var allocrequirement = (int)GetBufferToPaddedBufferAllocationRequirement(write.Length, write.Offset, contiguous);
-
-                var alloc 
-                    = nessecary 
-                    ? AllocateNessecaryRenderTemporaryUnmanaged(allocrequirement)
-                    : AllocateRenderTemporaryUnmanaged(allocrequirement);
-
-                BufferToPaddedBufferCopy((byte*)write.Content, write.Length, 0, alloc, contiguous);
-
-                Write(new WriteRange(write.Offset, (uint)allocrequirement, alloc), nessecary);
+                fixed (ValueT* p = val)
+                    WriteFromOffsetOf(fieldName, (uint)sizeof(ValueT), p, necessary, skipPadding);
             }
 
+
+
+
+            [DebuggerHidden]
+            [StackTraceHidden]
+            public unsafe void WriteFromOffsetOfArrayElement<ValueT>(string ArrayName, uint index, ValueT value, bool necessary, bool skipPadding) where ValueT : unmanaged
+            {
+                var lookup = (ShaderMetadata.ShaderDataBufferMetadata.ArrayInfo)Metadata.Members[ArrayName];
+
+                var wr = new WriteRange(
+                    lookup.RelativeOffset + (lookup.BaseMemberInfo.PaddedSize * index),
+                    (uint)(sizeof(ValueT)),
+                    &value);
+
+
+                if (skipPadding)
+                    WriteAndSkipPadding(wr, necessary);
+                else
+                    Write(wr, necessary);
+            }
+
+
+            [DebuggerHidden]
+            [StackTraceHidden]
+            public unsafe void WriteFromOffsetOfArrayElement<ValueT>(string ArrayName, uint index, ReadOnlySpan<ValueT> val, bool necessary, bool skipPadding) where ValueT : unmanaged
+            {
+                var lookup = (ShaderMetadata.ShaderDataBufferMetadata.ArrayInfo)Metadata.Members[ArrayName];
+
+                fixed (ValueT* p = val)
+                {
+                    var wr = new WriteRange(
+                        lookup.RelativeOffset + (lookup.BaseMemberInfo.PaddedSize * index),
+                        (uint)(sizeof(ValueT)*val.Length),
+                        p);
+
+                    if (skipPadding)
+                        WriteAndSkipPadding(wr, necessary);
+                    else
+                        Write(wr, necessary);
+                }
+            }
+
+
+
+
+
+
+
+
+            [DebuggerHidden]
+            [StackTraceHidden]
+            private void WriteFromOffsetOf(string fieldName, uint dataSize, void* dataPtr, bool necessary, bool skipPadding)
+            {
+                AssertHasMetadata();
+
+                var memberInfo = Metadata.Members[fieldName];
+                var wr = new WriteRange(memberInfo.RelativeOffset, dataSize, dataPtr);
+
+                if (skipPadding)
+                    WriteAndSkipPadding(wr, necessary);
+                else
+                    Write(wr, necessary); 
+            }
+
+
+
+
+            public unsafe void WriteAndSkipPadding(WriteRange write, bool necessary)
+            {
+                AssertHasMetadata();
+
+                byte* srcPtr = write.Src;
+                uint remaining = write.LengthOfSrc;
+
+                ProcessMembers(
+                    Metadata.MembersIndexed,
+                    basePhysicalOffset: 0,
+                    writeStartPhysicalOffset: write.OffsetIntoDst,
+                    ref srcPtr,
+                    ref remaining,
+                    necessary);
+            }
+
+
+
+            private unsafe void ProcessMembers(
+                ImmutableArray<(string Name, ShaderMetadata.ShaderDataBufferMetadata.MemberInfo Info)> members,
+                uint basePhysicalOffset,
+                uint writeStartPhysicalOffset,
+                ref byte* srcPtr,
+                ref uint remaining,
+                bool necessary)
+            {
+                for (int i = 0; i < members.Length && remaining > 0; i++)
+                {
+                    var member = members[i].Info;
+                    ProcessMember(
+                        member,
+                        basePhysicalOffset + member.RelativeOffset,
+                        writeStartPhysicalOffset,
+                        ref srcPtr,
+                        ref remaining,
+                        necessary);
+                }
+            }
+
+
+
+            private unsafe void ProcessMember(
+                ShaderMetadata.ShaderDataBufferMetadata.MemberInfo member,
+                uint memberBase,
+                uint writeStartPhysicalOffset,
+                ref byte* srcPtr,
+                ref uint remaining,
+                bool necessary)
+            {
+
+
+                if (remaining == 0)
+                    return;
+
+
+                uint memberPhysicalEnd = memberBase + member.PaddedSize;
+
+
+
+                if (memberPhysicalEnd <= writeStartPhysicalOffset)
+                    return;
+
+
+
+
+                // ---------------- PRIMITIVE ----------------
+                if (member is ShaderMetadata.ShaderDataBufferMetadata.PrimitiveInfo primitive)
+                {
+                    uint write_start = Math.Max(writeStartPhysicalOffset, memberBase);
+                    uint write_size = Math.Min(primitive.RealSize, remaining);
+
+                    if (write_size == 0)
+                        return;
+
+                    Write(new WriteRange(write_start, write_size, srcPtr), necessary);
+
+                    srcPtr += write_size;
+                    remaining -= write_size;
+
+                    return;
+                }
+
+
+
+
+                // ---------------- STRUCT ----------------
+                if (member is ShaderMetadata.ShaderDataBufferMetadata.StructInfo str)
+                {
+                    ProcessMembers(
+                        str.MembersIndexed,
+                        memberBase,
+                        writeStartPhysicalOffset,
+                        ref srcPtr,
+                        ref remaining,
+                        necessary);
+                    return;
+                }
+
+
+
+
+                // ---------------- ARRAY ----------------
+                if (member is ShaderMetadata.ShaderDataBufferMetadata.ArrayInfo arr)
+                {
+                    uint count = arr.Length == 0 ? uint.MaxValue : arr.Length;
+                    uint stride = arr.BaseMemberInfo.PaddedSize;
+
+
+                    for (uint i = 0; i < count && remaining > 0; i++)
+                    {
+
+                        uint elementBase = memberBase + (i * stride);
+                        uint elementEnd = elementBase + stride;
+
+                        if (elementEnd <= writeStartPhysicalOffset)
+                            continue; 
+
+
+                        ProcessMember(
+                            arr.BaseMemberInfo,
+                            elementBase,
+                            writeStartPhysicalOffset,
+                            ref srcPtr,
+                            ref remaining,
+                            necessary);
+                    }
+                    return;
+                }
+            }
         }
 
 
 
-        [DebuggerHidden]
-        [StackTraceHidden]
-        public unsafe void Write<T>(T write, uint offset, bool nessecary) where T : unmanaged
-            => Write(new WriteRange(offset, (uint)sizeof(T), &write), nessecary);
-
 
 
         [DebuggerHidden]
         [StackTraceHidden]
-        public unsafe void Write<T>(ReadOnlySpan<T> write, uint offset, bool nessecary) where T : unmanaged
+        public unsafe void Write<T>(T write, uint offset, bool necessary) where T : unmanaged
+            => Write(new WriteRange(offset, (uint)sizeof(T), &write), necessary);
+
+
+
+        [DebuggerHidden]
+        [StackTraceHidden]
+        public unsafe void Write<T>(ReadOnlySpan<T> write, uint offset, bool necessary) where T : unmanaged
         {
             fixed (void* ptr = write)
-                Write(new WriteRange(offset, (uint)(write.Length*sizeof(T)), ptr), nessecary);
+                Write(new WriteRange(offset, (uint)(write.Length*sizeof(T)), ptr), necessary);
         }
 
 
@@ -693,36 +769,36 @@ public static partial class RenderingBackend
 
         [DebuggerHidden]
         [StackTraceHidden]
-        public unsafe void Write(WriteRange write, bool nessecary)
+        public unsafe void Write(WriteRange write, bool necessary)
         {
 
 #if DEBUG
             if (!AccessFlags.EnumHasValue(ReadWriteFlags.CPUWrite)) 
                 throw new InvalidOperationException($"This buffer wasn't created with {nameof(ReadWriteFlags.CPUWrite)}");
 
-            if (write.Length == 0 || write.Content == null)
+            if (write.LengthOfSrc == 0 || write.Src == null)
                 throw new InvalidOperationException($"Null/empty write given");
 
-            if (write.Length + write.Offset > Size)
-                throw new InvalidOperationException($"Out-of-bounds write given:\nWrite Length: {write.Length}\nWrite Offset: {write.Offset}\nBuffer Size: {Size}");
+            if (write.LengthOfSrc + write.OffsetIntoDst > Size)
+                throw new InvalidOperationException($"Out-of-bounds write given:\nWrite Length: {write.LengthOfSrc}\nWrite Offset: {write.OffsetIntoDst}\nBuffer Size: {Size}");
 #endif
 
 
 
             var alloc 
-                = nessecary 
-                ? AllocateNessecaryRenderTemporaryUnmanaged((int)write.Length)
-                : AllocateRenderTemporaryUnmanaged((int)write.Length);
+                = necessary 
+                ? AllocatenecessaryRenderTemporaryUnmanaged((int)write.LengthOfSrc)
+                : AllocateRenderTemporaryUnmanaged((int)write.LengthOfSrc);
 
 
 
-            Unsafe.CopyBlockUnaligned(alloc, (byte*)write.Content, write.Length);
+            Unsafe.CopyBlockUnaligned(alloc, (byte*)write.Src, write.LengthOfSrc);
 
-            var cmddata = (new WriteRange(write.Offset, write.Length, alloc), this.GetWeakRef());
+            var cmddata = (new WriteRange(write.OffsetIntoDst, write.LengthOfSrc, alloc), this.GetWeakRef());
 
 
-            if (nessecary)
-                PushDeferredNessecaryPreRenderThreadCommand(cmddata, &Execute);
+            if (necessary)
+                PushDeferrednecessaryPreRenderThreadCommand(cmddata, &Execute);
             else
                 PushDeferredPreRenderThreadCommand(cmddata, &Execute);
 
@@ -751,7 +827,7 @@ public static partial class RenderingBackend
 
 
     /// <summary>
-    /// Represents a resource in a <see cref="BackendResourceSetReference"/>.
+    /// Any type that <see cref="BackendResourceSetReference"/> can accept as a resource.
     /// </summary>
     public interface IBackendResourceReference;
 
@@ -759,7 +835,7 @@ public static partial class RenderingBackend
 
 
     /// <summary>
-    /// Represents a collection of <see cref="IBackendResourceReference"/>s that shaders can access.
+    /// A collection of <see cref="IBackendResourceReference"/>s that shaders can access.
     /// </summary>
     public class BackendResourceSetReference : BackendReference
     {
@@ -767,9 +843,13 @@ public static partial class RenderingBackend
         public readonly ShaderMetadata.ShaderResourceSetMetadata Metadata;
 
 
-        private readonly IBackendResourceReference[] Contents;
+        public record struct ResourceSetInternalBinding(string Name, object Binding);
 
-        public ReadOnlySpan<IBackendResourceReference> GetContents() => Contents.AsSpan();
+
+
+        private readonly ResourceSetInternalBinding[] Contents;
+
+        public ReadOnlySpan<ResourceSetInternalBinding> GetContents() => Contents.AsSpan();
 
         public uint ResourceCount => (uint)Metadata.Declaration.Length;
 
@@ -780,13 +860,22 @@ public static partial class RenderingBackend
         private BackendResourceSetReference(ShaderMetadata.ShaderResourceSetMetadata metadata, object backendResource) : base(backendResource)
         {
             Metadata = metadata;
-            Contents = new IBackendResourceReference[ResourceCount];
+
+
+            Contents = new ResourceSetInternalBinding[ResourceCount];
+
+            foreach (var kv in metadata.Buffers) 
+                Contents[kv.Value.Binding] = new(kv.Key, null);
+
+            foreach (var kv in metadata.Textures) 
+                Contents[kv.Value.Binding] = new(kv.Key, kv.Value.Metadata.ArrayLength <= 1 ? null : new IBackendResourceReference[kv.Value.Metadata.ArrayLength]);
+
         }
 
 
         protected override void OnFree()
         {
-            PushDeferredIdleRenderThreadAction(() => { Backend.DestroyResourceSet(this); return null; });
+            Backend.DestroyResourceSet(this); 
 
             base.OnFree();
         }
@@ -794,17 +883,41 @@ public static partial class RenderingBackend
 
 
 
-        public unsafe T SetResource<T>(string name, T resource) where T : IBackendResourceReference
+        public unsafe void SetResource<T>(string name, T resource, uint? indexOfArray = default) where T : IBackendResourceReference
         {
-            if (resource is BackendTextureAndSamplerReferencesPair) return (T)SetResource(Metadata.Textures[name].Binding, resource);
-            else if (resource is BackendBufferReference.IDataBuffer) return (T)SetResource(Metadata.Buffers[name].Binding, resource);
-            else throw new Exception();
+            lock (this)
+            {
+                if (resource is IBackendTextureSamplerPair || resource is BackendTexture2DMSAttachmentReference) SetResource(Metadata.Textures[name].Binding, resource, indexOfArray ?? 0);
+                else if (resource is BackendBufferReference.IDataBuffer) SetResource(Metadata.Buffers[name].Binding, resource, indexOfArray ?? 0);
+                else throw new NotImplementedException();
+            }
+        }
+
+
+        public T GetResource<T>(string name, uint? indexOfArray = default) where T : IBackendResourceReference
+        {
+            lock (this)
+            {
+                int binding = 0;
+
+                if (typeof(T).IsAssignableTo(typeof(IBackendTextureSamplerPair)) || typeof(T) == typeof(BackendTexture2DMSAttachmentReference)) binding = Metadata.Textures[name].Binding;
+                else if (typeof(T).IsAssignableTo(typeof(BackendBufferReference.IDataBuffer))) binding = Metadata.Buffers[name].Binding;
+                else throw new NotImplementedException();
+
+                var get = Contents[binding];
+                if (get.Binding is IBackendResourceReference[] arr)
+                    return (T)(object)arr[indexOfArray ?? 0];
+
+
+                return (T)get.Binding;
+
+            }
         }
 
 
 
 
-        private unsafe IBackendResourceReference SetResource(byte binding, IBackendResourceReference resource)
+        private unsafe void SetResource(byte binding, IBackendResourceReference resource, uint idx, bool force = false)
         {
 
             uint range = 0;
@@ -820,13 +933,17 @@ public static partial class RenderingBackend
 
                     resource ??= samplerType switch
                     {
-                        TextureSamplerTypes.Sampler2D => Dummy2DTextureSamplerPair,
-                        TextureSamplerTypes.Sampler2DShadow => Dummy2DShadowTextureSamplerPair,
-                        TextureSamplerTypes.SamplerCubeMap => DummyCubeTextureSamplerPair,
-                        TextureSamplerTypes.Sampler3D => Dummy3DTextureSamplerPair,
+                        TextureSamplerTypes.Sampler2D => BackendTexture2DSamplerPair.GetPlaceholder(),
+                        TextureSamplerTypes.Sampler2DMS => BackendTexture2DMSAttachmentReference.GetPlaceholder(),
+                        TextureSamplerTypes.Sampler2DShadow => BackendTexture2DShadowSamplerPair.GetPlaceholder(),
+                        TextureSamplerTypes.SamplerCubeMap => BackendTextureCubeMapSamplerPair.GetPlaceholder(),
+                        TextureSamplerTypes.Sampler3D => BackendTexture3DSamplerPair.GetPlaceholder(),
                         _ => throw new NotImplementedException(),
                     };
+
                     break;
+
+
 
 
                 case ResourceSetResourceType.ConstantDataBuffer:
@@ -835,9 +952,7 @@ public static partial class RenderingBackend
 
                     var bufferMeta = Metadata.BuffersIndexed[binding].Metadata;
 
-                    resource ??= (IBackendResourceReference) GetDummyBuffer(bufferMeta.SizeRequirement, bufferMeta.UsageFlags, bufferMeta.ReadWriteFlags);
-
-
+                    resource ??= (IBackendResourceReference) BackendBufferReference.GetPlaceholder((bufferMeta.SizeRequirement, bufferMeta.UsageFlags, bufferMeta.ReadWriteFlags));
 
                     range = bufferMeta.SizeRequirement;
 
@@ -856,34 +971,41 @@ public static partial class RenderingBackend
             bool changed = false;
             lock (this)
             {
-                if (Contents[binding] != final)
+                ref var existing = ref Contents[binding];
+
+                if (existing.Binding is IBackendResourceReference[] resArr)
                 {
-                    Contents[binding] = final;
+                    if (resArr[idx] != final)
+                    {
+                        resArr[idx] = final;
+                        changed = true;
+                    }
+                }
+                else if (existing.Binding != final)
+                {
+                    existing.Binding = final;
                     changed = true;
                 }
             }
 
 
-            if (changed)
+            if (changed || force)
             {
 
-                var write = new ResourceSetResourceBind(binding, resource, range);
-
-                write.ResourceHandle.ValidateNotNull();
-
-                PushDeferredNessecaryPreRenderThreadCommand((this.GetWeakRef(), write), &Execute);
+                PushDeferrednecessaryPreRenderThreadCommand((this.GetWeakRef(), binding, idx, resource.GetWeakRef(), range), &Execute);
 
 
-                static void Execute((WeakObjRef<BackendResourceSetReference> Target, ResourceSetResourceBind Bind)* ptr)
+                static void Execute((WeakObjRef<BackendResourceSetReference> Target, byte bind, uint idx, WeakObjRef<IBackendResourceReference> resource, uint range)* ptr)
                 {
+                    var set = ptr->Target.Dereference();
+                    var resource = ptr->resource.Dereference();
+
+                    if (set == null || resource == null) return;
+
                     CheckOutsideOfRendering();
-                    Backend.WriteToResourceSet(ptr->Target.Dereference(), ptr->Bind);
+                    Backend.WriteToResourceSet(set, new ResourceSetResourceBind(ptr->bind, ptr->idx, resource, ptr->range));
                 }
             }
-
-
-            return resource;
-
         }
 
 
@@ -908,27 +1030,12 @@ public static partial class RenderingBackend
             var inst = new BackendResourceSetReference(Metadata, Backend.CreateResourceSet(Metadata.Declaration.AsSpan()));
 
             for (byte i = 0; i < Metadata.Declaration.Length; i++)
-                inst.SetResource(i, null);
+                for (byte e = 0; e < Metadata.Declaration[i].ArrayLength; e++)
+                    inst.SetResource(i, null, e, true);
 
             return inst;
         }
 
-
-        public T GetResource<T>(string name) where T : IBackendResourceReference
-        {
-            lock (this)
-            {
-                if (typeof(T) == typeof(BackendTextureAndSamplerReferencesPair)) return (T)(object)Contents[Metadata.Textures[name].Binding];
-                else if (typeof(T).IsAssignableTo(typeof(BackendBufferReference.IDataBuffer))) return (T)(object)Contents[Metadata.Buffers[name].Binding];
-                else throw new NotImplementedException();
-            }
-        }
-
-        public T GetResource<T>(uint idx) where T : IBackendResourceReference
-        {
-            lock (this)
-                return (T)(object)Contents[(int)idx];
-        }
 
 
     }
@@ -946,66 +1053,185 @@ public static partial class RenderingBackend
 
 
 
-
-
-
-
-
-
-
-
-    [StructLayout(LayoutKind.Sequential, Pack = 1)]
-    public unsafe record struct SamplerDetails(TextureWrapModes WrapMode, TextureFilters MinFilter, TextureFilters MagFilter, TextureFilters MipmapFilter, bool EnableDepthComparison = false);
-
-
-
-    public class BackendTextureReference : BackendReference
+    /// <summary>
+    /// Wraps a byte index + data array and offers validation methods.
+    /// </summary>
+    /// <param name="Index"></param>
+    /// <param name="Data"></param>
+    public readonly record struct TextureMipData(byte Index, byte[] Data)
     {
-        public readonly Vector3<uint> Dimensions;
-        public readonly TextureTypes TextureType;
+        [Conditional("DEBUG")]
+        public readonly void CheckValidForSize(uint SizeWH) => CheckValidForSize(new Vector3<uint>(SizeWH, SizeWH, 1));
+
+        [Conditional("DEBUG")]
+        public readonly void CheckValidForSize(Vector2<uint> SizeWH) => CheckValidForSize(new Vector3<uint>(SizeWH.X, SizeWH.Y, 1));
+
+        [Conditional("DEBUG")]
+        public readonly void CheckValidForSize(Vector3<uint> SizeWHD)
+        {
+            if (TextureMipCount.CalculateFromTextureSize(SizeWHD)-1 > Index)
+                throw new Exception("Invalid mip data index");
+        }
+    }
+
+    [Conditional("DEBUG")]
+    public static void CheckTextureMipArrayValidForSize(this TextureMipData[] arr, uint SizeWH) => CheckTextureMipArrayValidForSize(arr, new Vector3<uint>(SizeWH, SizeWH, 1));
+
+    [Conditional("DEBUG")]
+    public static void CheckTextureMipArrayValidForSize(this TextureMipData[] arr, Vector2<uint> SizeWH) => CheckTextureMipArrayValidForSize(arr, new Vector3<uint>(SizeWH.X, SizeWH.Y, 1));
+
+
+    [Conditional("DEBUG")]
+    public static void CheckTextureMipArrayValidForSize(this TextureMipData[] arr, Vector3<uint> size)
+    {
+        if (arr == null)
+            return;
+
+
+        byte mipCount = TextureMipCount.CalculateFromTextureSize(size);
+
+        Span<bool> seen = stackalloc bool[mipCount];
+
+
+        for (int i = 0; i < arr.Length; i++)
+        {
+            var mip = arr[i];
+
+            if (mip.Index >= mipCount)
+                throw new Exception($"Mip index {mip.Index} out of range (max {mipCount - 1})");
+
+            if (seen[mip.Index])
+                throw new Exception($"Duplicate mip index {mip.Index}");
+
+            seen[mip.Index] = true;
+
+            if (mip.Data == null)
+                throw new Exception($"Mip {mip.Index} has null data");
+        }
+    }
+
+
+
+
+
+
+
+
+    /// <summary>
+    /// Wraps a byte and offers calculation/validation methods.
+    /// </summary>
+    /// <param name="Count"></param>
+    public readonly record struct TextureMipCount(byte Count)
+    {
+        public static TextureMipCount CalculateFromTextureSize(uint SizeWH) => CalculateFromTextureSize(new Vector3<uint>(SizeWH, SizeWH, 1));
+        public static TextureMipCount CalculateFromTextureSize(Vector2<uint> SizeWH) => CalculateFromTextureSize(new Vector3<uint>(SizeWH.X, SizeWH.Y, 1));
+        public static TextureMipCount CalculateFromTextureSize(Vector3<uint> SizeWHD)
+            => new TextureMipCount((byte)(BitOperations.Log2(Math.Max(Math.Max(SizeWHD.X, SizeWHD.Y), SizeWHD.Z)) + 1));
+
+
+        public static implicit operator byte(TextureMipCount a) => a.Count;
+        public static implicit operator TextureMipCount(byte a) => new(a);
+
+
+
+        [Conditional("DEBUG")]
+        public readonly void CheckValidForSize(uint SizeWH) => CheckValidForSize(new Vector3<uint>(SizeWH, SizeWH, 1));
+
+        [Conditional("DEBUG")]
+        public readonly void CheckValidForSize(Vector2<uint> SizeWH) => CheckValidForSize(new Vector3<uint>(SizeWH.X, SizeWH.Y, 1));
+
+        [Conditional("DEBUG")]
+        public readonly void CheckValidForSize(Vector3<uint> SizeWHD)
+        {
+            var max = CalculateFromTextureSize(SizeWHD);
+
+            if (Count == 0)
+                throw new Exception("Count is zero");
+
+            if (Count > max)
+                throw new Exception($"Count ({Count}) exceeds max mip count ({max})");
+        }
+    }
+
+
+
+
+
+
+
+
+
+
+    public abstract class BackendTextureReference : BackendReference
+    {
+
+        public readonly Vector3<uint> Size;
         public readonly TextureFormats TextureFormat;
-        public readonly uint MipCount;
+        public readonly TextureMipCount MipCount;
 
         public readonly uint FullSizeInMemory;
 
+        public readonly bool FramebufferCompatible;
+        public readonly MultiSampleCount MultiSampleCount;
 
-        private BackendTextureReference(object backendRef, Vector3<uint> dimensions, TextureTypes type, TextureFormats textureFormat, uint mipCount, uint fullSizeInMemory) : base(backendRef)
+
+        protected BackendTextureReference(object backendRef, Vector3<uint> size, TextureFormats textureFormat, TextureMipCount mipCount, uint fullSizeInMemory, bool framebufferCompatible, MultiSampleCount framebufferSampleCount) : base(backendRef)
         {
-            Dimensions = dimensions;
-            TextureType = type;
-            TextureFormat = textureFormat;
-            MipCount = mipCount;
-            FullSizeInMemory = fullSizeInMemory;
+            Size=size;
+            TextureFormat=textureFormat;
+            MipCount=mipCount;
+            FullSizeInMemory=fullSizeInMemory;
+            FramebufferCompatible=framebufferCompatible;
+            MultiSampleCount=framebufferSampleCount;
         }
 
 
 
 
+        protected static (object backendObj, uint memReq) Create(Vector3<uint> Size,
+                                                                       TextureTypes type,
+                                                                       TextureFormats format,
 
-        public static BackendTextureReference Create(Vector3<uint> dimensions, TextureTypes type, TextureFormats format, bool FramebufferAttachmentCompatible, byte[][] Mips = null)
+                                                                       TextureMipCount MipCount,
+                                                                       TextureMipData[] Mips = null,
+
+                                                                       bool FramebufferAttachmentCompatible = false,
+                                                                       MultiSampleCount FramebufferSampleCount = 0)
         {
 
+
 #if DEBUG
-            if (type == TextureTypes.TextureCubeMap && dimensions.X != dimensions.Y) throw new Exception();
+            if ((Size.X == 0 || Size.Y == 0 || Size.Z == 0) || (Size.X > 8192 || Size.Y > 8192 || Size.Z > 8192))
+                throw new Exception("Invalid size");
+
+            if (type == TextureTypes.TextureCubeMap && Size.X != Size.Y)
+                throw new Exception();
+
+
+            MipCount.CheckValidForSize(Size);
+            Mips.CheckTextureMipArrayValidForSize(Size);
 #endif
+
+
 
 
             if (Mips != default)
             {
                 ulong totalSize = 0;
-                byte[][] convertedMips = new byte[Mips.Length][];
+                TextureMipData[] convertedMips = new TextureMipData[Mips.Length];
+
                 ulong[] mipOffsets = new ulong[Mips.Length];
 
                 for (byte mip = 0; mip < Mips.Length; mip++)
                 {
-                    byte[] mipData = Mips[mip];
+                    byte[] mipData = Mips[mip].Data;
 
                     if (format == TextureFormats.RGB8_UNORM)
-                        mipData = ConvertRGB8ToRGBA8(mipData, uint.Max(1, dimensions.X >> mip), uint.Max(1, dimensions.Y >> mip));
+                        mipData = ConvertRGB8ToRGBA8(mipData, uint.Max(1, Size.X >> mip), uint.Max(1, Size.Y >> mip));
                     else if (format == TextureFormats.RGB16_SFLOAT)
-                        mipData = ConvertRGB16ToRGBA16(mipData, uint.Max(1, dimensions.X >> mip), uint.Max(1, dimensions.Y >> mip));
+                        mipData = ConvertRGB16ToRGBA16(mipData, uint.Max(1, Size.X >> mip), uint.Max(1, Size.Y >> mip));
 
-                    convertedMips[mip] = mipData;
+                    convertedMips[mip] = new(Mips[mip].Index, mipData);
 
                     mipOffsets[mip] = totalSize;
                     totalSize += (ulong)mipData.Length;
@@ -1024,23 +1250,13 @@ public static partial class RenderingBackend
 
 
 
-            uint mipReq = 0;
-
-            if (Mips != null)
-            {
-                for (int i = 0; i < Mips.Length; i++)
-                    mipReq += (uint)Mips[i].Length;
-            }
-            else 
-                mipReq = GetTextureSizeBytes(dimensions, format);
+            uint memReq = GetTextureSizeBytes(new(Size.X, Size.Y, 1), format, MipCount);
 
 
+            Kernel.TryAllocateVram(memReq);
 
-            Kernel.TryAllocateVram(mipReq);
 
-
-            return new BackendTextureReference(Backend.CreateTexture(dimensions, type, format, FramebufferAttachmentCompatible, Mips), dimensions, type, format, Mips == null ? 1 : (uint)Mips.Length, mipReq);
-
+            return (Backend.CreateTexture(new(Size.X, Size.Y, 1), type, format, FramebufferAttachmentCompatible, MipCount, Mips, FramebufferSampleCount), memReq);
 
 
 
@@ -1085,22 +1301,14 @@ public static partial class RenderingBackend
         }
 
 
-
-
-        public void GenerateMipmaps() 
+        public void GenerateMipmaps()
             => Backend.GenerateMipmaps(this);
-
 
 
         protected override void OnFree()
         {
-            _ = PushDeferredIdleRenderThreadAction(() =>
-            {
-                Backend.DestroyTexture(this);
-                Kernel.ReleaseVram(FullSizeInMemory);
-                return null;
-            });
-
+            Backend.DestroyTexture(this);
+            Kernel.ReleaseVram(FullSizeInMemory);
 
             base.OnFree();
         }
@@ -1108,6 +1316,135 @@ public static partial class RenderingBackend
     }
 
 
+
+
+
+    /// <summary>
+    /// Represents some part of a <see cref="BackendTextureReference"/> which can be used as a framebuffer attachment.
+    /// </summary>
+    public interface IFramebufferAttachment;
+
+
+    /// <summary>
+    /// A standard 2D texture.
+    /// </summary>
+    public class BackendTexture2DReference : BackendTextureReference, IFramebufferAttachment
+    {
+
+        private BackendTexture2DReference(object backendRef,
+                                          Vector2<uint> size,
+                                          TextureFormats textureFormat,
+                                          TextureMipCount mipCount,
+                                          uint fullSizeInMemory,
+                                          bool attachment) : base(backendRef, new(size.X, size.Y, 1), textureFormat, mipCount, fullSizeInMemory, attachment, 0)
+        { 
+        }
+
+
+        public static BackendTexture2DReference Create(Vector2<uint> Size, TextureFormats Format, TextureMipCount MipCount, TextureMipData[] Mips = null)
+        {
+            var inst = Create(new Vector3<uint>(Size.X, Size.Y, 1), TextureTypes.Texture2D, Format, MipCount, Mips, false, default);
+            return new(inst.backendObj, Size, Format, MipCount, inst.memReq, false);
+        }
+
+
+        public static BackendTexture2DReference CreateAttachment(Vector2<uint> Size, TextureFormats Format, TextureMipCount MipCount)
+        {
+            var inst = Create(new Vector3<uint>(Size.X, Size.Y, 1), TextureTypes.Texture2D, Format, MipCount, null, true, 0);
+            return new(inst.backendObj, Size, Format, 1, inst.memReq, true);
+        }
+
+    }
+
+
+    /// <summary>
+    /// A multisampled 2D attachment texture.
+    /// </summary>
+    public class BackendTexture2DMSAttachmentReference : BackendTextureReference, IBackendResourceReference, IFramebufferAttachment, IPlaceholderProvider<BackendTexture2DMSAttachmentReference>
+    {
+
+        private static readonly BackendTexture2DMSAttachmentReference Placeholder = CreateAttachment(Vector2<uint>.One, TextureFormats.R8_UNORM, MultiSampleCount.Sample2);
+        public bool IsPlaceholder => this == Placeholder;
+
+        public static BackendTexture2DMSAttachmentReference GetPlaceholder() => Placeholder;
+
+
+        private BackendTexture2DMSAttachmentReference(object backendRef,
+                                          Vector2<uint> size,
+                                          TextureFormats textureFormat,
+                                          TextureMipCount mipCount,
+                                          uint fullSizeInMemory,
+                                          MultiSampleCount count) : base(backendRef, new(size.X, size.Y, 1), textureFormat, mipCount, fullSizeInMemory, true, count)
+        {
+        }
+
+        public static BackendTexture2DMSAttachmentReference CreateAttachment(Vector2<uint> Size, TextureFormats Format, MultiSampleCount SampleCount)
+        {
+            var inst = Create(new Vector3<uint>(Size.X, Size.Y, 1), TextureTypes.Texture2D, Format, 1, null, true, SampleCount);
+            return new(inst.backendObj, Size, Format, 1, inst.memReq, SampleCount);
+        }
+
+    }
+
+
+    /// <summary>
+    /// A standard 3D texture.
+    /// </summary>
+    public class BackendTexture3DReference : BackendTextureReference
+    {
+
+        private BackendTexture3DReference(object backendRef,
+                                          Vector3<uint> size,
+                                          TextureFormats textureFormat,
+                                          TextureMipCount mipCount,
+                                          uint fullSizeInMemory) : base(backendRef, size, textureFormat, mipCount, fullSizeInMemory, false, 0)
+        {
+        }
+
+
+
+        public static BackendTexture3DReference Create(Vector3<uint> Size, TextureFormats Format, TextureMipCount MipCount, TextureMipData[] Mips = null)
+        {
+            var inst = Create(Size, TextureTypes.Texture3D, Format, MipCount, Mips, false, default);
+            return new(inst.backendObj, Size, Format, MipCount, inst.memReq);
+        }
+    }
+
+
+    /// <summary>
+    /// A standard cube map texture.
+    /// </summary>
+    public class BackendTextureCubeMapReference : BackendTextureReference
+    {
+
+        private BackendTextureCubeMapReference(object backendRef,
+                                          uint size,
+                                          TextureFormats textureFormat,
+                                          TextureMipCount mipCount,
+                                          uint fullSizeInMemory) : base(backendRef, new Vector3<uint>(size,size,1), textureFormat, mipCount, fullSizeInMemory, false, 0)
+        {
+        }
+
+
+
+        public static BackendTextureCubeMapReference Create(uint Size, TextureFormats Format, TextureMipCount MipCount, TextureMipData[] Mips = null)
+        {
+            var inst = Create(new Vector3<uint>(Size, Size, 1), TextureTypes.TextureCubeMap, Format, MipCount, Mips, false, default);
+            return new(inst.backendObj, Size, Format, MipCount, inst.memReq);
+        }
+    }
+
+
+
+
+
+
+
+
+
+
+    [StructLayout(LayoutKind.Sequential, Pack = 1)]
+    public unsafe record struct SamplerDetails(TextureWrapModes WrapMode, TextureFilters MinFilter, TextureFilters MagFilter, TextureFilters MipmapFilter, bool EnableDepthComparison = false);
 
 
 
@@ -1122,7 +1459,7 @@ public static partial class RenderingBackend
 
         protected override void OnFree()
         {
-            _ = PushDeferredIdleRenderThreadAction(() => { Backend.DestroyTextureSampler(this); return null; });
+            Backend.DestroyTextureSampler(this);
             base.OnFree();
         }
 
@@ -1164,25 +1501,139 @@ public static partial class RenderingBackend
 
 
 
-    public class BackendTextureAndSamplerReferencesPair : IBackendResourceReference
+    public interface IBackendTextureSamplerPair : IBackendResourceReference
     {
-        public readonly BackendTextureReference Texture;
-        public readonly BackendSamplerReference Sampler;
-
-        public BackendTextureAndSamplerReferencesPair(BackendTextureReference texture, BackendSamplerReference sampler)
-        {
-            Texture = texture;
-            Sampler = sampler;
-        }
-
+        public BackendTextureReference Texture { get; }
+        public BackendSamplerReference Sampler { get; }
     }
 
 
 
-    public class BackendTextureAndSamplerReferencesPairsArray(BackendTextureAndSamplerReferencesPair[] array) : IBackendResourceReference
+
+    public class BackendTexture2DSamplerPair(BackendTexture2DReference texture, TextureWrapModes WrapMode, TextureFilters MinFilter, TextureFilters MagFilter, TextureFilters MipmapFilter) : IBackendTextureSamplerPair, IPlaceholderProvider<BackendTexture2DSamplerPair>
     {
-        public readonly ImmutableArray<BackendTextureAndSamplerReferencesPair> Array = array.ToImmutableArray();
+        public bool IsPlaceholder => this == Placeholder;
+
+
+        public static BackendTexture2DSamplerPair GetPlaceholder() => Placeholder;
+
+
+        private static readonly BackendTexture2DSamplerPair Placeholder
+            = new(BackendTexture2DReference.Create(
+                Vector2<uint>.One, TextureFormats.RGB8_UNORM, 1, [new TextureMipData(0, [255, 255, 255])]), 
+                TextureWrapModes.Repeat, TextureFilters.Nearest, TextureFilters.Nearest, TextureFilters.Nearest
+                );
+
+
+
+
+        public BackendTextureReference Texture { get; } = texture;
+        public BackendSamplerReference Sampler { get; } = BackendSamplerReference.Get(new SamplerDetails(WrapMode, MinFilter, MagFilter, MipmapFilter));
     }
+
+
+    public class BackendTexture2DShadowSamplerPair(BackendTexture2DReference texture, TextureWrapModes WrapMode, TextureFilters MinFilter, TextureFilters MagFilter, TextureFilters MipmapFilter) : IBackendTextureSamplerPair, IPlaceholderProvider<BackendTexture2DShadowSamplerPair>
+    {
+        public bool IsPlaceholder => this == Placeholder;
+
+        private static readonly BackendTexture2DShadowSamplerPair Placeholder 
+            = new(BackendTexture2DReference.Create(
+                Vector2<uint>.One, TextureFormats.Depth32, 1, [new TextureMipData(0, BitConverter.GetBytes(float.MaxValue))]),
+                TextureWrapModes.Repeat, TextureFilters.Nearest, TextureFilters.Nearest, TextureFilters.Nearest
+                );
+
+
+        public static BackendTexture2DShadowSamplerPair GetPlaceholder() => Placeholder;
+
+
+
+        public BackendTextureReference Texture { get; } = texture;
+        public BackendSamplerReference Sampler { get; } = BackendSamplerReference.Get(new SamplerDetails(WrapMode, MinFilter, MagFilter, MipmapFilter, true));
+    }
+
+
+    public class BackendTexture3DSamplerPair(BackendTexture3DReference texture, TextureWrapModes WrapMode, TextureFilters MinFilter, TextureFilters MagFilter, TextureFilters MipmapFilter) : IBackendTextureSamplerPair, IPlaceholderProvider<BackendTexture3DSamplerPair>
+    {
+        public bool IsPlaceholder => this == Placeholder;
+
+
+        public static BackendTexture3DSamplerPair GetPlaceholder() => Placeholder;
+
+
+        private static readonly BackendTexture3DSamplerPair Placeholder
+            = new(BackendTexture3DReference.Create(
+                Vector3<uint>.One, TextureFormats.RGB8_UNORM, 1, [new TextureMipData(0, [255, 255, 255])]),
+                TextureWrapModes.Repeat, TextureFilters.Nearest, TextureFilters.Nearest, TextureFilters.Nearest
+                );
+
+
+
+        public BackendTextureReference Texture { get; } = texture;
+        public BackendSamplerReference Sampler { get; } = BackendSamplerReference.Get(new SamplerDetails(WrapMode, MinFilter, MagFilter, MipmapFilter));
+    }
+
+
+
+    public class BackendTextureCubeMapSamplerPair(BackendTextureCubeMapReference texture, TextureWrapModes WrapMode, TextureFilters MinFilter, TextureFilters MagFilter, TextureFilters MipmapFilter) : IBackendTextureSamplerPair, IPlaceholderProvider<BackendTextureCubeMapSamplerPair>
+    {
+        public bool IsPlaceholder => this == Placeholder;
+
+
+        public static BackendTextureCubeMapSamplerPair GetPlaceholder() => Placeholder;
+
+
+        private static readonly BackendTextureCubeMapSamplerPair Placeholder =
+                new(
+                    BackendTextureCubeMapReference.Create(1, TextureFormats.RGB8_UNORM, 1,
+                        [
+                            new TextureMipData(0, [255, 255, 255]),
+                            new TextureMipData(0, [255, 255, 255]),
+                            new TextureMipData(0, [255, 255, 255]),
+                            new TextureMipData(0, [255, 255, 255]),
+                            new TextureMipData(0, [255, 255, 255]),
+                            new TextureMipData(0, [255, 255, 255])
+                        ]
+                    ),
+                    TextureWrapModes.Repeat, TextureFilters.Nearest, TextureFilters.Nearest, TextureFilters.Nearest
+                );
+
+
+
+        public BackendTextureReference Texture { get; } = texture;
+        public BackendSamplerReference Sampler { get; } = BackendSamplerReference.Get(new SamplerDetails(WrapMode, MinFilter, MagFilter, MipmapFilter));
+    }
+
+
+
+
+
+
+
+
+
+
+    private static readonly Dictionary<ShaderMetadata.ShaderResourceSetMetadata, BackendResourceSetReference> DummyResourceSets = new();
+
+    private static unsafe ImmutableArray<BackendResourceSetReference> CreateDefaultResourceSets(FrozenDictionary<string, (byte Binding, ShaderMetadata.ShaderResourceSetMetadata Metadata)> ResourceSets)
+    {
+
+        var ResourceSetBinds = new BackendResourceSetReference[ResourceSets.Count];
+
+
+        lock (DummyResourceSets)
+            foreach (var resKV in ResourceSets)
+            {
+                if (!DummyResourceSets.TryGetValue(resKV.Value.Metadata, out BackendResourceSetReference set))
+                    DummyResourceSets[resKV.Value.Metadata] = set = BackendResourceSetReference.CreateFromMetadata(resKV.Value.Metadata);
+
+                ResourceSetBinds[resKV.Value.Binding] = set;
+            }
+
+
+        return ImmutableArray.ToImmutableArray(ResourceSetBinds);
+    }
+
+
 
 
 
@@ -1212,7 +1663,7 @@ public static partial class RenderingBackend
 
         protected override void OnFree()
         {
-            PushDeferredIdleRenderThreadAction(() => { Backend.DestroyShader(this); return null; });
+            Backend.DestroyShader(this);
 
             base.OnFree();
         }
@@ -1267,13 +1718,13 @@ public static partial class RenderingBackend
 
         private BackendComputeShaderReference(ComputeShaderMetadata metadata, object backendRef) : base(backendRef)
         {
-            Metadata= metadata;
-            DefaultResourceSets= CreateDefaultResourceSets(metadata.ResourceSets);
+            Metadata = metadata;
+            DefaultResourceSets = CreateDefaultResourceSets(metadata.ResourceSets);
         }
 
         protected override void OnFree()
         {
-            PushDeferredIdleRenderThreadAction(() => { Backend.DestroyComputeShader(this); return null; });
+            Backend.DestroyComputeShader(this);
 
             base.OnFree();
         }
@@ -1292,7 +1743,7 @@ public static partial class RenderingBackend
             var shader = new BackendComputeShaderReference(src.Metadata, Backend.CreateComputeShader(src));
 
 
-            lock (Shaders)
+            lock (ComputeShaders)
             {
                 if (ComputeShaders.TryGetValue(name, out var get)) get.Free();
                 ComputeShaders[name] = shader;
@@ -1323,25 +1774,6 @@ public static partial class RenderingBackend
 
 
 
-    public static unsafe ImmutableArray<BackendResourceSetReference> CreateDefaultResourceSets(FrozenDictionary<string, (byte Binding, ShaderMetadata.ShaderResourceSetMetadata Metadata)> ResourceSets)
-    {
-
-        var ResourceSetBinds = new BackendResourceSetReference[ResourceSets.Count];
-
-
-        lock (DummyResourceSets)
-            foreach (var resKV in ResourceSets)
-            {
-                if (!DummyResourceSets.TryGetValue(resKV.Value.Metadata, out BackendResourceSetReference set))
-                    DummyResourceSets[resKV.Value.Metadata] = set = BackendResourceSetReference.CreateFromMetadata(resKV.Value.Metadata);
-
-                ResourceSetBinds[resKV.Value.Binding] = set;
-            }
-
-
-        return ImmutableArray.ToImmutableArray(ResourceSetBinds);
-    }
-
 
 
 
@@ -1354,6 +1786,7 @@ public static partial class RenderingBackend
 
 
     public record class ShaderMetadata(
+        string Name,
         FrozenDictionary<string, (byte Location, ShaderMetadata.ShaderInOutAttributeMetadata Metadata)> VertexInputAttributes,
         FrozenDictionary<string, (byte Location, ShaderMetadata.ShaderInOutAttributeMetadata Metadata)> FragmentOutputAttributes,
         FrozenDictionary<string, (byte Binding, ShaderMetadata.ShaderResourceSetMetadata Metadata)> ResourceSets
@@ -1376,9 +1809,75 @@ public static partial class RenderingBackend
 
             uint SizeRequirement,  // 0 = unsized
 
-            FrozenDictionary<string, uint> FieldOffsets,
-            ImmutableArray<ContiguousRegion> ContiguousRegions
-        );
+            FrozenDictionary<string, ShaderDataBufferMetadata.MemberInfo> Members,
+            ImmutableArray<(string Name, ShaderDataBufferMetadata.MemberInfo Info)> MembersIndexed
+        )
+        {
+
+
+            public abstract record class MemberInfo(uint RelativeOffset, uint PaddedSize);
+
+            public abstract record class ValueMemberInfo(uint RelativeOffset, uint PaddedSize, uint RealSize) : MemberInfo(RelativeOffset, PaddedSize);
+
+
+            public record class PrimitiveInfo(uint RelativeOffset, uint PaddedSize, uint RealSize) : ValueMemberInfo(RelativeOffset, PaddedSize, RealSize);
+
+            public record class StructInfo(
+                    uint RelativeOffset,
+                    uint PhysicalSize,
+                    uint LogicalSize,
+                    FrozenDictionary<string, MemberInfo> Members,
+                    ImmutableArray<(string Name, MemberInfo Info)> MembersIndexed
+                ) : ValueMemberInfo(RelativeOffset, PhysicalSize, LogicalSize)
+            {
+                public virtual bool Equals(StructInfo? other)
+                {
+                    if (ReferenceEquals(this, other))
+                        return true;
+
+                    if (other is null)
+                        return false;
+
+                    return
+                        RelativeOffset == other.RelativeOffset &&
+                        PaddedSize == other.PaddedSize &&
+                        RealSize == other.RealSize &&
+
+                        Members.Count == other.Members.Count &&
+                        Members.OrderBy(x => x.Key).SequenceEqual(other.Members.OrderBy(x => x.Key)) &&
+
+                        MembersIndexed.SequenceEqual(other.MembersIndexed);
+                }
+
+                public override int GetHashCode()
+                {
+                    var hash = new HashCode();
+
+                    hash.Add(RelativeOffset);
+                    hash.Add(PaddedSize);
+                    hash.Add(RealSize);
+
+                    foreach (var kv in Members.OrderBy(x => x.Key))
+                    {
+                        hash.Add(kv.Key);
+                        hash.Add(kv.Value);
+                    }
+
+                    foreach (var item in MembersIndexed)
+                        hash.Add(item);
+
+                    return hash.ToHashCode();
+                }
+            }
+
+
+
+
+            public record class ArrayInfo(MemberInfo BaseMemberInfo, uint Length) : MemberInfo(BaseMemberInfo.RelativeOffset, BaseMemberInfo.PaddedSize*Length);
+
+        }
+
+
 
 
 
@@ -1441,97 +1940,6 @@ public static partial class RenderingBackend
 
 
 
-
-    /// <summary>
-    /// Represents a contiguous region of data within a buffer, used by <see cref="BufferToPaddedBufferCopy(byte*, uint, uint, byte*, ReadOnlySpan{ContiguousRegion})"/> etc
-    /// </summary>
-    /// <param name="start"></param>
-    /// <param name="end"></param>
-    public readonly record struct ContiguousRegion(uint start, uint end);
-
-
-    /// <summary>
-    /// Copies data from src to dst while skipping over padding (gaps in <paramref name="regions"/>).
-    /// </summary>
-    /// <param name="srcPtr"></param>
-    /// <param name="size"></param>
-    /// <param name="offset"></param>
-    /// <param name="dstPtr"></param>
-    /// <param name="regions"></param>
-    /// <exception cref="OverflowException"></exception>
-    public static unsafe void BufferToPaddedBufferCopy(
-        byte* srcPtr,
-        uint size,
-        uint offset,
-        byte* dstPtr,
-        ReadOnlySpan<ContiguousRegion> regions)
-    {
-        uint srcIndex = 0; 
-
-        for (int i = 0; i < regions.Length && srcIndex < size; i++)
-        {
-            var region = regions[i];
-
-            ulong dstStart = region.start + offset;
-            ulong regionLength = region.end - region.start;
-
-            uint toCopy = (uint)Math.Min(regionLength, size - srcIndex);
-
-            Unsafe.CopyBlockUnaligned(dstPtr + dstStart, srcPtr + srcIndex, toCopy);
-
-            srcIndex += toCopy;
-        }
-
-#if DEBUG
-        if (srcIndex < size)
-            throw new OverflowException("Not all source bytes were copied: ran out of regions.");
-#endif
-    }
-
-
-    /// <summary>
-    /// Returns the size <see cref="BufferToPaddedBufferCopy(byte*, uint, uint, byte*, ReadOnlySpan{ContiguousRegion})"/> will need, in order to allow preallocation.
-    /// </summary>
-    /// <param name="dataSize"></param>
-    /// <param name="offset"></param>
-    /// <param name="regions"></param>
-    /// <returns></returns>
-    public static uint GetBufferToPaddedBufferAllocationRequirement(
-        uint dataSize,
-        uint offset,
-        ReadOnlySpan<ContiguousRegion> regions)
-    {
-        uint srcIndex = 0;
-        ulong maxDstIndex = 0;
-
-        for (int i = 0; i < regions.Length && srcIndex < dataSize; i++)
-        {
-            var region = regions[i];
-
-            if (region.end <= offset)
-                continue;
-
-            ulong dstStart = Math.Max(region.start, offset);
-
-            ulong available = region.end - dstStart;
-            uint toCopy = (uint)Math.Min(available, dataSize - srcIndex);
-
-            srcIndex += toCopy;
-            maxDstIndex = dstStart + toCopy;
-        }
-
-#if DEBUG
-        if (srcIndex < dataSize)
-            throw new OverflowException("Not enough regions to fit data.");
-#endif
-
-        return (uint)(maxDstIndex - offset);
-    }
-
-
-
-
-
     public class BackendDrawPipelineReference : BackendReference
     {
         public readonly DrawPipelineDetails Details;
@@ -1543,7 +1951,7 @@ public static partial class RenderingBackend
 
         protected override void OnFree()
         {
-            PushDeferredIdleRenderThreadAction(() => { Backend.DestroyDrawPipeline(this); return null; });
+            Backend.DestroyDrawPipeline(this);
 
             base.OnFree();
         }
@@ -1552,7 +1960,7 @@ public static partial class RenderingBackend
 
 
 
-        private static Dictionary<DrawPipelineDetails, BackendDrawPipelineReference> DrawPipelineCache = CreateUnsafeStructKeyComparisonDictionary<DrawPipelineDetails, BackendDrawPipelineReference>();
+        private static readonly Dictionary<DrawPipelineDetails, BackendDrawPipelineReference> DrawPipelineCache = CreateUnsafeStructKeyComparisonDictionary<DrawPipelineDetails, BackendDrawPipelineReference>();
 
         /// <summary>
         /// Fetches or creates a <see cref="BackendDrawPipelineReference"/> from the cache, according to a given specification.
@@ -1571,8 +1979,8 @@ public static partial class RenderingBackend
 
                     AddRemovePipelineFromCacheEvent(get, spec);
 
-                    if (CurrentBackendRenderProgress != BackendRenderProgress.DrawingToScreen)
-                        ActiveFramebufferPipeline.OnFreeEvent.Add(get.Free);
+                    if (ActiveFramebufferPipelineInFlight != null)
+                        ActiveFramebufferPipelineInFlight.OnFreeEvent.Add(get.Free);
 
 
                     DrawPipelineCache.Add(spec, get);
@@ -1684,13 +2092,16 @@ public static partial class RenderingBackend
 
         public unsafe struct BlendState()
         {
-            public bool Enable = false;
-            public BlendingFactor SrcColor = BlendingFactor.One;
-            public BlendingFactor DstColor = BlendingFactor.Zero;
+            public bool Enable = true;
+
+            public BlendingFactor SrcColor = BlendingFactor.SrcAlpha;
+            public BlendingFactor DstColor = BlendingFactor.OneMinusSrcAlpha;
             public BlendOperation ColorOp = BlendOperation.Add;
+
             public BlendingFactor SrcAlpha = BlendingFactor.One;
-            public BlendingFactor DstAlpha = BlendingFactor.Zero;
+            public BlendingFactor DstAlpha = BlendingFactor.OneMinusSrcAlpha;
             public BlendOperation AlphaOp = BlendOperation.Add;
+
             public ColorWriteMask WriteMask = ColorWriteMask.All;
         }
 
@@ -1732,7 +2143,7 @@ public static partial class RenderingBackend
 
 
 
-        public FramebufferSampleCount SampleCount;
+        public MultiSampleCount SampleCount;
 
         public byte StageCount;
         public InlineStageArray Stages;
@@ -1834,7 +2245,7 @@ public static partial class RenderingBackend
 
         protected override void OnFree()
         {   
-            PushDeferredIdleRenderThreadAction(() => { Backend.DestroyFrameBufferPipeline(this); return null; });
+            Backend.DestroyFrameBufferPipeline(this);
 
             base.OnFree();
         }
@@ -1843,7 +2254,7 @@ public static partial class RenderingBackend
 
 
 
-        private static Dictionary<FrameBufferPipelineDetails, BackendFrameBufferPipelineReference> FrameBufferPipelineCache = CreateUnsafeStructKeyComparisonDictionary<FrameBufferPipelineDetails, BackendFrameBufferPipelineReference>();
+        private static readonly Dictionary<FrameBufferPipelineDetails, BackendFrameBufferPipelineReference> FrameBufferPipelineCache = CreateUnsafeStructKeyComparisonDictionary<FrameBufferPipelineDetails, BackendFrameBufferPipelineReference>();
 
         /// <summary>
         /// Fetches or creates a <see cref="BackendFrameBufferPipelineReference"/> from the cache, according to a given specification.
@@ -1879,39 +2290,40 @@ public static partial class RenderingBackend
     public class BackendFrameBufferObjectReference : BackendReference
     {
 
-        public readonly ImmutableArray<BackendTextureReference> ColorAttachments;
-        public readonly BackendTextureReference DepthStencilAttachment;
+        public readonly ImmutableArray<IFramebufferAttachment> ColorAttachments;
+        public readonly IFramebufferAttachment DepthStencilAttachment;
         public readonly BackendFrameBufferPipelineReference Pipeline;
 
-        public readonly Vector2<uint> Dimensions;
+        public readonly Vector2<uint> Size;
 
-        private BackendFrameBufferObjectReference(ImmutableArray<BackendTextureReference> colorAttachments,
+        private BackendFrameBufferObjectReference(ImmutableArray<IFramebufferAttachment> colorAttachments,
 
-                                                       BackendTextureReference depthstencil,
+                                                       IFramebufferAttachment depthstencil,
 
                                                        BackendFrameBufferPipelineReference pipeline,
 
-                                                       Vector2<uint> dimensions,
+                                                       Vector2<uint> size,
                                                        
                                                        object backendRef) : base(backendRef)
         {
             ColorAttachments = colorAttachments;
             DepthStencilAttachment = depthstencil;
             Pipeline = pipeline;
-            Dimensions = dimensions;
+            Size = size;
         }
 
 
-        public static unsafe BackendFrameBufferObjectReference Create(ReadOnlySpan<BackendTextureReference> colorTargets, BackendTextureReference depthStencilTarget, BackendFrameBufferPipelineReference pipeline, Vector2<uint> dimensions)
+        public static unsafe BackendFrameBufferObjectReference Create(ReadOnlySpan<IFramebufferAttachment> colorTargets, IFramebufferAttachment depthStencilTarget, BackendFrameBufferPipelineReference pipeline, Vector2<uint> Size)
         {
-            return new BackendFrameBufferObjectReference(colorTargets.ToImmutableArray(), depthStencilTarget, pipeline, dimensions, Backend.CreateFrameBufferObject(colorTargets, depthStencilTarget, pipeline, dimensions));
+            return new BackendFrameBufferObjectReference(colorTargets.ToImmutableArray(), depthStencilTarget, pipeline, Size, Backend.CreateFrameBufferObject(colorTargets, depthStencilTarget, pipeline, Size));
         }
 
 
 
         protected override void OnFree()
         {
-            PushDeferredIdleRenderThreadAction(() => { Backend.DestroyFrameBufferObject(this); return null; });
+            Backend.DestroyFrameBufferObject(this);
+            base.OnFree();
         }
     }
 
@@ -1931,38 +2343,23 @@ public static partial class RenderingBackend
 
 
 
-    public struct ResourceSetResourceBind
-    {
-        public uint Binding;
-        public uint Range;
-        public WeakObjRef<IBackendResourceReference> ResourceHandle;
-
-        public ResourceSetResourceBind(uint binding, WeakObjRef<IBackendResourceReference> resource, uint range = 0)
-        {
-            Binding = binding;
-            ResourceHandle = resource;
-            Range = range;
-        }
-
-        public ResourceSetResourceBind(uint binding, IBackendResourceReference resource, uint range = 0)
-        {
-            Binding = binding;
-            ResourceHandle = resource.GetWeakRef();
-            Range = range;
-        }
-    }
+    public readonly record struct ResourceSetResourceBind(uint Binding, uint Element, IBackendResourceReference Resource, uint MappingRange);
 
 
 
 
 
 
-    public static BackendFrameBufferObjectReference ActiveFrameBufferObject { get; private set; }
-    public static BackendFrameBufferPipelineReference ActiveFramebufferPipeline { get; private set; }
-    public static byte ActiveFrameBufferPipelineStage { get; private set; }
+
+    public static BackendFrameBufferObjectReference ActiveFrameBufferObject;
+    public static BackendFrameBufferPipelineReference ActiveFramebufferPipeline;
+    public static byte ActiveFrameBufferPipelineStage;
 
 
 
+    private static BackendFrameBufferObjectReference ActiveFrameBufferObjectInFlight;
+    private static BackendFrameBufferPipelineReference ActiveFramebufferPipelineInFlight;
+    private static byte ActiveFrameBufferPipelineStageInFlight;
 
 
     public const ushort MaxResourceSetResources = 32;
@@ -2072,11 +2469,16 @@ public static partial class RenderingBackend
         
         CheckOutsideOfRendering();
 
-        lock(AllBackendReferences)
-            AllBackendReferences.Clear();
+        lock (AllBackendReferences)
+        {
+            foreach (var v in AllBackendReferences) 
+                v.Dereference()?.Free();
+        }
 
         Backend.Destroy();
     }
+
+
 
 
     /// <summary>
@@ -2122,11 +2524,13 @@ public static partial class RenderingBackend
     /// <summary>
     /// <inheritdoc cref="_callonrenderthread"/>
     /// </summary>
-    public static void EndFrameRendering()
+    public static float EndFrameRendering()
     {
         CheckDuringRendering();
-        Backend.EndFrameRendering();
+        var ret = Backend.EndFrameRendering();
         CurrentBackendRenderProgress = BackendRenderProgress.NotRendering;
+
+        return ret;
     }
 
 
@@ -2149,11 +2553,13 @@ public static partial class RenderingBackend
             throw new Exception();
 #endif
 
-        ActiveFramebufferPipeline = pipeline;
-        ActiveFrameBufferObject = fbo;
-        ActiveFrameBufferPipelineStage = 0;
+        ActiveFramebufferPipelineInFlight = pipeline;
+        ActiveFrameBufferObjectInFlight = fbo;
+        ActiveFrameBufferPipelineStageInFlight = 0;
         CurrentBackendRenderProgress = BackendRenderProgress.DrawingViaFramebufferPipeline;
         Backend.BeginFrameBufferPipeline(fbo, pipeline);
+
+        Backend.SetScissor(default, fbo.Size);
     }
 
 
@@ -2167,8 +2573,8 @@ public static partial class RenderingBackend
     public static void AdvanceFrameBufferPipeline(BackendFrameBufferObjectReference fbo, BackendFrameBufferPipelineReference pipeline)
     {
         CheckDuringRendering(); 
-        ActiveFrameBufferPipelineStage++;
-        Backend.AdvanceFrameBufferPipeline(fbo, pipeline, ActiveFrameBufferPipelineStage);
+        ActiveFrameBufferPipelineStageInFlight++;
+        Backend.AdvanceFrameBufferPipeline(fbo, pipeline, ActiveFrameBufferPipelineStageInFlight);
     }
 
 
@@ -2185,9 +2591,9 @@ public static partial class RenderingBackend
 
         CheckDuringRendering();
         Backend.EndFrameBufferPipeline(fbo);
-        ActiveFramebufferPipeline = null;
-        ActiveFrameBufferObject = null;
-        ActiveFrameBufferPipelineStage = 0;
+        ActiveFramebufferPipelineInFlight = null;
+        ActiveFrameBufferObjectInFlight = null;
+        ActiveFrameBufferPipelineStageInFlight = 0;
         CurrentBackendRenderProgress = BackendRenderProgress.Downtime;
     }
 
@@ -2211,6 +2617,10 @@ public static partial class RenderingBackend
     {
         CheckDuringRendering();
         Backend.Draw(buffers, ResourceSets, pipeline, indexbuffer, indexBufferOffset, indexing);
+
+#if DEBUG
+        DrawCalls++;
+#endif
     }
 
 
@@ -2225,11 +2635,14 @@ public static partial class RenderingBackend
     public static void StartDrawToScreen()
     {
         CheckDuringRendering();
+
 #if DEBUG
         if (CurrentBackendRenderProgress == BackendRenderProgress.DrawingViaFramebufferPipeline)
             throw new Exception("end framebuffer pipeline first");
 #endif
+
         Backend.StartDrawToScreen();
+        Backend.SetScissor(default, CurrentSwapchainDetails.Size);
         CurrentBackendRenderProgress = BackendRenderProgress.DrawingToScreen;
     }
 
@@ -2304,7 +2717,7 @@ public static partial class RenderingBackend
 
 
         // ---------------- Textures ----------------
-        public object CreateTexture(Vector3<uint> Dimensions, TextureTypes type, TextureFormats format, bool FramebufferAttachmentCompatible, byte[][] texturemips = default);
+        public object CreateTexture(Vector3<uint> Size, TextureTypes type, TextureFormats format, bool FramebufferAttachmentCompatible, TextureMipCount mipCount, TextureMipData[] Mips = null, MultiSampleCount msaa = 0);
 
         public void GenerateMipmaps(BackendTextureReference texture);
         public ReadOnlySpan<byte> ReadTexturePixels(BackendTextureReference tex, uint level, Vector3<uint> offset, Vector3<uint> size);
@@ -2346,7 +2759,7 @@ public static partial class RenderingBackend
 
 
         // ---------------- FrameBuffer Objects ----------------
-        public unsafe object CreateFrameBufferObject(ReadOnlySpan<BackendTextureReference> colorTargets, BackendTextureReference depthStencilTarget, BackendFrameBufferPipelineReference pipeline, Vector2<uint> dimensions);
+        public unsafe object CreateFrameBufferObject(ReadOnlySpan<IFramebufferAttachment> colorTargets, IFramebufferAttachment depthStencilTarget, BackendFrameBufferPipelineReference pipeline, Vector2<uint> Size);
         public void DestroyFrameBufferObject(BackendFrameBufferObjectReference buffer);
 
 
@@ -2362,7 +2775,7 @@ public static partial class RenderingBackend
 
         // ---------------- Frame Rendering ----------------
         public void StartFrameRendering();
-        public void EndFrameRendering();
+        public float EndFrameRendering();
 
 
 

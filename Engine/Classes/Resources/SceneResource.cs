@@ -15,12 +15,13 @@ using System.Text;
 using Engine.GameObjects;
 using System.Numerics;
 
+using System.Buffers;
+using static Engine.Core.IO;
+
 
 #if DEBUG
 using System.Reflection;
 using System.Text.Json;
-using System.Buffers;
-using static Engine.Core.IO;
 #endif
 
 
@@ -108,8 +109,6 @@ public partial class SceneResource : GameResource, GameResource.ILoads
             var finalResourcesArrayBytes = new ValueWriter[resourcesArr.Length];
 
 
-
-            ExitAssetConversionSemaphore();
 
 
 
@@ -221,9 +220,6 @@ public partial class SceneResource : GameResource, GameResource.ILoads
                 finalResourcesArrayBytes[rIndex] = resourceFinalBytes;
             });
 
-
-
-            await EnterAssetConversionSemaphore();
 
 
 
@@ -411,7 +407,7 @@ public partial class SceneResource : GameResource, GameResource.ILoads
 
             //write each argument
 
-            obj.TryGetProperty("Arguments", out var argsGet);
+            obj.TryGetProperty("Parameters", out var argsGet);
             
             final.WriteLengthPrefixedUnmanagedSpan<byte>(GetArgumentBytes<SceneBinarySerializerDeserializer>(argsGet, objType));
             
@@ -463,8 +459,6 @@ public partial class SceneResource : GameResource, GameResource.ILoads
         }
 
 
-        ExitResourceLoadThrottleSemaphore();
-
         await Parallel.ForAsync<uint>(0, resourceCount, async (rIndex, cancellation) =>
         {
             var resource = ress[rIndex];
@@ -489,9 +483,6 @@ public partial class SceneResource : GameResource, GameResource.ILoads
             }
 
         });
-
-        await EnterResourceLoadThrottleSemaphore();
-
 
 
 
@@ -552,7 +543,7 @@ public partial class SceneResource : GameResource, GameResource.ILoads
 
 
 
-        //sort final object datas into actual heirarchy, add references to other objects where nessecary
+        //sort final object datas into actual heirarchy, add references to other objects where necessary
 
 
         for (uint obj = 0; obj < objectcount; obj++)
@@ -578,7 +569,9 @@ public partial class SceneResource : GameResource, GameResource.ILoads
     [BinarySerializableType(typeof(bool))]
     [BinarySerializableType(typeof(float))]
     [BinarySerializableType(typeof(string))]
+    [BinarySerializableType(typeof(Vector2))]
     [BinarySerializableType(typeof(Vector3))]
+    [BinarySerializableType(typeof(Vector4))]
     [BinarySerializableType(typeof(Matrix4x4))]
 
     // references 

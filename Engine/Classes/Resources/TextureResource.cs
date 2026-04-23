@@ -10,10 +10,11 @@ using static Engine.Core.RenderingBackend;
 using Engine.Core;
 
 
+using static Engine.Core.IO;
+
 
 #if DEBUG
 using Engine.Stripped;
-using static Engine.Core.IO;
 #endif
 
 
@@ -27,19 +28,14 @@ using static Engine.Core.IO;
 [FileExtensionAssociation(".gif")]
 [FileExtensionAssociation(".hdr")]
 [FileExtensionAssociation(".exr")]
-public class TextureResource : GameResource, GameResource.ILoads
+public class TextureResource(BackendTextureReference tex, string key) : GameResource(key), GameResource.ILoads
 
 #if DEBUG
     , GameResource.IConverts
 #endif
 {
 
-    public readonly BackendTextureReference BackendReference;
-
-    public TextureResource(BackendTextureReference tex, string key) : base(key)
-    {
-        BackendReference = tex;
-    }
+    public readonly BackendTextureReference BackendReference = tex;
 
 
 
@@ -80,7 +76,7 @@ public class TextureResource : GameResource, GameResource.ILoads
 
         var textureWrite = Parsing.ValueWriter.CreateWithBufferWriter();
 
-        textureWrite.WriteUnmanaged(finaltexturedata.Dimensions);
+        textureWrite.WriteUnmanaged(finaltexturedata.Size);
 
         textureWrite.WriteUnmanaged((byte)finaltexturedata.InternalImageDataFormat);
         textureWrite.WriteUnmanaged((byte)finaltexturedata.TextureType);
@@ -122,15 +118,19 @@ public class TextureResource : GameResource, GameResource.ILoads
         TextureTypes type = (TextureTypes)stream.ReadByte();
 
 
-        byte[][] mips = new byte[stream.ReadByte()][];
+        TextureMipData[] mips = new TextureMipData[stream.ReadByte()];
 
-        for (int i = 0; i < mips.Length; i++)
-            mips[i] = reader.ReadLengthPrefixedUnmanagedSpan<byte>();
+        for (byte i = 0; i < mips.Length; i++)
+            mips[i] = new(i, reader.ReadLengthPrefixedUnmanagedSpan<byte>());
 
 
-
-        return new TextureResource(BackendTextureReference.Create(new Vector3<uint>(w, h, d), type, format, false, mips), key);
-
+        return type switch
+        {
+            TextureTypes.Texture2D => new TextureResource(BackendTexture2DReference.Create(new(w, h), format, (byte)mips.Length, mips), key),
+            TextureTypes.TextureCubeMap => new TextureResource(BackendTextureCubeMapReference.Create(w, format, (byte)mips.Length, mips), key),
+            TextureTypes.Texture3D => new TextureResource(BackendTexture3DReference.Create(new(w, h, d), format, (byte)mips.Length, mips), key),
+            _ => throw new NotImplementedException(),
+        };
     }
 
 }

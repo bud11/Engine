@@ -284,6 +284,149 @@ public static class EngineMath
 
 
 
+    public record struct FrustumPlanes(
+        Plane Left,
+        Plane Right,
+        Plane Up,
+        Plane Down,
+        Plane Back,
+        Plane Front)
+    {
+        public Plane this[int idx]
+        {
+            readonly get
+            {
+                return idx switch
+                {
+                    0 => Left,
+                    1 => Right,
+                    2 => Up,
+                    3 => Down,
+                    4 => Back,
+                    5 => Front,
+                    _ => throw new ArgumentOutOfRangeException(nameof(idx)),
+                };
+            }
+            set
+            {
+                switch (idx)
+                {
+                    case 0: Left = value; break;
+                    case 1: Right = value; break;
+                    case 2: Up = value; break;
+                    case 3: Down = value; break;
+                    case 4: Back = value; break;
+                    case 5: Front = value; break;
+                    default:
+                        throw new ArgumentOutOfRangeException(nameof(idx));
+                }
+            }
+        }
+
+
+        public readonly bool ContainsAABB(AABB bounds)
+        {
+            if (bounds == AABB.MaxValue) return true;
+
+
+            var maxX = bounds.Center.X + bounds.Extents.X;
+            var maxY = bounds.Center.Y + bounds.Extents.Y;
+            var maxZ = bounds.Center.Z + bounds.Extents.Z;
+
+            var minX = bounds.Center.X - bounds.Extents.X;
+            var minY = bounds.Center.Y - bounds.Extents.Y;
+            var minZ = bounds.Center.Z - bounds.Extents.Z;
+
+
+
+            for (int i = 0; i < 6; i++)
+            {
+                var plane = this[i];
+
+                Vector3 positive = new(
+                    plane.Normal.X >= 0 ? maxX : minX,
+                    plane.Normal.Y >= 0 ? maxY : minY,
+                    plane.Normal.Z >= 0 ? maxZ : minZ
+                );
+
+                if (Vector3.Dot(plane.Normal, positive) + plane.D < 0)
+                    return false;
+            }
+
+            return true;
+        }
+    }
+
+
+
+
+
+    public static FrustumPlanes ExtractFrustumPlanes(this in Matrix4x4 ViewProjectionMatrix)
+    {
+
+        FrustumPlanes ret = default;
+
+
+        ret[0] = new Plane(
+            ViewProjectionMatrix.M14 + ViewProjectionMatrix.M11,
+            ViewProjectionMatrix.M24 + ViewProjectionMatrix.M21,
+            ViewProjectionMatrix.M34 + ViewProjectionMatrix.M31,
+            ViewProjectionMatrix.M44 + ViewProjectionMatrix.M41
+        );
+
+        ret[1] = new Plane(
+            ViewProjectionMatrix.M14 - ViewProjectionMatrix.M11,
+            ViewProjectionMatrix.M24 - ViewProjectionMatrix.M21,
+            ViewProjectionMatrix.M34 - ViewProjectionMatrix.M31,
+            ViewProjectionMatrix.M44 - ViewProjectionMatrix.M41
+        );
+
+        ret[2] = new Plane(
+            ViewProjectionMatrix.M14 + ViewProjectionMatrix.M12,
+            ViewProjectionMatrix.M24 + ViewProjectionMatrix.M22,
+            ViewProjectionMatrix.M34 + ViewProjectionMatrix.M32,
+            ViewProjectionMatrix.M44 + ViewProjectionMatrix.M42
+        );
+
+        ret[3] = new Plane(
+            ViewProjectionMatrix.M14 - ViewProjectionMatrix.M12,
+            ViewProjectionMatrix.M24 - ViewProjectionMatrix.M22,
+            ViewProjectionMatrix.M34 - ViewProjectionMatrix.M32,
+            ViewProjectionMatrix.M44 - ViewProjectionMatrix.M42
+        );
+
+        ret[4] = new Plane(
+            ViewProjectionMatrix.M14 + ViewProjectionMatrix.M13,
+            ViewProjectionMatrix.M24 + ViewProjectionMatrix.M23,
+            ViewProjectionMatrix.M34 + ViewProjectionMatrix.M33,
+            ViewProjectionMatrix.M44 + ViewProjectionMatrix.M43
+        );
+
+        ret[5] = new Plane(
+            ViewProjectionMatrix.M14 - ViewProjectionMatrix.M13,
+            ViewProjectionMatrix.M24 - ViewProjectionMatrix.M23,
+            ViewProjectionMatrix.M34 - ViewProjectionMatrix.M33,
+            ViewProjectionMatrix.M44 - ViewProjectionMatrix.M43
+        );
+
+
+        for (int i = 0; i < 6; i++)
+        {
+            float length = ret[i].Normal.Length();
+            ret[i] = new Plane(
+                ret[i].Normal / length,
+                ret[i].D / length
+            );
+        }
+
+        return ret;
+    }
+
+
+
+
+
+
 
 
 

@@ -1,10 +1,6 @@
 ﻿using Engine.Core;
 
 
-using static Engine.Core.References;
-
-
-
 #if DEBUG
 using Engine.Stripped;
 #endif
@@ -23,9 +19,9 @@ using Engine.Stripped;
 //
 //
 
-//DEMO 1
-//This is the triangle demo. It shows basic manual drawing.
-//The end result is a red triangle drawn directly to screen in NDC.
+// DEMO 1
+// This is the triangle demo. It shows basic manual drawing.
+// The end result is a red triangle drawn directly to screen in NDC.
 
 
 ////////////////////////////////////////////
@@ -101,11 +97,6 @@ public static partial class Entry
             """
             
 
-            // ------------------------------------------------------------------------------------------------------------
-            // Explicit glsl attribute locations are derived from order of appearance, and should never be specified.
-            // Attributes are later referenced by name instead.
-
-
             in vec2 Position;
 
             void main()
@@ -172,13 +163,17 @@ public static partial class Entry
 
 
 
-        TriangleVertPos = (RenderingBackend.BackendBufferReference.IVertexBuffer)   //<-- created buffers can be cast to interfaces, allowing specific usages...
-            RenderingBackend.BackendBufferReference.Create(
-             [
-                -0.5f, -0.5f,
-                 0.5f, -0.5f,
-                 0.0f,  0.5f
-             ], RenderingBackend.BufferUsageFlags.Vertex, default);   //<-- ...given they were created with the correct corresponding usage flag
+        TriangleVertPos = (RenderingBackend.BackendBufferReference.IVertexBuffer)   //<-- created buffers can be cast to BackendBufferReference-defined interfaces, allowing specific usages...
+            RenderingBackend.BackendBufferReference.Create
+            (
+                [
+                    -0.5f, -0.5f,
+                    0.5f, -0.5f,
+                    0.0f,  0.5f
+                ],
+                usageFlags: RenderingBackend.BufferUsageFlags.Vertex,      //<-- ...given they were created opting into the correct corresponding usage flag.
+                accessFlags: default
+            );   
 
 
 
@@ -229,24 +224,19 @@ public static partial class Entry
         Rendering.StartDrawToScreen();
 
 
-        
-        Rendering.SetScissor(new (0,0), RenderingBackend.CurrentSwapchainDetails.Size);   // The scissor state needs to be manually maintained.
-
-
-
         Rendering.Draw(
-            Attributes: TriangleAttributes.VertexAttributesToUnmanaged(),   //<-- this converts the collection into a weak-referencing, ummanaged copy.
+            VertexAttributes: TriangleAttributes.VertexAttributesToUnmanaged(),   //<-- this converts the collection into a weak-referencing, ummanaged copy, fit to be copied into a deferred draw call.
             ResourceSets: default,            
             Shader: ShaderRef.Shader,         //<-- our shader
 
             // The rasterization, blending and depth stencil structs already have sane new()s/defaults that we can use here.
             Rasterization: new(),
             Blending: new(),
-            DepthStencil: default,
+            DepthStencil: new(),
 
-            //we dont need an index buffer given that this is a simple triangle.
+            // We dont need to define an index buffer (nor index buffer format) given that this is a simple triangle.
             IndexBuffer: null,     
-            IndexingDetails: new(Start: 0, End: 3, BaseVertex: 0, InstanceCount: 1)    
+            IndexingDetails: new(Start: 0, End: 3, BaseVertex: 0, InstanceCount: 1, IndexBufferFormat: default)    
         );
 
 

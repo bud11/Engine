@@ -3,271 +3,242 @@
 
 namespace Engine.GameObjects;
 
-
-
+using Engine.Attributes;
 using Engine.Core;
-using Engine.GameResources;
+using System.Buffers;
 using System.Numerics;
 using static Engine.Core.EngineMath;
-using static Engine.Core.References;
 using static Engine.Core.Rendering;
 using static Engine.Core.RenderingBackend;
 
 
 
 /// <summary>
-/// A camera class with controllable properties, buffers, pipeline logic and post processing.
+/// A camera class with controllable properties and arbitrary buffers.
 /// </summary>
 /// 
 public partial class Camera : GameObject
 {
-    private Vector2<uint> _size;
-    public Vector2<uint> Resolution
-    {
-        get => _size;
-        set
-        {
-            if (_size != value)
-            {
-                _size = value;
-                Setup();
 
-                OnResolutionChanged.Invoke();
-            }
-        }
+
+
+    /// <summary>
+    /// The primary reference resolution for this camera's buffers/textures.
+    /// </summary>
+    [Indexable]
+    public Vector2<uint> Resolution;
+
+
+
+    /// <summary>
+    /// Whether any involved buffers/textures should be createad as cubemaps.
+    /// </summary>
+    [Indexable]
+    public bool UseCubeMaps = false;
+
+
+
+
+    /// <summary>
+    /// Whether to use perspective or orthographic projection.
+    /// </summary>
+    [Indexable]
+    public bool Perspective = true;
+
+    /// <summary>
+    /// The field of view when <see cref="Perspective"/> is enabled.
+    /// </summary>
+    [Indexable]
+    public float PerspectiveFieldOfView = 45f;  
+
+    /// <summary>
+    /// The scale when <see cref="Perspective"/> is disabled.
+    /// </summary>
+    [Indexable]
+    public float OrthographicScale = 1f;  
+
+    /// <summary>
+    /// The near clip plane distance.
+    /// </summary>
+    [Indexable]
+    public float Near = 0.01f;
+
+    /// <summary>
+    /// The far clip plane distance.
+    /// </summary>
+    [Indexable]
+    public float Far = 1000f;
+
+
+
+
+    public override void Init()
+    {
+        Refresh();
+
+        base.Init();
     }
 
 
 
-    public bool Perspective = true;  //perspective or orthographic
-    public float FOV = 45f;    //FOV if perspective
-    public float OrthoScale = 1f;  //orthographic scale if orthographic
 
-    public float Near = 0.01f;
-    public float Far = 1000f;
+    public readonly ThreadSafeEventAction OnRefreshChange = new();
+
+
+    public void Refresh()
+    {
+        bool callrefresh = false;
+
+        foreach (var buf in CameraFrameBuffers)
+        {
+            if (buf.Value.Refresh()) 
+                callrefresh = true;
+        }
+
+        if (callrefresh)
+            OnRefreshChange.Invoke();
+    }
+
+
+
+
 
 
     public Matrix4x4 GetProjectionMatrix()
     {
-        if (Perspective) return Matrix4x4.CreatePerspectiveFieldOfView(DegToRad(FOV), Resolution.X / (float)Resolution.Y, Near, Far);
+        if (Perspective) return Matrix4x4.CreatePerspectiveFieldOfView(DegToRad(PerspectiveFieldOfView), Resolution.X / (float)Resolution.Y, Near, Far);
 
-        return Matrix4x4.CreateOrthographic(OrthoScale * (Resolution.X / (float)Resolution.Y), OrthoScale, Near, Far);
+        return Matrix4x4.CreateOrthographic(OrthographicScale * (Resolution.X / (float)Resolution.Y), OrthographicScale, Near, Far);
     }
 
-    public Matrix4x4 GetViewMatrix() => Matrix4x4.CreateLookTo(GlobalTransform.Translation, GlobalTransform.GetOrientationZ(), GlobalTransform.GetOrientationY());
 
 
 
-    public readonly ThreadSafeEventAction OnResolutionChanged = new();
+    private static readonly Matrix4x4[] CubemapDirections =
+        [
+            Matrix4x4.Identity,
+            Matrix4x4.CreateLookAt(Vector3.Zero,-Vector3.UnitX, Vector3.UnitY),
+
+            Matrix4x4.CreateLookAt(Vector3.Zero,-Vector3.UnitY, -Vector3.UnitZ),
+            Matrix4x4.CreateLookAt(Vector3.Zero,Vector3.UnitY, Vector3.UnitZ),
+
+            Matrix4x4.CreateLookAt(Vector3.Zero,-Vector3.UnitZ, Vector3.UnitY),
+            Matrix4x4.CreateLookAt(Vector3.Zero,Vector3.UnitZ, Vector3.UnitY),
+        ];
 
 
-
-
-    public LogicalFrameBufferObject FrameBuffer { get; private set; }
-    public BackendTextureAndSamplerReferencesPair[] ColorBufferTextures { get; private set; }   //plural for mrt, not for cubemap
-    public BackendTextureAndSamplerReferencesPair DepthStencilBufferTexture { get; private set; }
-
-
-
-
-
-
-
-
-    public enum PostProcessEffectResolutionModes
+    public Matrix4x4 GetViewMatrix(byte cubemapFacing = 0)
     {
-        Fixed,      //render target resolution = resolutionorfactor    (fixed forever)
-        Multiplier  //render target resolution = resolutionorfactor * cam.resolution   (updated if camera resolution changes)
+        var mat = Matrix4x4.Multiply(GlobalTransform, CubemapDirections[cubemapFacing]);
+
+        return Matrix4x4.CreateLookTo(mat.Translation, mat.GetOrientationZ(), mat.GetOrientationY());
     }
 
 
 
 
 
-    public static MaterialResource ScalingShader { get; private set; }
 
-    public class PostProcessBuffer
+    private record class CameraFrameBuffer(
+            Camera Owner, 
+            CameraFrameBuffer.SizeMode ResolutionMode,
+            Vector2 ResolutionOrFactor,
+            byte ColorTargetCount,
+            TextureFormats ColorTargetFormat,
+            bool CreateDepthStencil,
+            MultiSampleCount SampleCount,
+            TextureMipCount MipCount
+        )
     {
 
-        private PostProcessEffectResolutionModes ResolutionMode;
-        private Vector2 ResolutionOrFactor;
+        public enum SizeMode
+        {
+            Fixed,
+            Multiplier
+        }
+
 
 
         public LogicalFrameBufferObject FrameBuffer { get; private set; }
-        public BackendTextureAndSamplerReferencesPair TexturePlusSampler { get; private set; }
 
 
+        private readonly IFramebufferAttachment[] ColorTargets = new IFramebufferAttachment[ColorTargetCount];
+        private IFramebufferAttachment DepthStencilTarget;
 
-        public PostProcessBuffer(Camera owner, PostProcessEffectResolutionModes resolutionMode, Vector2 resolutionOrFactor)
+
+        /// <summary>
+        /// Recreates the framebuffer and its texture targets if necessary.
+        /// </summary>
+        public bool Refresh()
         {
-            ResolutionMode = resolutionMode;
-            ResolutionOrFactor = resolutionOrFactor;
-
-            Evaluate(owner);
-        }
+            var requiredRes = ResolutionMode == SizeMode.Fixed ? (Vector2<uint>)ResolutionOrFactor : (Vector2<uint>)((Vector2)Owner.Resolution * ResolutionOrFactor);
+            var texType = Owner.UseCubeMaps ? TextureTypes.TextureCubeMap : TextureTypes.Texture2D;
 
 
-
-        public void Evaluate(Camera owner)
-        {
-            var requiredRes = ResolutionMode == PostProcessEffectResolutionModes.Fixed ? (Vector2<uint>)ResolutionOrFactor : (Vector2<uint>)((Vector2)owner.Resolution * ResolutionOrFactor);
-
-            if (TexturePlusSampler == null || new Vector2<uint>(TexturePlusSampler.Texture.Dimensions.X, TexturePlusSampler.Texture.Dimensions.Y) != requiredRes)
+            if (FrameBuffer == null || requiredRes != FrameBuffer.Size)
             {
-                TexturePlusSampler = new BackendTextureAndSamplerReferencesPair(
-
-                    BackendTextureReference.Create(new Vector3<uint>(requiredRes.X, requiredRes.Y, 1),
-                                  owner.UseCubeMap ? TextureTypes.TextureCubeMap : TextureTypes.Texture2D,
-                                  TextureFormats.RGBA16_SFLOAT,
-                                  true),
-                    BackendSamplerReference.Get(new(TextureWrapModes.ClampToEdge, TextureFilters.Linear, TextureFilters.Linear, TextureFilters.Linear, false)));
-
-                FrameBuffer = LogicalFrameBufferObject.Create([TexturePlusSampler.Texture], null);
-            }
-        }
-    }
-
-
-
-
-
-
-
-    private Dictionary<string, PostProcessBuffer> PostProcessBuffers;
-
-
-    /// <summary>
-    /// Creates a fixed size color buffer that will be used for post processing. The buffer will use <see cref="UseCubeMap"/> and <see cref="UseHDRColorBuffers"/>.
-    /// </summary>
-    public unsafe void CreateFixedSizePostProcessBuffer(string Name, Vector2<uint> Resolution)
-    {
-        if (PostProcessBuffers == null)
-            PostProcessBuffers = new();
-
-        PostProcessBuffers[Name] = new PostProcessBuffer(this, PostProcessEffectResolutionModes.Fixed, (Vector2)Resolution);
-    }
-
-    /// <summary>
-    /// Creates a color buffer that will be used for post processing, which will automatically resize according to <see cref="Resolution"/> * <paramref name="ScalingFactor"/>. The buffer will use <see cref="UseCubeMap"/> and <see cref="UseHDRColorBuffers"/>.
-    /// </summary>
-    /// <param name="Name"></param>
-    /// <param name="ResolutionMode"></param>
-    /// <param name="ScalingFactor"></param>
-    public unsafe void CreateDynamicSizePostProcessBuffer(string Name, Vector2 ScalingFactor)
-    {
-        if (PostProcessBuffers == null)
-            PostProcessBuffers = new();
-
-        PostProcessBuffers[Name] = new PostProcessBuffer(this, PostProcessEffectResolutionModes.Multiplier, ScalingFactor);
-    }
-
-
-    public void DestroyPostProcessBuffer(string Name)
-    {
-        if (PostProcessBuffers != null && PostProcessBuffers.TryGetValue(Name, out var pp))
-            PostProcessBuffers.Remove(Name);
-    }
-
-
-
-
-
-    public byte ColorBuffersCount = 1;
-    public bool UseDepthStencilBuffer = true;
-    public bool UseCubeMap = false;
-    public bool UseHDRColorBuffers = true;
-    public bool EnableDepthComparison = false;
-
-
-
-    /*
-            public void ClearDepthStencil()
-            {
-                var col = Color.Black.ToVector4();
-
-                var count = useCubeMap ? 1 : 6;
-                for (byte i = 0; i < count; i++)
+                if (ColorTargetCount != 0)
                 {
-                    ClearFramebufferDepthStencil(FrameBuffer, i);
+                    for (int i = 0; i < ColorTargetCount; i++)
+                        ColorTargets[i] = SampleCount != 0 ? BackendTexture2DMSAttachmentReference.CreateAttachment(requiredRes, ColorTargetFormat, SampleCount) : BackendTexture2DReference.CreateAttachment(requiredRes, ColorTargetFormat, MipCount);
                 }
+
+                if (CreateDepthStencil)
+                    DepthStencilTarget = SampleCount != 0 ? BackendTexture2DMSAttachmentReference.CreateAttachment(requiredRes, TextureFormats.Depth24_Stencil8, SampleCount) : BackendTexture2DReference.CreateAttachment(requiredRes, TextureFormats.Depth24_Stencil8, MipCount);
+
+
+                FrameBuffer = LogicalFrameBufferObject.Create(ColorTargets, DepthStencilTarget);
+
+                return true;
             }
 
-            public void ClearColor()
-            {
-                var col = Color.Black.ToVector4();
-
-                var count = FrameBuffer.Type == TextureTypes.Texture2D ? 1 : 6;
-                for (byte i = 0; i < count; i++)
-                {
-                    for (byte x = 0; x < ColorBufferTextures.Length; x++)
-                    {
-                        ClearFramebufferColorAttachment(FrameBuffer, col, x, i);
-                    }
-                }
-            }
-
-    */
-
-
-
-
-    private void Setup()
-    {
-
-
-        for (int i = 0; i < ColorBuffersCount; i++)
-        {
-            if (ColorBufferTextures == null)
-                ColorBufferTextures = new BackendTextureAndSamplerReferencesPair[ColorBuffersCount];
-
-            ColorBufferTextures[i] = new BackendTextureAndSamplerReferencesPair(
-                BackendTextureReference.Create(new Vector3<uint>(Resolution.X, Resolution.Y, 1), UseCubeMap ? TextureTypes.TextureCubeMap : TextureTypes.Texture2D, UseHDRColorBuffers ? TextureFormats.RGBA16_SFLOAT : TextureFormats.RGBA8_UNORM, true),
-
-                BackendSamplerReference.Get(new() { MinFilter = TextureFilters.Linear, MagFilter = TextureFilters.Linear, EnableDepthComparison = false, WrapMode = TextureWrapModes.ClampToEdge, MipmapFilter = TextureFilters.Linear })
-                );
-
+            return false;
         }
-
-
-        if (UseDepthStencilBuffer)
-        {
-            DepthStencilBufferTexture = new BackendTextureAndSamplerReferencesPair(
-                BackendTextureReference.Create(new Vector3<uint>(Resolution.X, Resolution.Y, 1), UseCubeMap ? TextureTypes.TextureCubeMap : TextureTypes.Texture2D, TextureFormats.DepthStencil, true),
-
-                BackendSamplerReference.Get(new() { MinFilter = TextureFilters.Linear, MagFilter = TextureFilters.Linear, EnableDepthComparison = EnableDepthComparison, WrapMode = TextureWrapModes.ClampToEdge, MipmapFilter = TextureFilters.Linear })
-                );
-        }
-
-
-        if (PostProcessBuffers != null)
-        {
-            foreach (var k in PostProcessBuffers)
-            {
-                k.Value.Evaluate(this);
-            }
-        }
-
-
-
-        FrameBuffer = LogicalFrameBufferObject.Create(ColorBufferTextures == null ? null : ColorBufferTextures.Select(x => x.Texture).ToArray(), DepthStencilBufferTexture == null ? null : DepthStencilBufferTexture.Texture);
-
     }
 
 
 
 
-    private static Matrix4x4[] CubemapDirections = [
-                Matrix4x4.CreateLookAt(Vector3.Zero, Vector3.UnitX, Vector3.UnitY),
-                    Matrix4x4.CreateLookAt(Vector3.Zero,-Vector3.UnitX, Vector3.UnitY),
-
-                    Matrix4x4.CreateLookAt(Vector3.Zero,-Vector3.UnitY, -Vector3.UnitZ),
-                    Matrix4x4.CreateLookAt(Vector3.Zero,Vector3.UnitY, Vector3.UnitZ),
-
-                    Matrix4x4.CreateLookAt(Vector3.Zero,-Vector3.UnitZ, Vector3.UnitY),
-                    Matrix4x4.CreateLookAt(Vector3.Zero,Vector3.UnitZ, Vector3.UnitY),
-                    ];
+    private readonly Dictionary<string, CameraFrameBuffer> CameraFrameBuffers = new();
 
 
+
+
+
+    /// <summary>
+    /// Creates a fixed-size named framebuffer owned by this camera.
+    /// </summary>
+    public unsafe void CreateFixedSizeCameraFrameBuffer(string name,
+                                                        Vector2<uint> resolution,
+
+                                                        byte colorTargetCount,
+                                                        TextureFormats colorTargetFormat,
+
+                                                        bool createDepthStencil,
+
+                                                        TextureMipCount mipCount)
+    {
+        CameraFrameBuffers[name] = new CameraFrameBuffer(this, CameraFrameBuffer.SizeMode.Fixed, (Vector2)resolution, colorTargetCount, colorTargetFormat, createDepthStencil, 0, mipCount);
+    }
+
+    /// <summary>
+    /// Creates a named framebuffer owned by this camera, which will be sized according to <see cref="Resolution"/> * <paramref name="scalingFactor"/>.
+    /// </summary>
+    /// <param name="name"></param>
+    /// <param name="scalingFactor"></param>
+    public unsafe void CreateDynamicSizeCameraFrameBuffer(string name,
+                                                          Vector2 scalingFactor,
+
+                                                          byte colorTargetCount,
+                                                          TextureFormats colorTargetFormat,
+
+                                                          bool createDepthStencil,
+                                                          
+                                                          TextureMipCount mipCount)
+
+    {
+        CameraFrameBuffers[name] = new CameraFrameBuffer(this, CameraFrameBuffer.SizeMode.Multiplier, scalingFactor, colorTargetCount, colorTargetFormat, createDepthStencil, 0, mipCount);
+    }
 
 
 
@@ -275,32 +246,118 @@ public partial class Camera : GameObject
 
 
     /// <summary>
-    /// Defines a subpass to be used by <see cref="Render(Span{DrawObject}, CameraDrawSortMode)"/>.
+    /// Creates a fixed-size named framebuffer owned by this camera.
     /// </summary>
-    public unsafe readonly struct CameraSubpassDefinition(
+    public unsafe void CreateMultiSampleFixedSizeCameraFrameBuffer(string name,
+                                                        Vector2<uint> resolution,
 
-        FrameBufferPipelineStage frameBufferPipelineStageReq,
-        
-        CameraDrawSortMode ordering,
+                                                        byte colorTargetCount,
+                                                        TextureFormats colorTargetFormat,
 
-        IList<DrawObject> objectWhiteList,
+                                                        bool createDepthStencil,
 
-        delegate*<MaterialResource, MaterialResource.MaterialResolution> materialResolver,
-
-        delegate*<ReadOnlySpan<(DrawObject obj, float distance)>, delegate*<MaterialResource, MaterialResource.MaterialResolution>, Camera, void> drawCallIssuer = null
-
-    )
+                                                        MultiSampleCount sampleCount)
     {
-        public readonly FrameBufferPipelineStage FrameBufferPipelineStageReq = frameBufferPipelineStageReq;
-
-        public readonly CameraDrawSortMode Ordering = ordering;
-
-        public readonly WeakObjRef<IList<DrawObject>> ObjectWhiteList = objectWhiteList.GetWeakRef();
-
-        public readonly delegate*<MaterialResource, MaterialResource.MaterialResolution> MaterialResolver = materialResolver;
-
-        public readonly delegate*<ReadOnlySpan<(DrawObject obj, float distance)>, delegate*<MaterialResource, MaterialResource.MaterialResolution>, Camera, void> DrawCallIssuer = drawCallIssuer;
+        sampleCount.Validate();
+        CameraFrameBuffers[name] = new CameraFrameBuffer(this, CameraFrameBuffer.SizeMode.Fixed, (Vector2)resolution, colorTargetCount, colorTargetFormat, createDepthStencil, sampleCount, 1);
     }
+
+    /// <summary>
+    /// Creates a named framebuffer owned by this camera, which will be sized according to <see cref="Resolution"/> * <paramref name="scalingFactor"/>.
+    /// </summary>
+    /// <param name="name"></param>
+    /// <param name="scalingFactor"></param>
+    public unsafe void CreateMultiSampleDynamicSizeCameraFrameBuffer(string name,
+                                                          Vector2 scalingFactor,
+
+                                                          byte colorTargetCount,
+                                                          TextureFormats colorTargetFormat,
+
+                                                          bool createDepthStencil,
+
+                                                          MultiSampleCount sampleCount)
+
+    {
+        sampleCount.Validate();
+        CameraFrameBuffers[name] = new CameraFrameBuffer(this, CameraFrameBuffer.SizeMode.Multiplier, scalingFactor, colorTargetCount, colorTargetFormat, createDepthStencil, sampleCount, 1);
+    }
+
+
+
+
+
+
+
+
+
+    public LogicalFrameBufferObject GetCameraFrameBuffer(string Name) 
+        => CameraFrameBuffers[Name].FrameBuffer;
+
+    public void FreeCameraFrameBuffer(string Name)
+        => CameraFrameBuffers?.Remove(Name);
+
+
+
+
+
+    public readonly record struct DrawObjectAndDistance(DrawObject Object, float Distance);
+    public readonly record struct CameraMatrices(Matrix4x4 ProjectionMatrix, Matrix4x4 ViewMatrix);
+
+
+
+
+    public static unsafe ArrayFromPool<DrawObject> CullDrawObjectList(IList<DrawObject> array, in Matrix4x4 viewMatrix, in Matrix4x4 projectionMatrix)
+    {
+        var ret = ArrayFromPool<DrawObject>.Rent(array.Count);
+
+
+        var frustum = EngineMath.ExtractFrustumPlanes(viewMatrix * projectionMatrix);
+
+        var count = 0;
+
+        for (int i = 0; i < array.Count; i++)
+        {
+            var entry = array[i];
+
+            if (entry.IsVisibleInTree() && (!entry.IsEnableCameraCullingInTree() || frustum.ContainsAABB(entry.GetOrRecalculateCachedGlobalAABB())))
+            {
+                ret[count] = entry;
+                count++;
+            }
+        }
+
+        ret.Length = count;
+
+        return ret;
+    }
+
+
+
+    public static unsafe ArrayFromPool<DrawObjectAndDistance> CullDrawObjectList(ReadOnlySpan<DrawObjectAndDistance> array, in Matrix4x4 viewMatrix, in Matrix4x4 projectionMatrix)
+    {
+        var ret = ArrayFromPool<DrawObjectAndDistance>.Rent(array.Length);
+
+
+        var frustum = EngineMath.ExtractFrustumPlanes(viewMatrix * projectionMatrix);
+
+        var count = 0;
+
+        for (int i = 0; i < array.Length; i++)
+        {
+            var entry = array[i];
+
+            if (entry.Object.IsVisibleInTree() && (!entry.Object.IsEnableCameraCullingInTree() || frustum.ContainsAABB(entry.Object.GetOrRecalculateCachedGlobalAABB())))
+            {
+                ret[count] = entry;
+                count++;
+            }
+        }
+
+        ret.Length = count;
+
+        return ret;
+    }
+
 
 
 
@@ -315,253 +372,140 @@ public partial class Camera : GameObject
 
 
 
+    public static ArrayFromPool<DrawObjectAndDistance> GetDrawObjectSquaredDistances(IList<DrawObject> list, Vector3 fromPosition)
+    {
+        var ret = ArrayFromPool<DrawObjectAndDistance>.Rent(list.Count);
+
+        for (int i = 0; i < list.Count; i++)
+        {
+            var obj = list[i];
+            ret[i] = new DrawObjectAndDistance(obj, obj.GlobalPosition.DistanceToSquared(fromPosition));
+        }
+
+        return ret;
+    }
 
 
-    /// <summary>
-    /// Renders objects according to a defined programmable render pipeline.
-    /// </summary>
-    /// <param name="subpasses"></param>
-    public unsafe void Render(ReadOnlySpan<CameraSubpassDefinition> subpasses)
+
+
+    public static ArrayFromPool<DrawObjectAndDistance> SortDrawObjects(
+        ReadOnlySpan<DrawObjectAndDistance> arr,
+        CameraDrawSortMode order)
     {
 
-        
-
-        ///////////////////////////////////////////////////////////////////////////////////////
-        //for each internal logical framebuffer, call MainRenderLogic. cubemaps cameras have 6, other cameras just have 1
+        int n = arr.Length;
 
 
-        if (UseCubeMap)
+        if (n <= 1 || order == CameraDrawSortMode.Unordered)
+            return ArrayFromPool<DrawObjectAndDistance>.RentClone(arr);
+
+
+
+        if (n < 1_500)
         {
-            var t = GlobalTransform;
+            var result = ArrayFromPool<DrawObjectAndDistance>.RentClone(arr);
 
-            for (byte i = 0; i < 6; i++)
+            Array.Sort(
+                result.Array,
+                0,
+                result.Length,
+                Comparer<DrawObjectAndDistance>.Create(
+                    static (a, b) => a.Distance.CompareTo(b.Distance)));
+
+            if (order == CameraDrawSortMode.FarToNear)
+                Array.Reverse(result.Array, 0, result.Length);
+
+
+            return result;
+        }
+
+
+
+        // Radix sort below for large counts
+
+
+
+
+        DrawObjectAndDistance[] bufferA =
+            ArrayPool<DrawObjectAndDistance>.Shared.Rent(n);
+
+        DrawObjectAndDistance[] bufferB =
+            ArrayPool<DrawObjectAndDistance>.Shared.Rent(n);
+
+
+
+        uint[] keys = ArrayPool<uint>.Shared.Rent(n);
+        uint[] keysB = ArrayPool<uint>.Shared.Rent(n);
+
+
+
+        try
+        {
+            Span<int> count = stackalloc int[256];
+
+            arr.CopyTo(bufferA);
+
+            var src = bufferA;
+            var dst = bufferB;
+            var ksrc = keys;
+            var kdst = keysB;
+
+            for (int i = 0; i < n; i++)
             {
-                GlobalTransform = t * CubemapDirections[i];
-                MainRenderLogic(i, subpasses);
+                uint x = BitConverter.SingleToUInt32Bits(src[i].Distance);
+                ksrc[i] = (x & 0x80000000u) != 0 ? ~x : x ^ 0x80000000u;
             }
 
-            GlobalTransform = t;
+            const int RADIX = 256;
 
-        }
-        else
-        {
-            MainRenderLogic(0, subpasses);
-        }
-
-
-
-
-        void MainRenderLogic(byte framebuffer, ReadOnlySpan<CameraSubpassDefinition> subpasses)
-        {
-
-            Span<FrameBufferPipelineStage> stages = stackalloc FrameBufferPipelineStage[subpasses.Length];
-            for (int i = 0; i < subpasses.Length; i++)
-                stages[i] = subpasses[i].FrameBufferPipelineStageReq;
-
-
-            var pipelineOperator = FrameBufferPipelineStateOperator.StartFrameBufferPipeline(FrameBuffer, stages);
-
-
-
-
-            Span<Plane> frustumPlanes = stackalloc Plane[6];
-            ExtractFrustumPlanes(GetViewMatrix() * GetProjectionMatrix(), frustumPlanes);
-
-
-
-            ///////////////////////////////////////////////////////////////////////////////////////
-            //for each subpass..
-
-
-
-            for (int sp = 0; sp < subpasses.Length; sp++)
+            for (int shift = 0; shift < 32; shift += 8)
             {
-                var subpass = subpasses[sp];
-                var whitelist = subpass.ObjectWhiteList.Dereference();
+                for (int i = 0; i < RADIX; i++)
+                    count[i] = 0;
 
-                ArrayPools.ArrayFromPool<(DrawObject, float)> objs;
+                for (int i = 0; i < n; i++)
+                    count[(int)((ksrc[i] >> shift) & 255)]++;
 
-
-
-                ///////////////////////////////////////////////////////////////////////////////////////
-                //get a list of the visible and in camera objects...
-
-                lock (whitelist)
+                int sum = 0;
+                for (int i = 0; i < RADIX; i++)
                 {
-                    objs = ArrayPools.RentArrayFromPool<(DrawObject, float)>(whitelist.Count);
-
-                    var idx = 0;
-                    for (int i = 0; i < whitelist.Count; i++)
-                    {
-                        var o = whitelist[i];
-
-                        if (o.IsVisibleInTree() && IsAABBInFrustum(o.GetOrRecalculateCachedGlobalAABB(), frustumPlanes))
-                            objs[idx++] = (o, subpass.Ordering != CameraDrawSortMode.Unordered ? o.GlobalPosition.DistanceToSquared(GlobalPosition) : 0);
-                    }
-
-                    objs.Length = idx;
+                    int c = count[i];
+                    count[i] = sum;
+                    sum += c;
                 }
 
-
-
-
-
-                ///////////////////////////////////////////////////////////////////////////////////////
-                //..sort them if needed..
-
-                //if (subpass.Ordering != CameraDrawSortMode.Unordered)
-                //    ((Span<(DrawObject, float)>)objs).RadixSort(subpass.Ordering == CameraDrawSortMode.FarToNear);
-
-
-                //throw new NotImplementedException();
-
-
-                ///////////////////////////////////////////////////////////////////////////////////////
-                //..and draw them.
-
-
-                for (int i = 0; i < objs.Length; i++)
+                for (int i = 0; i < n; i++)
                 {
+                    uint k = ksrc[i];
+                    int bucket = (int)((k >> shift) & 255);
+                    int pos = count[bucket]++;
 
-                    var obj = objs[i].Item1;
-                    if (!obj.DrawnThisFrame)
-                        objs[i].Item1.PreDraw();
+                    dst[pos] = src[i];
+                    kdst[pos] = k;
                 }
 
-
-
-                if (subpass.DrawCallIssuer != null) subpass.DrawCallIssuer(objs, subpass.MaterialResolver, this);
-
-                else
-                {
-                    for (int i = 0; i < objs.Length; i++)
-                        objs[i].Item1.Draw(subpass.MaterialResolver);
-                }
-
-
-
-                ///////////////////////////////////////////////////////////////////////////////////////
-                //return object sorting array
-
-                objs.Return();
-
-
-
-                pipelineOperator.Advance();
+                (src, dst) = (dst, src);
+                (ksrc, kdst) = (kdst, ksrc);
             }
 
+            var result = ArrayFromPool<DrawObjectAndDistance>.Rent(n);
 
+            src.AsSpan(0, n).CopyTo(result.Array);
+
+            if (order == CameraDrawSortMode.FarToNear)
+                Array.Reverse(result.Array, 0, result.Length);
+
+            return result;
         }
-
-
-
-
-        static bool IsAABBInFrustum(AABB bounds, Span<Plane> frustumPlanes)
+        finally
         {
-
-            if (bounds == AABB.MaxValue) return true;
-
-
-
-            var maxX = bounds.Center.X + bounds.Extents.X;
-            var maxY = bounds.Center.Y + bounds.Extents.Y;
-            var maxZ = bounds.Center.Z + bounds.Extents.Z;
-
-            var minX = bounds.Center.X - bounds.Extents.X;
-            var minY = bounds.Center.Y - bounds.Extents.Y;
-            var minZ = bounds.Center.Z - bounds.Extents.Z;
-
-
-
-            for (int i = 0; i < frustumPlanes.Length; i++)
-            {
-                var plane = frustumPlanes[i];
-
-                Vector3 positive = new Vector3(
-                    plane.Normal.X >= 0 ? maxX : minX,
-                    plane.Normal.Y >= 0 ? maxY : minY,
-                    plane.Normal.Z >= 0 ? maxZ : minZ
-                );
-
-                Vector3 negative = new Vector3(
-                    plane.Normal.X >= 0 ? minX : maxX,
-                    plane.Normal.Y >= 0 ? minY : maxY,
-                    plane.Normal.Z >= 0 ? minZ : maxZ
-                );
-
-
-                if (Vector3.Dot(plane.Normal, positive) + plane.D < 0)
-                    return false;
-            }
-
-            return true;
-        }
-
-
-
-
-        static void ExtractFrustumPlanes(Matrix4x4 viewProj, Span<Plane> frustumPlanes)
-        {
-
-            // Left Plane
-            frustumPlanes[0] = new Plane(
-                viewProj.M14 + viewProj.M11,
-                viewProj.M24 + viewProj.M21,
-                viewProj.M34 + viewProj.M31,
-                viewProj.M44 + viewProj.M41
-            );
-
-            // Right Plane
-            frustumPlanes[1] = new Plane(
-                viewProj.M14 - viewProj.M11,
-                viewProj.M24 - viewProj.M21,
-                viewProj.M34 - viewProj.M31,
-                viewProj.M44 - viewProj.M41
-            );
-
-            // Bottom Plane
-            frustumPlanes[2] = new Plane(
-                viewProj.M14 + viewProj.M12,
-                viewProj.M24 + viewProj.M22,
-                viewProj.M34 + viewProj.M32,
-                viewProj.M44 + viewProj.M42
-            );
-
-            // Top Plane
-            frustumPlanes[3] = new Plane(
-                viewProj.M14 - viewProj.M12,
-                viewProj.M24 - viewProj.M22,
-                viewProj.M34 - viewProj.M32,
-                viewProj.M44 - viewProj.M42
-            );
-
-            // Near Plane
-            frustumPlanes[4] = new Plane(
-                viewProj.M14 + viewProj.M13,
-                viewProj.M24 + viewProj.M23,
-                viewProj.M34 + viewProj.M33,
-                viewProj.M44 + viewProj.M43
-            );
-
-            // Far Plane
-            frustumPlanes[5] = new Plane(
-                viewProj.M14 - viewProj.M13,
-                viewProj.M24 - viewProj.M23,
-                viewProj.M34 - viewProj.M33,
-                viewProj.M44 - viewProj.M43
-            );
-
-            // Normalize
-            for (int i = 0; i < 6; i++)
-            {
-                float length = frustumPlanes[i].Normal.Length();
-                frustumPlanes[i] = new Plane(
-                    frustumPlanes[i].Normal / length,
-                    frustumPlanes[i].D / length
-                );
-            }
+            ArrayPool<DrawObjectAndDistance>.Shared.Return(bufferA, false);
+            ArrayPool<DrawObjectAndDistance>.Shared.Return(bufferB, false);
+            ArrayPool<uint>.Shared.Return(keys, false);
+            ArrayPool<uint>.Shared.Return(keysB, false);
         }
     }
+
 
 
 }

@@ -6,7 +6,6 @@ namespace Engine.Core;
 using System;
 using System.Collections.Generic;
 using System.Collections.Immutable;
-using System.Diagnostics;
 using System.Linq;
 using System.Numerics;
 using System.Runtime.CompilerServices;
@@ -107,8 +106,12 @@ public static class Rendering
             var details = new FrameBufferPipelineDetails()
             {
                 ColorAttachmentCount = (byte)framebuffer.ColorAttachments.Length,
+
                 HasDepthStencil = framebuffer.DepthStencil != null,
+
+                SampleCount = framebuffer.SampleCount,
             };
+
 
 
             fixed (FrameBufferPipelineStage* p = stages)
@@ -120,14 +123,13 @@ public static class Rendering
 
 
             for (int i = 0; i < framebuffer.ColorAttachments.Length; i++)
-                details.ColorFormats[i] = (byte)framebuffer.ColorAttachments[i].TextureFormat;
+                details.ColorFormats[i] = (byte)((BackendTextureReference)framebuffer.ColorAttachments[i]).TextureFormat;
 
 
             var get = BackendFrameBufferPipelineReference.Get(details);
 
             if (framebuffer.GetFramebufferObjectForPipeline(get) == null)
                 framebuffer.AddFramebufferObjectForPipeline(get);
-
 
 
             return new FrameBufferPipelineStateOperator(framebuffer, get);
@@ -143,9 +145,17 @@ public static class Rendering
             Pipeline = pipeline;
             Fbo = fbo;
 
+            var realFBO = fbo.GetFramebufferObjectForPipeline(Pipeline);
+
+
             StageCount = Pipeline.Details.StageCount;
 
-            PushDeferredRenderThreadCommand( ( fbo.GetFramebufferObjectForPipeline(Pipeline).GetWeakRef(), pipeline.GetWeakRef() ), &Execute);
+
+            ActiveFrameBufferObject = realFBO;
+            ActiveFramebufferPipeline = pipeline;
+
+
+            PushDeferredRenderThreadCommand( (realFBO.GetWeakRef(), pipeline.GetWeakRef() ), &Execute);
 
             static unsafe void Execute((WeakObjRef<BackendFrameBufferObjectReference> fbo, WeakObjRef<BackendFrameBufferPipelineReference> pipeline)* ptr)
                 => BeginFrameBufferPipeline(ptr->fbo.Dereference(), ptr->pipeline.Dereference());
@@ -176,7 +186,7 @@ public static class Rendering
                     => EndFrameBufferPipeline(ptr->Dereference());
             }
 
-            Stage++;
+            ActiveFrameBufferPipelineStage = Stage++;
         }
 
     }
@@ -193,7 +203,8 @@ public static class Rendering
 
 
     /// <summary>
-    /// Provides an abstract base for implementing an instance pool with minimal state.
+    /// Provides an abstract base for implementing an instance pool, where instances can be created and/or reused if they meet some critera encoded into <typeparamref name="TArg"/>.
+    /// <br/> The order of instance reuse is not guaranteed.
     /// </summary>
     /// <typeparam name="TInstance"></typeparam>
     /// <typeparam name="TArg"></typeparam>
@@ -282,7 +293,8 @@ public static class Rendering
 
 
     /// <summary>
-    /// Provides an abstract base for implementing an instance pool with minimal state.
+    /// Provides an abstract base for implementing an instance pool.
+    /// <br/> The order of instance reuse is guaranteed to be the same as the order of creation.
     /// </summary>
     /// <typeparam name="TInstance"></typeparam>
     public abstract class PoolingBase<TInstance>
@@ -341,9 +353,44 @@ public static class Rendering
 
 
 
+    public class FixedPooledBuffer :
+        PoolingBase<BackendBufferReference>
+    {
+
+        public readonly BufferUsageFlags UsageFlags;
+        public readonly ReadWriteFlags ReadWriteFlags;
 
 
-    public class PooledBuffer :
+        public readonly ShaderMetadata.ShaderDataBufferMetadata Metadata;
+
+
+        private FixedPooledBuffer(BufferUsageFlags usageFlags, ReadWriteFlags readWriteFlags, ShaderMetadata.ShaderDataBufferMetadata metadata) : base()
+        {
+            UsageFlags = usageFlags;
+            ReadWriteFlags = readWriteFlags;
+            Metadata = metadata;
+        }
+
+
+        public static FixedPooledBuffer Create(BufferUsageFlags usageFlags, ReadWriteFlags readWriteFlags)
+            => new(usageFlags, readWriteFlags, null);
+
+
+        public static FixedPooledBuffer CreateDataBufferFromMetadata(ShaderMetadata.ShaderDataBufferMetadata metadata, BufferUsageFlags extraUsageFlags = default, ReadWriteFlags extraAccessFlags = default)
+            => new(metadata.UsageFlags | extraUsageFlags, metadata.ReadWriteFlags | extraAccessFlags, metadata);
+
+
+
+        protected override BackendBufferReference CreateNew()
+            => Metadata == null ? BackendBufferReference.Create(Metadata.SizeRequirement, UsageFlags, ReadWriteFlags) : (BackendBufferReference)BackendBufferReference.CreateDataBufferFromMetadata(Metadata, extraUsageFlags: UsageFlags, extraAccessFlags: ReadWriteFlags);
+
+
+    }
+
+
+
+
+    public class FlexiblePooledBuffer :
         PoolingBase<BackendBufferReference, uint>
     {
 
@@ -354,7 +401,7 @@ public static class Rendering
         public readonly ShaderMetadata.ShaderDataBufferMetadata Metadata;
 
 
-        private PooledBuffer(BufferUsageFlags usageFlags, ReadWriteFlags readWriteFlags, ShaderMetadata.ShaderDataBufferMetadata metadata) : base()
+        private FlexiblePooledBuffer(BufferUsageFlags usageFlags, ReadWriteFlags readWriteFlags, ShaderMetadata.ShaderDataBufferMetadata metadata) : base()
         {
             UsageFlags = usageFlags;
             ReadWriteFlags = readWriteFlags;
@@ -362,16 +409,13 @@ public static class Rendering
         }
 
 
-        public static PooledBuffer Create(BufferUsageFlags usageFlags, ReadWriteFlags readWriteFlags)
+        public static FlexiblePooledBuffer Create(BufferUsageFlags usageFlags, ReadWriteFlags readWriteFlags)
             => new(usageFlags, readWriteFlags, null);
 
 
-        public static PooledBuffer CreateDataBufferFromMetadata(ShaderMetadata.ShaderDataBufferMetadata metadata, BufferUsageFlags extraUsageFlags = default, ReadWriteFlags extraAccessFlags = default)
+        public static FlexiblePooledBuffer CreateDataBufferFromMetadata(ShaderMetadata.ShaderDataBufferMetadata metadata, BufferUsageFlags extraUsageFlags = default, ReadWriteFlags extraAccessFlags = default)
             => new(metadata.UsageFlags | extraUsageFlags, metadata.ReadWriteFlags | extraAccessFlags, metadata);
 
-
-
-        public BackendBufferReference GetReference() => GetCurrent();
 
 
         protected override BackendBufferReference CreateNew(uint size)
@@ -386,8 +430,6 @@ public static class Rendering
 
 
 
-
-
     public class PooledResourceSet :
         PoolingBase<BackendResourceSetReference>
     {
@@ -398,12 +440,11 @@ public static class Rendering
             => Metadata = metadata;
 
 
+        public static PooledResourceSet CreateFromMetadata(string name)
+            => new(GlobalResourceSetMetadata[name]);
+
         public static PooledResourceSet CreateFromMetadata(ShaderMetadata.ShaderResourceSetMetadata metadata)
             => new(metadata);
-
-
-        public BackendResourceSetReference GetReference() => GetCurrent();
-
 
         protected override BackendResourceSetReference CreateNew()
             => BackendResourceSetReference.CreateFromMetadata(Metadata);
@@ -430,20 +471,26 @@ public static class Rendering
     public class LogicalFrameBufferObject
     {
 
-        public readonly ImmutableArray<BackendTextureReference> ColorAttachments;
-        public readonly BackendTextureReference DepthStencil;
+        public readonly MultiSampleCount SampleCount;
 
-        public readonly Vector2<uint> Dimensions;
 
-        public readonly TextureTypes Type;
+        public readonly ImmutableArray<IFramebufferAttachment> ColorAttachments;
+        public readonly IFramebufferAttachment DepthStencil;
+
+
+        public readonly Vector2<uint> Size;
+
 
 
         private readonly Dictionary<BackendFrameBufferPipelineReference, BackendFrameBufferObjectReference> Framebuffers = new(); 
 
 
+
+
+
         public void AddFramebufferObjectForPipeline(BackendFrameBufferPipelineReference pipeline)
         {
-            var fbo = BackendFrameBufferObjectReference.Create(ColorAttachments.AsSpan()[..int.Min(ColorAttachments.Length, pipeline.Details.ColorAttachmentCount)], pipeline.Details.HasDepthStencil ? DepthStencil : null, pipeline, Dimensions);
+            var fbo = BackendFrameBufferObjectReference.Create(ColorAttachments.AsSpan()[..int.Min(ColorAttachments.Length, pipeline.Details.ColorAttachmentCount)], pipeline.Details.HasDepthStencil ? DepthStencil : null, pipeline, Size);
 
             if (!Framebuffers.TryAdd(pipeline, fbo)) throw new Exception();
         }
@@ -466,40 +513,51 @@ public static class Rendering
         }
 
 
-        private LogicalFrameBufferObject(ImmutableArray<BackendTextureReference> colorAttachments, BackendTextureReference depthstencil, Vector2<uint> dimensions, TextureTypes type)
+        private LogicalFrameBufferObject(ImmutableArray<IFramebufferAttachment> colorAttachments, IFramebufferAttachment depthstencil, Vector2<uint> size, MultiSampleCount sampleCount)
         {
             ColorAttachments = colorAttachments;
             DepthStencil = depthstencil;
-            Dimensions = dimensions;
-            Type = type;
+            Size = size;
+            SampleCount = sampleCount;
         }
 
 
 
 
-
-        public static unsafe LogicalFrameBufferObject Create(ReadOnlySpan<BackendTextureReference> colorTargets, BackendTextureReference depthStencilTarget)
+        public static unsafe LogicalFrameBufferObject Create(ReadOnlySpan<IFramebufferAttachment> colorTargets, IFramebufferAttachment depthStencilTarget)
         {
 
 #if DEBUG
-            var chk = colorTargets.ToArray().ToList();
-            if (depthStencilTarget != null) chk.Add(depthStencilTarget);
+            var chk = colorTargets.ToArray().Cast<BackendTextureReference>().ToList();
+            if (depthStencilTarget != null) chk.Add((BackendTextureReference) depthStencilTarget);
 
             if (chk.Count == 0)
                 throw new Exception("no attachments given");
 
             foreach (var k in chk)
             {
-                if ((!k.Valid) || k.Dimensions != chk[0].Dimensions)
+                if (!k.Valid)
+                    throw new Exception("invalid attachment supplied");
+            }
+
+            foreach (var k in chk)
+            {
+                if (k.Size != chk[0].Size)
                     throw new Exception("attachment sizes dont match");
+            }
+
+            foreach (var k in chk)
+            {
+                if ((!k.Valid) || k.MultiSampleCount != chk[0].MultiSampleCount)
+                    throw new Exception("attachment sample counts dont match");
             }
 #endif
 
 
             //at least one color attachment or a depth stencil target needs to be given
-            var onecommon = colorTargets.Length != 0 ? colorTargets[0] : depthStencilTarget;
+            var onecommon = (BackendTextureReference)(colorTargets.Length != 0 ? colorTargets[0] : depthStencilTarget);
 
-            return new LogicalFrameBufferObject(ImmutableArray.Create(colorTargets), depthStencilTarget, new Vector2<uint>(onecommon.Dimensions.X, onecommon.Dimensions.Y), onecommon.TextureType);
+            return new LogicalFrameBufferObject(ImmutableArray.Create(colorTargets), depthStencilTarget, new Vector2<uint>(onecommon.Size.X, onecommon.Size.Y), onecommon.MultiSampleCount);
         }
     }
 
@@ -511,47 +569,42 @@ public static class Rendering
 
 
     [StructLayout(LayoutKind.Sequential, Pack = 1, Size = 12)]
-    private readonly record struct QuadVertex(Vector2 Position, byte U, byte V);
+    private readonly record struct QuadVertex(Vector2 Position, Vector2<byte> UV);
 
 
 
     /// <summary>
-    /// Defers a draw call for a basic arbitrary 2D quad with an optional texture.
+    /// Defers a draw call for a basic arbitrary 2D quad.
+    /// <br/> The given shader can accept the given resource set, under the name "Resources".
+    /// <br/> The shader can also accept the vec2 vertex attributes "Position" and "UV".
     /// </summary>
     /// <param name="bottomLeftNDC"></param>
     /// <param name="topRightNDC"></param>
-    /// <param name="texture"></param>
+    /// <param name="resources"></param>
+    /// <param name="shader"></param>
     public static void DrawQuad(Vector2 bottomLeftNDC,
                                 Vector2 topRightNDC,
-                                BackendTextureAndSamplerReferencesPair texture = null)
+                                BackendResourceSetReference resources,
+                                BackendShaderReference shader)
     {
 
 
-#if DEBUG
-        if (!CompiledQuadDrawShader) 
-            throw new Exception($"Call {nameof(InitQuadDrawDefaultShader)} from {nameof(Entry.InitShaders)} to enable this method");
-#endif
 
 
-        if (BasicQuadVertexBuffer == null)
-        {
-            BasicQuadVertexBuffer = PooledBuffer.Create(BufferUsageFlags.Vertex, ReadWriteFlags.CPUWrite);
-            BasicQuadDefaultShader = new NamedShaderReference(BasicQuadDefaultShaderName);
-            BasicQuadSetPool = PooledResourceSet.CreateFromMetadata(BasicQuadDefaultShader.Shader.Metadata.ResourceSets["Resources"].Metadata);
-        }
+        BasicQuadVertexBuffer ??= FlexiblePooledBuffer.Create(BufferUsageFlags.Vertex, ReadWriteFlags.CPUWrite);
 
 
 
 
         ReadOnlySpan<QuadVertex> bufData =
         [
-            new() { Position = bottomLeftNDC, U = 0,   V = 0 },
-            new() { Position = new(bottomLeftNDC.X, topRightNDC.Y), U = 0,   V = 255 },
-            new() { Position = topRightNDC, U = 255, V = 255 },
+            new(bottomLeftNDC, new(0, 0)),
+            new(new(bottomLeftNDC.X, topRightNDC.Y), new(0, 255)),
+            new(topRightNDC, new(255, 255)),
 
-            new() { Position = bottomLeftNDC, U = 0,   V = 0 },
-            new() { Position = topRightNDC, U = 255, V = 255 },
-            new() { Position = new(topRightNDC.X, bottomLeftNDC.Y), U = 255, V = 0 },
+            new(bottomLeftNDC, new(0, 0)),
+            new(topRightNDC, new(255, 255)),
+            new(new(topRightNDC.X, bottomLeftNDC.Y), new(255, 0)),
         ];
 
 
@@ -562,9 +615,6 @@ public static class Rendering
 
         buf.Write(bufData, 0, false);
 
-
-        BasicQuadSetPool.Advance();
-        BasicQuadSetPool.GetCurrent().SetResource("Texture", texture);
 
 
 
@@ -594,7 +644,7 @@ public static class Rendering
                         ((BackendBufferReference.IVertexBuffer)buf).GetWeakRef(),
                         new
                         (
-                            VertexAttributeBufferComponentFormat.Byte,
+                            VertexAttributeBufferComponentFormat.UByteNormalized,
                             12,
                             8,
                             VertexAttributeScope.PerVertex
@@ -605,10 +655,10 @@ public static class Rendering
 
             new UnmanagedKeyValueCollection<WeakObjRef<string>, WeakObjRef<BackendResourceSetReference>>()
             {
-                { "Resources".GetWeakRef(), BasicQuadSetPool.GetCurrent().GetWeakRef() }
+                { "Resources".GetWeakRef(), resources.GetWeakRef() }
             },
 
-            BasicQuadDefaultShader.Shader,
+            shader,
 
             new() { CullMode = CullMode.Disabled },
 
@@ -618,100 +668,18 @@ public static class Rendering
 
             null,
 
-            new(0, 6, 0, 1)
+            new(0, 6, 0, 1, default)
 
             );
 
     }
 
 
-
-    private static PooledBuffer BasicQuadVertexBuffer;
-    private static PooledResourceSet BasicQuadSetPool;
-
-
-    private static NamedShaderReference BasicQuadDefaultShader;
-
-
-    private const string BasicQuadDefaultShaderName = "___default_draw_quad";
-
-
-#if DEBUG
-    private static bool CompiledQuadDrawShader = false;
-#endif
-
-
-#if DEBUG
-    /// <summary>
-    /// Registers a basic default shader, which enables <see cref="DrawQuad(Vector2, Vector2, BackendTextureAndSamplerReferencesPair)"/>.
-    /// </summary>
-    public static void InitQuadDrawDefaultShader()
-    {
-
-        CompiledQuadDrawShader = true;
-
-
-
-        ShaderCompilation.RegisterShader(
-
-            shaderName: BasicQuadDefaultShaderName,
-
-            resourceSetNames:
-            [
-                "Resources"
-            ],
-
-            vertexSource:
-            """
-
-            in vec2 Position;
-            in vec2 UV;
-
-            out vec2 FragUV;
-            out vec4 FragColor;
-
-            void main()
-            {
-                FragUV = UV;
-                FragColor = vec4(1.0);
-                gl_Position = vec4(Position, 0.0, 1.0);
-            }
-
-            """,
-
-            fragmentSource:
-            """
-
-            layout(set = 0) uniform sampler2D Texture;
-
-            in vec2 FragUV;
-            in vec4 FragColor;
-
-            out vec4 FinalColor;
-
-            void main()
-            {
-                FinalColor = FragColor * texture(Texture, FragUV);
-            }
-
-            """,
-
-
-            languageHandler: ShaderCompilation.GLSL
-
-        );
-    }
-
-#endif
-
+    private static FlexiblePooledBuffer BasicQuadVertexBuffer;
 
     public static void ResetQuadDrawResources()
     {
-        if (BasicQuadVertexBuffer != null)
-        {
-            BasicQuadVertexBuffer.Reset();
-            BasicQuadSetPool.Reset();
-        }
+        BasicQuadVertexBuffer?.Reset();
     }
 
 
@@ -727,7 +695,7 @@ public static class Rendering
     /// <summary>
     /// Defers an arbitrary draw call.
     /// </summary>
-    /// <param name="Attributes"></param>
+    /// <param name="VertexAttributes"></param>
     /// <param name="ResourceSets"></param>
     /// <param name="Shader"></param>
     /// <param name="Rasterization"></param>
@@ -735,13 +703,11 @@ public static class Rendering
     /// <param name="DepthStencil"></param>
     /// <param name="IndexBuffer"></param>
     /// <param name="IndexingDetails"></param>
-    /// 
-
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static unsafe void Draw(
 
-        UnmanagedKeyValueCollection<WeakObjRef<string>, VertexAttributeDefinitionBufferPair.Struct> Attributes,
+        UnmanagedKeyValueCollection<WeakObjRef<string>, VertexAttributeDefinitionBufferPair.Struct> VertexAttributes,
         UnmanagedKeyValueCollection<WeakObjRef<string>, WeakObjRef<BackendResourceSetReference>> ResourceSets,
         BackendShaderReference Shader,
 
@@ -762,8 +728,8 @@ public static class Rendering
         {
             foreach (var kv in Shader.Metadata.VertexInputAttributes)
             {
-                if (!Attributes.TryGetUsingReference(kv.Key, out var _, out var _)) 
-                    throw new Exception($"Missing vertex attribute buffer '{kv.Key}'\nGiven Attributes:\n{Attributes.ToString()}");
+                if (!VertexAttributes.TryGetUsingReference(kv.Key, out var _, out var _)) 
+                    throw new Exception($"Missing vertex attribute buffer '{kv.Key}'\nGiven Attributes:\n{VertexAttributes.ToString()}");
             }
         }
 
@@ -786,152 +752,180 @@ public static class Rendering
                 {
                     var res = sp[i];
 
-                    if (res == null)
-                        throw new Exception($"Missing resource '{(res is BackendTextureAndSamplerReferencesPair ? set.Value.Dereference().Metadata.TexturesIndexed[i].Name : set.Value.Dereference().Metadata.BuffersIndexed[i].Name)}' in set '{set.Key.Dereference()}'");
+                    if (res.Binding == null)
+                        throw new Exception($"Missing resource '{res.Name}' in set '{set.Key.Dereference()}'");
 
                 }
             }
         }
 
+        if (IndexingDetails.End < IndexingDetails.Start)
+            throw new Exception();
 #endif
 
-        PushDeferredRenderThreadCommand(new DrawCommandStruct(Attributes, ResourceSets, Shader, Rasterization, Blending, DepthStencil, IndexBuffer, IndexingDetails));
-    }
 
 
 
+        if (IndexingDetails.End == IndexingDetails.Start) return;
 
 
-    private struct DrawCommandStruct(UnmanagedKeyValueCollection<WeakObjRef<string>, VertexAttributeDefinitionBufferPair.Struct> attributeCollection,
-                                     UnmanagedKeyValueCollection<WeakObjRef<string>, WeakObjRef<BackendResourceSetReference>> resourceSetCollection,
-                                     BackendShaderReference shader,
-                                     RasterizationDetails rasterization,
-                                     BlendState blending,
-                                     DepthStencilState depthStencil,
-                                     BackendBufferReference.IIndexBuffer indexBuffer,
-                                     IndexingDetails drawRange) : IDeferredCommand<DrawCommandStruct>
-    {
-
-        private UnmanagedKeyValueCollection<WeakObjRef<string>, VertexAttributeDefinitionBufferPair.Struct> AttributeCollection = attributeCollection;
-        private UnmanagedKeyValueCollection<WeakObjRef<string>, WeakObjRef<BackendResourceSetReference>> ResourceSetCollection = resourceSetCollection;
-        private WeakObjRef<BackendShaderReference> ShaderHandle = shader.GetWeakRef();
-
-        private RasterizationDetails Rasterization = rasterization;
-        private BlendState Blending = blending;
-        private DepthStencilState DepthStencil = depthStencil;
-
-        private WeakObjRef<BackendBufferReference.IIndexBuffer> IndexBufferHandle = indexBuffer == null ? default : indexBuffer.GetWeakRef();
-
-        private IndexingDetails IndexingDetails = drawRange;
-
-
-
-        public static unsafe void Execute(DrawCommandStruct* self)
+        var draw = new Rendering_Draw() 
         {
+            idxBuffer = IndexBuffer.GetWeakRef(), 
+            idxDetails = IndexingDetails 
+        };
 
 
-            if (self->IndexingDetails.End == self->IndexingDetails.Start) return;
 
+        PipelineAttributeDetails layoutdetails = new();
+        byte count = 0;
+
+        foreach (var kv in Shader.Metadata.VertexInputAttributes)
+        {
+            var ShaderAttributeLocation = kv.Value.Location;
+            var ShaderDataFormat = kv.Value.Metadata.Format;
+
+
+
+
+            if (VertexAttributes.TryGetUsingReference(kv.Key, out var keyHandle, out var value))
+            {
+                var val = value;
+
+
+                layoutdetails.Attributes[count] = new PipelineAttributeDetails.PipelineAttributeSpec(location: ShaderAttributeLocation,
+                                                                                                     sourceFormat: val.Definition.ComponentFormat,
+                                                                                                     finalFormat: ShaderDataFormat,
+                                                                                                     stride: val.Definition.Stride,
+                                                                                                     offset: val.Definition.Offset,
+                                                                                                     scope: val.Definition.Scope);
+
+
+                draw.attrs[count] = value;
+            }
+
+            else
+            {
+                layoutdetails.Attributes[count] = new PipelineAttributeDetails.PipelineAttributeSpec(location: ShaderAttributeLocation,
+                                                                                                     sourceFormat: VertexAttributeBufferComponentFormat.UByteNormalized,
+                                                                                                     finalFormat: ShaderDataFormat,
+                                                                                                     stride: 0,
+                                                                                                     offset: 0,
+                                                                                                     scope: VertexAttributeScope.PerVertex);
+
+
+                draw.attrs[count] = new VertexAttributeDefinitionBufferPair.Struct(((BackendBufferReference.IVertexBuffer)BackendBufferReference.GetPlaceholder((1, BufferUsageFlags.Vertex, default))).GetWeakRef(), new());
+            }
+
+
+
+            count++;
+        }
+
+
+        draw.attrCount = layoutdetails.AttributeCount = count;
+        
+
+
+
+
+        foreach (var kv in Shader.Metadata.ResourceSets)
+        {
+            var idx = (int)kv.Value.Binding;
+
+            draw.sets[idx] = ResourceSets.TryGetUsingReference(kv.Key, out var kHandle, out var setGet) ? setGet : Shader.DefaultResourceSets[idx].GetWeakRef();
 
 #if DEBUG
-            if (self->IndexingDetails.End < self->IndexingDetails.Start)
-                throw new Exception();
+            foreach (var res in draw.sets[idx].Dereference().GetContents())
+            {
+                if (res.Binding is IBackendTextureSamplerPair tex)
+                    validate(tex.Texture, res.Name, kv.Key, Shader.Metadata.Name);
+
+                else if (res.Binding is IBackendTextureSamplerPair[] texarr)
+                    for (int i = 0; i <  texarr.Length; i++)
+                        validate(texarr[i].Texture, res.Name, kv.Key, Shader.Metadata.Name);
+
+
+                static void validate(BackendTextureReference tex, string name, string ressetname, string shadername)
+                {
+                    if (ActiveFrameBufferObject != null && tex is IFramebufferAttachment attachment && (ActiveFrameBufferObject.ColorAttachments.Contains(attachment) || ActiveFrameBufferObject.DepthStencilAttachment == tex))
+                        throw new Exception($"Texture '{name}', being consumed by resource set '{ressetname}' in shader '{shadername}', is also currently being used as part of the active framebuffer");
+                }
+            }
 #endif
+        }
 
-
-
-            var shader = self->ShaderHandle.Dereference();
-
-
-            Span<VertexAttributeDefinitionBufferPair.Struct> attrs = stackalloc VertexAttributeDefinitionBufferPair.Struct[shader.Metadata.VertexInputAttributes.Count];
-
-
-
-            PipelineAttributeDetails layoutdetails = new();
-            byte count = 0;
-
-            foreach (var kv in shader.Metadata.VertexInputAttributes)
-            {
-                var ShaderAttributeLocation = kv.Value.Location;
-                var ShaderDataFormat = kv.Value.Metadata.Format;
+        draw.setCount = (byte)Shader.Metadata.ResourceSets.Count;
 
 
 
 
-                if (self->AttributeCollection.TryGetUsingReference(kv.Key, out var keyHandle, out var value))
-                {
-                    var val = value;
+        draw.drawpipeline = BackendDrawPipelineReference.Get(new DrawPipelineDetails()
+        {
+            Attributes = layoutdetails,
+
+            Shader = Shader.GetWeakRef(),
+            FrameBufferPipeline = ActiveFramebufferPipeline == null ? default : ActiveFramebufferPipeline.GetWeakRef(),
+
+            Rasterization = Rasterization,
+            Blending = Blending,
+            DepthStencil = DepthStencil,
+        
+        }).GetWeakRef();
 
 
-                    layoutdetails.Attributes[count] = new PipelineAttributeDetails.PipelineAttributeSpec(location: ShaderAttributeLocation,
-                                                                                                         sourceFormat: val.Definition.ComponentFormat,
-                                                                                                         finalFormat: ShaderDataFormat,
-                                                                                                         stride: val.Definition.Stride,
-                                                                                                         offset: val.Definition.Offset,
-                                                                                                         scope: val.Definition.Scope);
-
-
-                    attrs[count] = value;
-                }
-
-                else
-                {
-                    layoutdetails.Attributes[count] = new PipelineAttributeDetails.PipelineAttributeSpec(location: ShaderAttributeLocation,
-                                                                                                         sourceFormat: VertexAttributeBufferComponentFormat.Byte,
-                                                                                                         finalFormat: ShaderDataFormat,
-                                                                                                         stride: 0,
-                                                                                                         offset: 0,
-                                                                                                         scope: VertexAttributeScope.PerVertex);
-
-                    attrs[count] = new VertexAttributeDefinitionBufferPair.Struct(DummyVertex.GetWeakRef(), new());
-                }
+        PushDeferredRenderThreadCommand(draw);
+        
+    }
 
 
 
+    private unsafe struct Rendering_Draw : IDeferredCommand<Rendering_Draw>
+    {
+        public WeakObjRef<BackendDrawPipelineReference> drawpipeline;
 
-                count++;
-            }
+        public VertexAttributes attrs;
+        public byte attrCount;
 
-            layoutdetails.AttributeCount = count;
+        public ResourceSets sets;
+        public byte setCount;
 
-
-
-
-
-            Span<WeakObjRef<BackendResourceSetReference>> sets = stackalloc WeakObjRef<BackendResourceSetReference>[shader.Metadata.ResourceSets.Count];
-
-            foreach (var kv in shader.Metadata.ResourceSets)
-            {
-                var idx = (int)kv.Value.Binding;
-                
-                sets[idx] = self->ResourceSetCollection.TryGetUsingReference(kv.Key, out var kHandle, out var setGet) ? setGet : shader.DefaultResourceSets[idx].GetWeakRef();
-            }
+        public WeakObjRef<BackendBufferReference.IIndexBuffer> idxBuffer;
+        public IndexingDetails idxDetails;
 
 
+        [InlineArray(16)]
+        public struct VertexAttributes { public VertexAttributeDefinitionBufferPair.Struct attrib; }
+
+        [InlineArray(16)]
+        public struct ResourceSets { public WeakObjRef<BackendResourceSetReference> set; }
 
 
-            DrawPipelineDetails drawdetails = new()
-            {
-                Attributes = layoutdetails,
-
-
-                Shader = self -> ShaderHandle,
-                FrameBufferPipeline = ActiveFramebufferPipeline == null ? default : ActiveFramebufferPipeline.GetWeakRef(),
-
-
-                Rasterization = self->Rasterization,
-                Blending = self->Blending,
-                DepthStencil = self->DepthStencil,
-
-            };
-
-
-            var get = BackendDrawPipelineReference.Get(drawdetails);
-
-            RenderingBackend.Draw(attrs, sets, get, self->IndexBufferHandle.Dereference(), 0, self->IndexingDetails); 
-
+        public static unsafe void Execute(Rendering_Draw* self)
+        {
+            RenderingBackend.Draw(
+                new ReadOnlySpan<VertexAttributeDefinitionBufferPair.Struct>(&self->attrs, self->attrCount), 
+                new ReadOnlySpan<WeakObjRef<BackendResourceSetReference>>(&self->sets, self->setCount), 
+                self->drawpipeline.Dereference(),
+                self->idxBuffer.Dereference(),
+                0,
+                self->idxDetails);
         }
     }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
@@ -956,8 +950,14 @@ public static class Rendering
     /// </summary>
     /// 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static unsafe void StartDrawToScreen() 
-        => PushDeferredRenderThreadCommand(&RenderingBackend.StartDrawToScreen);
+    public static unsafe void StartDrawToScreen()
+    {
+        ActiveFramebufferPipeline = null;
+        ActiveFrameBufferObject = null;
+        ActiveFrameBufferPipelineStage = 0;
+
+        PushDeferredRenderThreadCommand(&RenderingBackend.StartDrawToScreen);
+    }
 
 
     /// <summary>

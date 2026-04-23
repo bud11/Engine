@@ -76,7 +76,7 @@ public static partial class Kernel
 
 
 #if DEBUG
-        IO.CleanAssetCache();
+        CleanAssetCache();
 #endif
 
 
@@ -88,9 +88,9 @@ public static partial class Kernel
         var settings = Entry.EngineInit();
 
 
-        EngineSettings.LogicRateTarget = settings.LogicRateTarget;
-        EngineSettings.RenderRateTarget = settings.RenderRateTarget;
-        EngineSettings.HDR = settings.UseHDR;
+        EngineSettings.LogicRateTarget = settings.InitialLogicRateTarget;
+        EngineSettings.RenderRateTarget = settings.InitialRenderRateTarget;
+        EngineSettings.HDR = settings.InitialHDR;
 
         VRamLimit = settings.VRAMMemoryLimit;
 
@@ -118,7 +118,7 @@ public static partial class Kernel
 
 
 
-                GameResource.ScanForAssetArchives();
+                ScanForAssetArchives();
 
 #if DEBUG
                 GameResource.ScanResourceAssociations();
@@ -221,6 +221,8 @@ public static partial class Kernel
         RenderThread.Start();
 
     }
+
+
 
 
 

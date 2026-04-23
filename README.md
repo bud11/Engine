@@ -1,4 +1,4 @@
-# A 3D game engine/framework/runtime written in and around C#/NET 9.0. <br/> 🚧 In development 🚧
+# A 3D game engine/framework/runtime written in and around C#/.NET. <br/> 🚧 In development 🚧
 
 This project aims to offer a platform agnostic and mostly unopinionated foundation to build out any kind of engine or game, rapidly, without sacrificing control nor requiring immense boilerplate/knowledge.
 
@@ -17,9 +17,7 @@ This project aims to offer a platform agnostic and mostly unopinionated foundati
 - <b>Release builds</b> come with shader precompilation, zstd asset compression, and can safely target NativeAOT when published 
 
 ## Todos/considerations:
-- Some mild rendering backend abstraction reworking to make it feel more robust, extensible and less vulkan-centric
 - Finishing compute shaders properly, and in tandem, solidifying asynchronous gpu work and gpu -> cpu communication
-- Likely some form of rendering pipeline rework, such that materials are moreso compiled/cached rather than assembled fresh
 - Further work on more optimal resource/subresource compilation, resource dependencies
 
 
@@ -54,4 +52,5 @@ Manually drawn NDC triangle:
 Code-generated cube scene, camera and basic scene rendering pipeline:
 <img width="1282" height="752" alt="cube" src="https://github.com/user-attachments/assets/146a1909-15ca-4b09-998c-f6e44d822c65" />
 Intel sponza scene imported via blender addon:
-<img width="2067" height="1047" alt="initialsponza2" src="https://github.com/user-attachments/assets/2fd26cf7-4ebe-40e7-aaf0-d78db3e2581a" />
+<img width="2560" height="1400" alt="initialsponza3" src="https://github.com/user-attachments/assets/310b7a93-7e84-4656-91f1-f659b112522a" />
+

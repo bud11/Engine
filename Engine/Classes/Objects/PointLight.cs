@@ -26,4 +26,6 @@ public partial class PointLight : AABBObject
     [Indexable]
     public bool Shadow;
 
+
+
 }

@@ -1,10 +1,11 @@
 ﻿
 
-
 using Engine.Core;
 using Engine.GameResources;
 
 namespace Engine.GameObjects;
+
+using static Engine.Core.References;
 
 
 #if DEBUG
@@ -19,14 +20,15 @@ using Engine.Stripped;
 public abstract partial class DrawObject : AABBObject
 {
 
+    
 
 
 
 
-    public static readonly List<DrawObject> AllDrawableObjects = new();
+    public static readonly List<DrawObject> AllDrawObjects = new();
 
 
-    public bool DrawnThisFrame { get; private set; }
+    private bool DrawnThisFrame;
 
 
 
@@ -51,31 +53,24 @@ public abstract partial class DrawObject : AABBObject
     }
 
 
-    private bool GlobalTransformDirtyForDraw;
-    protected override void GlobalTransformChanged()
-    {
-        GlobalTransformDirtyForDraw = true;
-        base.GlobalTransformChanged();
-    }
 
 
     /// <summary>
-    /// Returns true if the global transform of this object needs to be updated in the context of drawing, for example writing <see cref="GameObject.GlobalTransform"/> to buffer.
+    /// Contains draw-call-issuer-supplied data needed to issue structured draw calls via <see cref="Draw(DrawState)"/>.
     /// </summary>
-    /// <returns></returns>
-    public bool IsGlobalTransformDirtyForDraw()
+    public unsafe struct DrawState
     {
-        if (GlobalTransformDirtyForDraw)
-        {
-            GlobalTransformDirtyForDraw = false;
-            return true;
-        }
-        return false;
+        public delegate*<MaterialResource, MaterialResource.MaterialResolution> MaterialResolver;
+        public UnmanagedKeyValueCollection<WeakObjRef<string>, WeakObjRef<RenderingBackend.BackendResourceSetReference>> TransientResourceSets;
     }
 
 
+    public unsafe virtual void Draw(DrawState state)
+    {
+        if (!DrawnThisFrame) 
+            PreDraw();
+    }
 
-    public unsafe abstract void Draw(delegate*<MaterialResource, MaterialResource.MaterialResolution> resolver);
 
 
 

@@ -43,9 +43,6 @@ public abstract partial class AABBObject : GameObject
     public AABB GetOrRecalculateCachedGlobalAABB()
     {
 
-        if (!IsEnableCameraCullingInTree()) return AABB.MaxValue;
-
-
         if (CachedAABBIsDirty)
         {
             CachedCurrentGlobalSpaceAABB = BaseAABB * GlobalTransform;

@@ -27,12 +27,12 @@ using Engine.Stripped;
 /// <summary>
 /// A base for any object with a lifetime.
 /// </summary>
-public abstract class Freeable : IDisposable
+public abstract class Freeable
 {
 
 
     /// <summary>
-    /// A reference to this. Used by <see cref="References.GetWeakRef{T}(T, bool)"/>.
+    /// A self weak reference, stored as an optimization. Used by <see cref="References.GetWeakRef{T}(T, bool)"/>.
     /// </summary>
     public readonly WeakObjRef SelfRef;
 
@@ -61,15 +61,7 @@ public abstract class Freeable : IDisposable
         }
     }
 
-
-#pragma warning disable CA1816 
-
-    public void Dispose() => Free();
-
-#pragma warning restore CA1816 
-
-
-    ~Freeable() => Dispose();
+    ~Freeable() => Free();
 
 
 
@@ -77,8 +69,32 @@ public abstract class Freeable : IDisposable
 
     public readonly ThreadSafeEventAction OnFreeEvent = new();
 
-
 }
+
+
+
+/// <summary>
+/// Faciliates obtaining a canonical substitute/fallback/placeholder instance of <typeparamref name="TSelf"/>, should a required instance be invalid or missing.
+/// </summary>
+/// <typeparam name="TSelf"></typeparam>
+public interface IPlaceholderProvider<TSelf> where TSelf : class, IPlaceholderProvider<TSelf>
+{
+    public static abstract TSelf GetPlaceholder();
+    public bool IsPlaceholder { get; }
+}
+
+
+/// <summary>
+/// Faciliates obtaining a substitute/fallback/placeholder instance of <typeparamref name="TSelf"/>, according to a specification/minimum requirement encoded into <typeparamref name="TSpec"/>, should a required instance be invalid or missing.
+/// </summary>
+/// <typeparam name="TSelf"></typeparam>
+public interface IPlaceholderProvider<TSelf, TSpec> where TSelf : class, IPlaceholderProvider<TSelf, TSpec>
+{
+    public static abstract TSelf GetPlaceholder(TSpec? requirement);
+    public bool IsPlaceholder { get; }
+}
+
+
 
 
 
@@ -110,7 +126,13 @@ public static class MiscExtensions
 
 
 
-
+    /// <summary>
+    /// Performant alternative to <see cref="Enum.HasFlag(Enum)"/>.
+    /// </summary>
+    /// <typeparam name="T"></typeparam>
+    /// <param name="self"></param>
+    /// <param name="value"></param>
+    /// <returns></returns>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static bool EnumHasValue<T>(this T self, in T value) where T : struct, Enum
     {
@@ -119,6 +141,13 @@ public static class MiscExtensions
         return (a & b) != 0;
     }
 
+    /// <summary>
+    /// Equivalent to multiple calls to <see cref="EnumHasValue{T}(T, in T)"/>.
+    /// </summary>
+    /// <typeparam name="T"></typeparam>
+    /// <param name="self"></param>
+    /// <param name="values"></param>
+    /// <returns></returns>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static bool EnumHasValues<T>(this T self, ReadOnlySpan<T> values) where T : struct, Enum
     {
@@ -193,6 +222,7 @@ public static class MiscExtensions
 
 
 }
+
 
 
 
@@ -534,13 +564,13 @@ public static class Comparisons
 {
 
     /// <summary>
-    /// Creates a dictionary with a very fast unmanaged struct equality comparer.
+    /// Creates a dictionary optimized for unmanaged comparisons. Relies on keys being exactly equal in memory.
     /// </summary>
     /// <typeparam name="Key"></typeparam>
     /// <typeparam name="Value"></typeparam>
     /// <returns></returns>
     public static Dictionary<Key, Value> CreateUnsafeStructKeyComparisonDictionary<Key, Value>() where Key : unmanaged 
-        => new Dictionary<Key, Value>(new UnmanagedStructComparer<Key>());
+        => new(new UnmanagedStructComparer<Key>());
 
 
 
@@ -548,31 +578,51 @@ public static class Comparisons
         where T : unmanaged
     {
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        public bool Equals(T x, T y)
+        public unsafe bool Equals(T x, T y)
         {
-            return new ReadOnlySpan<byte>(&x, sizeof(T))
-                .SequenceEqual(new ReadOnlySpan<byte>(&y, sizeof(T)));
+            byte* a = (byte*)&x;
+            byte* b = (byte*)&y;
+
+            int size = sizeof(T);
+
+            for (int i = 0; i < size; i++)
+            {
+                if (a[i] != b[i])
+                    return false;
+            }
+
+            return true;
         }
 
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        public int GetHashCode(T value)
-        {
-            //FNV-1a hash
-            ReadOnlySpan<byte> data = new(&value, sizeof(T));
-            const uint FNV_OFFSET = 2166136261u;
-            const uint FNV_PRIME = 16777619u;
 
-            uint hash = FNV_OFFSET;
-            foreach (byte b in data)
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public unsafe int GetHashCode(T value)
+        {
+            byte* data = (byte*)&value;
+
+            uint hash = 2166136261u;
+            int len = sizeof(T);
+
+            int i = 0;
+            for (; i + 8 <= len; i += 8)
             {
-                hash ^= b;
-                hash *= FNV_PRIME;
+                ulong chunk = *(ulong*)(data + i);
+                hash ^= (uint)chunk;
+                hash *= 16777619u;
+
+                hash ^= (uint)(chunk >> 32);
+                hash *= 16777619u;
+            }
+
+            for (; i < len; i++)
+            {
+                hash ^= data[i];
+                hash *= 16777619u;
             }
 
             return (int)hash;
         }
     }
-
 
 
 
@@ -617,26 +667,32 @@ public static class Comparisons
 
 
 
-
-
-
-
-
-
-public static class ArrayPools
+/// <summary>
+/// Wraps a rented array originating from <see cref="ArrayPool{T}.Rent(int)"/>.
+/// </summary>
+/// <typeparam name="T"></typeparam>
+public struct ArrayFromPool<T> : IDisposable
 {
 
-    public static ArrayFromPool<T> RentArrayFromPool<T>(int length)
+    /// <param name="array"></param>
+    /// <param name="length"></param>
+    private ArrayFromPool(T[] array, int length)
+    {
+        Array = array;
+        Length = length;
+    }
+
+
+
+    public static ArrayFromPool<T> Rent(int length)
     {
         var arr = ArrayPool<T>.Shared.Rent(length);
-        Array.Clear(arr, 0, length);
+        System.Array.Clear(arr, 0, length);
 
         return new ArrayFromPool<T>(arr, length);
     }
 
-
-    public static ArrayFromPool<T> CreateBorrowedArrayPoolClone<T>(
-        this ReadOnlySpan<T> span)
+    public static ArrayFromPool<T> RentClone(ReadOnlySpan<T> span)
     {
         var arr = ArrayPool<T>.Shared.Rent(span.Length);
         span.CopyTo(arr);
@@ -647,54 +703,65 @@ public static class ArrayPools
 
 
 
-    public struct ArrayFromPool<T> : IDisposable
+    /// <summary>
+    /// The actual underlying array, rented from the pool.
+    /// </summary>
+    public readonly T[] Array;
+
+    /// <summary>
+    /// The logical length. May be smaller than <see cref="Array"/>'s actual length.
+    /// </summary>
+    public int Length;
+
+
+    public readonly T this[int idx]
     {
-        //dont use unless you know what you're doing
-        public T[] Ref;
-
-        public int Length;  //could be different from actual Ref.Length
-
-        public ArrayFromPool(T[] @ref, int length)
+        get
         {
-            Ref = @ref;
-            Length = length;
-        }
-
-        public readonly T this[int idx]
-        {
-            get => Ref[idx];
-            set => Ref[idx] = value;
-        }
-
-        public static implicit operator Span<T>(ArrayFromPool<T> a) => new(a.Ref, 0, a.Length);
-        public static implicit operator ReadOnlySpan<T>(ArrayFromPool<T> a) => new(a.Ref, 0, a.Length);
-
-
 #if DEBUG
-        private bool Returned = false;
+            if ((uint)idx >= (uint)Length)
+                throw new IndexOutOfRangeException();
 #endif
 
-        public void Return()
-        {
-
-#if DEBUG
-            if (Returned) throw new Exception("already returned");
-#endif
-
-            ArrayPool<T>.Shared.Return(Ref);
-
-#if DEBUG
-            Returned = true;
-#endif
+            return Array[idx];
         }
+        set
+        {
+#if DEBUG
+            if ((uint)idx >= (uint)Length)
+                throw new IndexOutOfRangeException();
+#endif
 
-        public void Dispose() => Return();
+            Array[idx] = value;
+        }
     }
 
+
+    public static implicit operator Span<T>(ArrayFromPool<T> a) => new(a.Array, 0, a.Length);
+    public static implicit operator ReadOnlySpan<T>(ArrayFromPool<T> a) => new(a.Array, 0, a.Length);
+
+
+#if DEBUG
+    private bool Returned = false;
+
+#endif
+
+    public void Return()
+    {
+
+#if DEBUG
+        if (Returned) throw new Exception("already returned");
+#endif
+
+        ArrayPool<T>.Shared.Return(Array);
+
+#if DEBUG
+        Returned = true;
+#endif
+    }
+
+    public void Dispose() => Return();
 }
-
-
-
 
 
 
@@ -860,11 +927,11 @@ public unsafe class DynamicUnmanagedHeapAllocator
 /// <summary>
 /// Represents a range to be written. Doesn't own or directly store data.
 /// </summary>
-public unsafe readonly struct WriteRange(uint offset, uint length, void* content)
+public unsafe readonly struct WriteRange(uint offsetIntoDst, uint lengthOfSrc, void* src)
 {
-    public readonly uint Offset = offset;
-    public readonly uint Length = length;
-    public readonly void* Content = content;
+    public readonly uint OffsetIntoDst = offsetIntoDst;
+    public readonly uint LengthOfSrc = lengthOfSrc;
+    public readonly byte* Src = (byte*)src;
 }
 
 
@@ -966,6 +1033,8 @@ public unsafe sealed class DeferredCommandBuffer
         }
 
 
+        [DebuggerHidden]
+        [StackTraceHidden]
         static void Invoke(void* ptr)
         {
             byte* p = (byte*)ptr;
@@ -999,6 +1068,9 @@ public unsafe sealed class DeferredCommandBuffer
             PushTrace(dst);
         }
 
+
+        [DebuggerHidden]
+        [StackTraceHidden]
         static void Execute<TCmd>(void* ptr)
             where TCmd : unmanaged, IDeferredCommand<TCmd>
         {
@@ -1055,7 +1127,6 @@ public unsafe sealed class DeferredCommandBuffer
 
     [DebuggerHidden]
     [StackTraceHidden]
-
     public void Execute()
     {
         lock (this)

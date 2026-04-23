@@ -12,11 +12,11 @@ using Engine.Core;
 
 
 using static Engine.Core.Parsing;
+using static Engine.Core.IO;
 
 
 #if DEBUG
 using System.Text.Json;
-using static Engine.Core.IO;
 #endif
 
 
@@ -63,7 +63,7 @@ public class AnimationResource : GameResource, GameResource.ILoads
     public static async Task<IConverts.FinalAssetBytes> ConvertToFinalAssetBytes(Bytes bytes, string key)
     {
 
-        var dict = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(bytes.ByteArray, Parsing.JsonAssetLoadingOptions);
+        var dict = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(bytes.ByteArray, JsonAssetLoadingOptions);
 
         bytes.Dispose();
 

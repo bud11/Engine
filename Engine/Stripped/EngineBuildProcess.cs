@@ -77,13 +77,13 @@ public static class EngineBuildProcess
 
 
 
-        if (Directory.Exists(Core.IO.AssetRootDirectoryPath))
+        if (Directory.Exists(IO.AssetRootDirectoryPath))
         {
 
             List<Task> archiveCompletionTasks = new();
 
 
-            foreach (var archiveAbsolutePath in Directory.GetDirectories(Core.IO.AssetRootDirectoryPath))
+            foreach (var archiveAbsolutePath in Directory.GetDirectories(IO.AssetRootDirectoryPath))
             {
 
 
@@ -97,7 +97,7 @@ public static class EngineBuildProcess
                 archiveCompletionTasks.Add(Task.Run(async () =>
                 {
 
-                    if (Core.IO.DirectoryExistsCaseSensitive(archiveAbsolutePath))
+                    if (IO.DirectoryExistsCaseSensitive(archiveAbsolutePath))
                     {
 
 
@@ -130,7 +130,7 @@ public static class EngineBuildProcess
                             compressionTasks.Add(
                                 Task.Run(async () =>
                                 {
-                                    var relativePath = Path.GetRelativePath(Core.IO.AssetRootDirectoryPath, assetAbsolutePath);
+                                    var relativePath = Path.GetRelativePath(IO.AssetRootDirectoryPath, assetAbsolutePath);
 
 
 
@@ -330,18 +330,17 @@ public static partial class RenderingBackend
 {shaderdedup.ToString()}
 
     private static readonly Dictionary<RenderingBackendEnum, Dictionary<string, ShaderSource>> ShaderSources = { shaderSources };
-
     private static readonly Dictionary<RenderingBackendEnum, Dictionary<string, ComputeShaderSource>> ComputeShaderSources = { computeShaderSources };
 
-    private static readonly Dictionary<string, ShaderMetadata.ShaderResourceSetMetadata> GlobalResourceSetMetadata = { globalMetadata };
 
+    public static readonly Dictionary<string, ShaderMetadata.ShaderResourceSetMetadata> GlobalResourceSetMetadata = { globalMetadata };
 }}
 
 
 
 
 
-public static partial class Loading
+public static partial class IO
 {{
     private static readonly List<string> AssetArchiveNames = {Emit(AssetArchiveNames.ToArray())};
 
@@ -738,7 +737,7 @@ public static partial class Loading
     private static void WriteGeneratedFile(string outputpath, string text)
     {
 
-        if (Core.IO.FileExistsCaseSensitive(outputpath))
+        if (IO.FileExistsCaseSensitive(outputpath))
         {
             var f = new FileInfo(outputpath);
             if (f.IsReadOnly)
